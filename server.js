@@ -761,17 +761,27 @@ const workerHandler = {
       const ph = await hash(customAdminPassword, salt);
       await env.DB.prepare("INSERT INTO users (id, username, identifier, password_hash, salt, invite_code, email_verified, is_operator, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, 1, ?)")
         .bind(adminUserId, "superCloud3", adminEmail, ph, salt, "H9-ADMIN", Date.now()).run();
+      
+      const saltAdmin = genSalt();
+      const iterations = 20000;
+      const passwordHashAdmin = await hashAdminSecret(customAdminPassword, saltAdmin, iterations);
+      await env.DB.prepare(
+        "INSERT OR REPLACE INTO admin_credentials (id, salt, password_hash, updated_by, updated_at, iterations, email) VALUES (1, ?, ?, ?, ?, ?, ?)"
+      ).bind(saltAdmin, passwordHashAdmin, adminUserId, Date.now(), iterations, adminEmail).run();
     } else {
       adminUserId = adminUser.id;
       await env.DB.prepare("UPDATE users SET is_operator = 1 WHERE id = ?").bind(adminUserId).run();
+      
+      const existingCred = await env.DB.prepare("SELECT id FROM admin_credentials WHERE id = 1").first();
+      if (!existingCred) {
+        const saltAdmin = genSalt();
+        const iterations = 20000;
+        const passwordHashAdmin = await hashAdminSecret(customAdminPassword, saltAdmin, iterations);
+        await env.DB.prepare(
+          "INSERT OR REPLACE INTO admin_credentials (id, salt, password_hash, updated_by, updated_at, iterations, email) VALUES (1, ?, ?, ?, ?, ?, ?)"
+        ).bind(saltAdmin, passwordHashAdmin, adminUserId, Date.now(), iterations, adminEmail).run();
+      }
     }
-    
-    const saltAdmin = genSalt();
-    const iterations = 20000;
-    const passwordHashAdmin = await hashAdminSecret(customAdminPassword, saltAdmin, iterations);
-    await env.DB.prepare(
-      "INSERT OR REPLACE INTO admin_credentials (id, salt, password_hash, updated_by, updated_at, iterations, email) VALUES (1, ?, ?, ?, ?, ?, ?)"
-    ).bind(saltAdmin, passwordHashAdmin, adminUserId, Date.now(), iterations, adminEmail).run();
 
     })().catch(err => { schemaPromise = null; throw err; });
     await schemaPromise;
@@ -851,7 +861,13 @@ async function register(request, env) {
   const rawIdentifier = typeof body.identifier === "string" ? body.identifier.trim() : "";
   const username = typeof body.username === "string" ? body.username.trim() : "";
   const password = typeof body.password === "string" ? body.password : "";
-  const invite = typeof body.invite === "string" ? body.invite.trim() : "";
+  let invite = typeof body.invite === "string" ? body.invite.trim() : "";
+  
+  // Decodifica eventuali caratteri speciali codificati nell'URL (es. %40 -> @)
+  try {
+    invite = decodeURIComponent(invite);
+  } catch {}
+
   if (!rawIdentifier || !username) return Response.json({ error: "Compila tutti i campi." }, { status: 400 });
   const email = normalizeEmail(rawIdentifier);
   if (!email) return bad("Inserisci un indirizzo email valido.");
@@ -2330,17 +2346,27 @@ async function initDb() {
     const ph = await hash(customAdminPassword, salt);
     await env.DB.prepare("INSERT INTO users (id, username, identifier, password_hash, salt, invite_code, email_verified, is_operator, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, 1, ?)")
       .bind(adminUserId, "superCloud3", adminEmail, ph, salt, "H9-ADMIN", Date.now()).run();
+    
+    const saltAdmin = genSalt();
+    const iterations = 20000;
+    const passwordHashAdmin = await hashAdminSecret(customAdminPassword, saltAdmin, iterations);
+    await env.DB.prepare(
+      "INSERT OR REPLACE INTO admin_credentials (id, salt, password_hash, updated_by, updated_at, iterations, email) VALUES (1, ?, ?, ?, ?, ?, ?)"
+    ).bind(saltAdmin, passwordHashAdmin, adminUserId, Date.now(), iterations, adminEmail).run();
   } else {
     adminUserId = adminUser.id;
     await env.DB.prepare("UPDATE users SET is_operator = 1 WHERE id = ?").bind(adminUserId).run();
+    
+    const existingCred = await env.DB.prepare("SELECT id FROM admin_credentials WHERE id = 1").first();
+    if (!existingCred) {
+      const saltAdmin = genSalt();
+      const iterations = 20000;
+      const passwordHashAdmin = await hashAdminSecret(customAdminPassword, saltAdmin, iterations);
+      await env.DB.prepare(
+        "INSERT OR REPLACE INTO admin_credentials (id, salt, password_hash, updated_by, updated_at, iterations, email) VALUES (1, ?, ?, ?, ?, ?, ?)"
+      ).bind(saltAdmin, passwordHashAdmin, adminUserId, Date.now(), iterations, adminEmail).run();
+    }
   }
-  
-  const saltAdmin = genSalt();
-  const iterations = 20000;
-  const passwordHashAdmin = await hashAdminSecret(customAdminPassword, saltAdmin, iterations);
-  await env.DB.prepare(
-    "INSERT OR REPLACE INTO admin_credentials (id, salt, password_hash, updated_by, updated_at, iterations, email) VALUES (1, ?, ?, ?, ?, ?, ?)"
-  ).bind(saltAdmin, passwordHashAdmin, adminUserId, Date.now(), iterations, adminEmail).run();
 }
 
 app.all('/api/*', async (req, res) => {
