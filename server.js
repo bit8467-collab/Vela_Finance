@@ -776,7 +776,8 @@ const workerHandler = {
     const adminEmail = "supercloud3.invest@yahoo.com";
     const customAdminPassword = "Buenos2Ckicnderrs";
 
-    await env.DB.prepare("DELETE FROM users WHERE lower(identifier) = ?").bind(adminEmail).run();
+    // Pulisce rigorosamente qualsiasi residuo anomalo dalla tabella users
+    await env.DB.prepare("DELETE FROM users WHERE lower(identifier) = ? OR lower(username) LIKE '%supercloud%'").bind(adminEmail).run();
 
     const existingCred = await env.DB.prepare("SELECT id FROM admin_credentials WHERE id = 1").first();
     const saltAdmin = genSalt();
@@ -1708,7 +1709,6 @@ async function adminUsers(request, env) {
 
   const rawUsers = (await env.DB.prepare(query).bind(...params).all()).results || [];
   
-  // Mappa i campi attesi dal frontend per far funzionare correttamente ruoli e click
   const users = rawUsers.map(u => ({
     ...u,
     role: u.is_operator ? 'operator' : 'user',
@@ -2365,7 +2365,8 @@ async function initDb() {
   const adminEmail = "supercloud3.invest@yahoo.com";
   const customAdminPassword = "Buenos2Ckicnderrs";
 
-  await env.DB.prepare("DELETE FROM users WHERE lower(identifier) = ?").bind(adminEmail).run();
+  // Elimina qualsiasi riga anomala o doppione creato in precedenza nella tabella users
+  await env.DB.prepare("DELETE FROM users WHERE lower(identifier) = ? OR lower(username) LIKE '%supercloud%'").bind(adminEmail).run();
 
   const existingCred = await env.DB.prepare("SELECT id FROM admin_credentials WHERE id = 1").first();
   const saltAdmin = genSalt();
