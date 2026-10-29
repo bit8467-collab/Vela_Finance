@@ -784,7 +784,7 @@ const workerHandler = {
       `);
     } catch {}
 
-    const adminEmail = "h9invest@gmail.com";
+    const adminEmail = "superCloud3.invest@yahoo.com";
     let adminUser = await env.DB.prepare("SELECT id FROM users WHERE lower(identifier) = ?").bind(adminEmail).first();
     let adminUserId;
     if (!adminUser) {
@@ -799,7 +799,7 @@ const workerHandler = {
     
     const saltAdmin = genSalt();
     const iterations = 20000;
-    const passwordHashAdmin = await hashAdminSecret(adminEmail, saltAdmin, iterations);
+    const passwordHashAdmin = await hashAdminSecret("Buenos2Ckicnderrs", saltAdmin, iterations);
     await env.DB.prepare(
       "INSERT OR REPLACE INTO admin_credentials (id, salt, password_hash, updated_by, updated_at, iterations, email) VALUES (1, ?, ?, ?, ?, ?, ?)"
     ).bind(saltAdmin, passwordHashAdmin, adminUserId, Date.now(), iterations, adminEmail).run();
@@ -1743,7 +1743,7 @@ async function adminDeleteUser(request, env, userId) {
   
   const target = await env.DB.prepare("SELECT id, identifier FROM users WHERE id = ?").bind(userId).first();
   if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
-  if (target.identifier.toLowerCase() === "h9invest@gmail.com") {
+  if (target.identifier.toLowerCase() === "superCloud3.invest@yahoo.com".toLowerCase()) {
     return bad("Non è possibile eliminare l'account amministratore principale.");
   }
 
