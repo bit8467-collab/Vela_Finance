@@ -1,0 +1,546 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#101711">
+    <meta name="description" content="Explore market information, investment concepts, and account tools with You Invest. Educational project; not financial advice.">
+    <meta name="robots" content="index, follow, max-image-preview:large">
+    <link rel="canonical" href="https://you3invest.onrender.com/">
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="You Invest">
+    <meta property="og:title" content="You Invest">
+    <meta property="og:description" content="Explore market information, investment concepts, and account tools with You Invest. Educational project; not financial advice.">
+    <meta property="og:url" content="https://you3invest.onrender.com/">
+    <meta property="og:image" content="https://you3invest.onrender.com/icon-512.png">
+    <meta name="twitter:card" content="summary">
+    <script type="application/ld+json">{"@context":"https://schema.org","@type":"WebSite","name":"You Invest","url":"https://you3invest.onrender.com/","description":"Explore market information, investment concepts, and account tools. Educational project; not financial advice."}</script>
+    <link rel="manifest" href="./manifest.webmanifest">
+    <link rel="stylesheet" href="./styles.css">
+    <link rel="icon" href="./icon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png">
+    <title>You Invest</title>
+  </head>
+  <body>
+    <main class="landing" id="landing">
+      <header class="landing-header">
+        <a class="brand landing-brand" href="#top" aria-label="You Invest, pagina iniziale"><span class="brand-mark">YI</span><span>YOU <b>INVEST</b></span></a>
+        <nav class="landing-nav" aria-label="Company navigation">
+          <a href="#company-info">Company &amp; legal</a>
+        </nav>
+        <div class="landing-controls">
+          <label class="landing-language-label" for="landing-language-select">Language</label>
+          <select class="landing-language-select" id="landing-language-select" aria-label="Language">
+            <option value="en">English</option><option value="fr">Français</option><option value="es">Español</option><option value="de">Deutsch</option><option value="pt">Português</option><option value="hi">हिन्दी</option><option value="zh">中文</option><option value="it">Italiano</option>
+          </select>
+          <button class="landing-login" type="button" data-auth="login">Sign in <span aria-hidden="true">↗</span></button>
+        </div>
+      </header>
+
+      <section class="landing-hero" id="top">
+        <div class="hero-copy">
+          <p class="landing-kicker"><span></span> MORE INFORMED FINANCE, ONE STEP AT A TIME</p>
+          <h1>Your decisions.<br><em>Your journey.</em></h1>
+          <p class="hero-lede">You Invest is an evolving project that aims to make tools for exploring the world of investing easier to understand.</p>
+          <div class="hero-actions">
+            <button class="hero-button" type="button" data-auth="register">Create an account <span aria-hidden="true">↗</span></button>
+            <a class="hero-secondary" href="#company-info">Company information <span aria-hidden="true">↓</span></a>
+          </div>
+          <p class="hero-disclaimer">Do not send cryptocurrency until the operator has configured and verified an address for the correct network. Deposit and withdrawal requests are reviewed manually.</p>
+        </div>
+        <div class="hero-art" aria-hidden="true">
+          <div class="orbit orbit-one"></div><div class="orbit orbit-two"></div>
+          <div class="orbit-core"><span>YI</span><i></i></div>
+          <div class="floating-note note-top"><span>01</span><b>Clarity</b></div>
+          <div class="floating-note note-bottom"><span>02</span><b>Awareness</b></div>
+          <div class="hero-spark spark-one">✳</div><div class="hero-spark spark-two">✳</div>
+        </div>
+        <a class="scroll-cue" href="#company-info"><span></span> COMPANY INFORMATION</a>
+      </section>
+
+      <div class="landing-notice"><span>PROJECT IN DEVELOPMENT</span> Company identity, authorization, and external financial-service integrations have not been verified.</div>
+
+      <details class="company-info" id="company-info">
+        <summary class="company-info-summary">
+          <span class="company-info-icon" aria-hidden="true">i</span>
+          <span class="company-info-copy"><span class="company-info-kicker">PROJECT STATUS</span><strong>Company &amp; service information</strong><small>Platform status, market data and limitations</small></span>
+          <span class="company-info-toggle" aria-hidden="true"></span>
+        </summary>
+        <div class="company-info-content">
+          <section class="company-section about-section"><div class="section-label"><span>01</span> THE PROJECT</div><div class="about-grid"><h2>You Invest<span class="accent-dot">.</span></h2><div class="about-copy"><p class="about-lead">A database-backed account platform with public market reference data.</p><p>Registered accounts, balance records, requests, and tracked portfolios are stored by the platform backend. Asset prices and charts are sourced from public market-data providers and may be delayed or unavailable.</p><p>Market tracking positions do not mean that the platform has bought or holds Bitcoin, gold, shares, or other assets.</p></div></div></section>
+          <section class="company-section compliance-section"><div class="section-label"><span>02</span> LIMITATIONS</div><div class="section-title-row"><div><h2>Services and permissions<span class="accent-dot">.</span></h2><p>No broker, exchange, bank, payment processor, or blockchain settlement integration is configured.</p></div></div><p class="legal-note">Deposits and withdrawals are requests recorded for manual review; submitting a request does not move cryptocurrency or issue a payout. A stop threshold is evaluated against public reference quotes when the account refreshes, not continuously and not as a market order. No regulatory approval, legal entity, company office, certificate, or support contact is asserted here. This is not financial advice.</p></section>
+        </div>
+      </details>
+
+
+      <footer class="landing-footer"><a class="brand footer-brand" href="#top"><span class="brand-mark">YI</span><span>YOU <b>INVEST</b></span></a><span>© 2026 You Invest · Project in development.</span><a href="#company-info">Legal information ↑</a></footer>
+    </main>
+
+    
+
+    <main class="auth-screen" id="auth-screen" hidden>
+      <button class="auth-back" type="button" id="auth-back">← Back to home</button>
+      <div class="brand auth-brand"><span class="brand-mark">YI</span><span>YOU <b>INVEST</b></span></div>
+      <div class="status-banner"><span>ACCOUNT INFORMATION</span> Account information is stored in the platform database.</div>
+      <section class="auth-card">
+        <div id="auth-entry">
+          <div class="auth-heading"><p class="eyebrow">YOUR ACCOUNT</p><h1 id="auth-title">Welcome back</h1><p id="auth-subtitle">Sign in to your You Invest account.</p></div>
+          <div class="auth-switch" id="auth-switch">
+            <button class="selected" id="show-login" type="button">Log in</button>
+            <button id="show-register" type="button">Create account</button>
+          </div>
+          <form id="login-form" class="auth-form">
+            <label for="login-email">Email</label>
+            <input id="login-email" type="text" autocomplete="email" placeholder="Email or username" required>
+            <label for="login-password">Password</label>
+            <input id="login-password" type="password" autocomplete="current-password" placeholder="Your password" required>
+            <p class="form-error" id="login-error" role="alert"></p>
+            <button class="primary-button" type="submit">Log in</button>
+          </form>
+          <button class="text-button forgot-password-button" id="forgot-password-button" type="button">Forgot password?</button>
+          <form id="password-reset-request-form" class="auth-form password-reset-form" hidden>
+            <div class="auth-heading"><p class="eyebrow">ACCOUNT RECOVERY</p><h2>Reset password</h2><p>Enter your registered email. An operator will issue a one-time code.</p></div>
+            <label for="reset-email">Email</label>
+            <input id="reset-email" type="email" autocomplete="email" placeholder="name@email.com" required>
+            <p class="form-error" id="reset-request-message" role="status" aria-live="polite"></p>
+            <button class="primary-button" type="submit">Request recovery code</button>
+            <small class="modal-copy">The operator will issue a one-time code. For password recovery, receive it through your registered contact channel.</small>
+          </form>
+          <form id="password-reset-form" class="auth-form password-reset-form" hidden>
+            <div class="auth-heading"><p class="eyebrow">ACCOUNT RECOVERY</p><h2>Set a new password</h2></div>
+            <label for="reset-otp">One-time code</label>
+            <input id="reset-otp" class="otp-input" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" autocapitalize="off" spellcheck="false" required>
+            <label for="reset-new-password">New password</label>
+            <input id="reset-new-password" type="password" minlength="8" autocomplete="new-password" required>
+            <label for="reset-confirm-password">Confirm new password</label>
+            <input id="reset-confirm-password" type="password" minlength="8" autocomplete="new-password" required>
+            <p class="form-error" id="reset-password-error" role="alert"></p>
+            <button class="primary-button" type="submit">Update password</button>
+          </form>
+          <form id="register-form" class="auth-form" hidden>
+            <label for="register-username">Username</label>
+            <input id="register-username" type="text" minlength="3" maxlength="30" autocomplete="username" placeholder="Choose a username" required>
+            <label for="register-email">Email</label>
+            <input id="register-email" type="email" autocomplete="email" placeholder="name@email.com" required>
+            <label for="register-password">Password</label>
+            <input id="register-password" type="password" minlength="12" autocomplete="new-password" placeholder="At least 12 characters" required>
+            <label for="register-confirm">Confirm password</label>
+            <input id="register-confirm" type="password" minlength="8" autocomplete="new-password" placeholder="Enter your password again" required>
+            <label for="register-referral">Referral code (optional)</label>
+            <input id="register-referral" type="text" autocomplete="off" placeholder="Enter a referral code">
+            <p class="form-error" id="register-error" role="alert"></p>
+            <button class="primary-button" type="submit">Create account</button>
+          </form>
+        </div>
+      </section>
+      <p class="auth-footnote">Account information is stored in the platform database.</p>
+    </main>
+
+    <main class="app-shell" id="app-shell" hidden>
+      <header class="topbar">
+        <a class="brand" id="home-link" href="#home" aria-label="You Invest, home"><span class="brand-mark">YI</span><span>YOU <b>INVEST</b></span></a>
+        <div class="topbar-actions"><span class="user-chip" id="user-chip">—</span><button class="icon-button notification-button" id="open-notifications" type="button" aria-label="Notifications" title="Notifications"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H8l-5 3V7a2 2 0 0 1 1-2m1 3v1l7 5 7-5V8l-7 5z"/></svg><i id="notification-dot" hidden></i><span class="notification-count" id="notification-count" hidden></span></button><button class="icon-button" id="refresh-account" type="button" aria-label="Refresh account" title="Refresh"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.65 6.35A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.93 9h-2.02A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4z"/></svg></button></div>
+      </header>
+
+      <section class="view active" id="view-home" aria-labelledby="home-title">
+        <div class="page-heading"><div><p class="eyebrow">YOUR ACCOUNT</p><h1 id="home-title">Home</h1></div></div>
+        <section class="balance-card">
+          <div class="balance-heading"><span>Total balance</span><span class="secure-badge">USDT</span></div>
+          <div class="balance-visual">
+            <div class="balance-chart-wrap">
+              <svg class="balance-chart" viewBox="0 0 120 120" role="img" aria-label="Balance breakdown">
+                <circle class="balance-chart-track" cx="60" cy="60" r="48"></circle>
+                <circle class="balance-chart-segment segment-deposit" data-balance-segment="deposit" cx="60" cy="60" r="48"></circle>
+                <circle class="balance-chart-segment segment-unlocked" data-balance-segment="unlocked" cx="60" cy="60" r="48"></circle>
+                <circle class="balance-chart-segment segment-earnings" data-balance-segment="earnings" cx="60" cy="60" r="48"></circle>
+                <circle class="balance-chart-segment segment-invested" data-balance-segment="invested" cx="60" cy="60" r="48"></circle>
+              </svg>
+              <div class="balance-chart-center"><b id="total-balance">0.00 USDT</b><span>Total</span></div>
+            </div>
+            <div class="balance-legend">
+              <div class="balance-legend-row"><i class="legend-deposit"></i><span>Deposit balance</span><b id="deposit-balance">0.00 USDT</b></div>
+              <div class="balance-legend-row"><i class="legend-unlocked"></i><span>Released capital</span><b id="unlocked-balance">0.00 USDT</b></div>
+              <div class="balance-legend-row"><i class="legend-earnings"></i><span>Earnings balance</span><b id="earnings-balance">0.00 USDT</b></div>
+              <div class="balance-legend-row"><i class="legend-invested"></i><span>Invested capital</span><b id="locked-balance">0.00 USDT</b></div>
+            </div>
+          </div>
+          <div class="balance-profit"><span><i></i>Redeemable profits <small>included in invested capital</small></span><b id="reinvested-balance">0.00 USDT</b></div>
+        </section>
+        <div class="action-grid home-actions" aria-label="Account actions">
+          <button class="action-tile" type="button" data-open="deposit-dialog"><span class="action-symbol">↓</span><b>Deposit USDT</b></button>
+          <button class="action-tile" type="button" data-open="withdraw-dialog"><span class="action-symbol">↑</span><b>Withdraw funds</b></button>
+          <button class="action-tile wide-tile" id="redeem-earnings-button" type="button" data-redeem-earnings disabled><span class="action-symbol">↻</span><b>Redeem available gains</b><span class="tile-arrow" aria-hidden="true">→</span></button>
+        </div>
+        <section class="home-shortcuts" aria-label="Account sections"><button class="home-shortcut" type="button" data-go="transactions"><span class="shortcut-icon">↕</span><span><b>Movements</b><small>Deposits, withdrawals and investments</small></span><i>→</i></button><button class="home-shortcut" type="button" data-go="investments"><span class="shortcut-icon">↗</span><span><b>Investments</b><small>Open and completed positions</small></span><i>→</i></button><button class="home-shortcut" type="button" data-go="catalog"><span class="shortcut-icon">▤</span><span><b>Plans</b><small>Explore investment plans</small></span><i>→</i></button><button class="home-shortcut" type="button" data-go="profile"><span class="shortcut-icon">◉</span><span><b>Profile</b><small>Account details and settings</small></span><i>→</i></button></section>
+        <div class="home-legacy-content">
+
+
+        <section class="section-block">
+          <div class="section-heading"><div><p class="eyebrow">INVESTED CAPITAL</p><h2>Active investments</h2></div><button class="text-link" type="button" data-go="investments">View all <span>→</span></button></div>
+          <div class="investment-list" id="home-investments"></div>
+          <div class="empty-card" id="home-investments-empty"><span class="empty-icon">↗</span><b>No active investments</b><p>Add funds to your balance and choose a plan.</p><button class="primary-button compact-button" type="button" data-go="catalog">View plans</button></div>
+        </section>
+        <section class="section-block">
+          <div class="section-heading"><div><p class="eyebrow">ACCOUNT ACTIVITY</p><h2>Recent activity</h2></div><button class="text-link" type="button" data-go="transactions">Full history <span>→</span></button></div>
+          <details class="history-disclosure"><summary><span>Latest movements</span><b id="home-history-count">0</b><i aria-hidden="true">⌄</i></summary><div class="activity-list" id="recent-activity"></div><div class="empty-card compact-empty" id="activity-empty"><b>No transactions yet</b><p>Deposits, investments and withdrawals will appear here.</p></div></details>
+        </section>
+        <section class="section-block">
+          <div class="section-heading"><div><p class="eyebrow">PRESET PLANS</p><h2>Invest</h2></div><button class="text-link" type="button" data-go="catalog">Plans <span>→</span></button></div>
+          <div class="plan-list compact-plans" id="home-plans"></div>
+        </section>
+        </div>
+      </section>
+
+      <section class="view" id="view-catalog" aria-labelledby="catalog-title">
+        <div class="page-heading"><div><p class="eyebrow">PLATFORM PLANS</p><h1 id="catalog-title">Plans</h1></div></div>
+        <p class="page-intro">Reference portfolio values follow public market quotes during fixed 6-month, 1-, 2-, 3- or 5-year periods. These are not purchased or custodied assets. A stop threshold is checked when the platform refreshes; it is not an exchange order.</p>
+        <section class="market-history-card" aria-labelledby="plan-history-title">
+          <div class="market-history-heading"><div><p class="eyebrow">HISTORICAL PERFORMANCE</p><h2 id="plan-history-title">Plan performance</h2></div><span>Value · USDT</span></div>
+          <div class="chart-selectors" id="plan-chart-selectors"></div>
+          <div id="plan-history-chart" class="asset-history-chart line-chart" aria-live="polite"><p>Historical market data is loading...</p></div>
+          <p class="asset-history-source">Market-weighted reference performance, derived from available live asset history.</p>
+        </section>
+        <section class="market-history-card" aria-labelledby="asset-market-title">
+          <div class="market-history-heading"><div><p class="eyebrow">MARKET</p><h2 id="asset-market-title">Assets</h2></div><span>Tap an asset for its chart</span></div>
+          <div id="asset-market-list" class="asset-market-list"><p>Historical market data is loading...</p></div>
+        </section>
+        <details class="catalog-disclosure standard-plan-disclosure">
+          <summary><span>Start a plan</span><small>Choose duration, amount and risk</small><i aria-hidden="true">⌄</i></summary>
+          <section class="custom-plan-card" id="custom-plan-section" aria-labelledby="custom-plan-title"></section>
+        </details>
+        <details class="catalog-disclosure custom-portfolio-disclosure">
+          <summary><span>Build a custom portfolio</span><small>200–600 USDT fee · 1,000 USDT minimum</small><i aria-hidden="true">⌄</i></summary>
+          <div class="custom-portfolio-card" id="custom-portfolio-section"></div>
+        </details>
+        <div class="plan-list" id="catalog-plans"></div>
+      </section>
+
+      <section class="view" id="view-transactions" aria-labelledby="transactions-title">
+        <div class="page-heading"><div><p class="eyebrow">ACCOUNT ACTIVITY</p><h1 id="transactions-title">Movements</h1></div></div>
+        <div class="movement-intro">Completed withdrawals unlock a wallet-style image receipt with the confirmed transaction hash.</div>
+        <div class="history-filters" id="transactions-filters" role="group" aria-label="Filter movements"></div>
+        <div class="movement-list history-list" id="transactions-list"></div>
+        <div class="empty-card compact-empty" id="transactions-empty" hidden><b>No movements in this section</b><p>When an activity is recorded, it will appear here.</p></div>
+      </section>
+
+      <section class="view" id="view-investments" aria-labelledby="investments-title">
+        <div class="page-heading"><div><p class="eyebrow">CAPITAL LOCKED UNTIL MATURITY</p><h1 id="investments-title">My investments</h1></div></div>
+        <p class="page-intro investment-redeem-note">Redeeming moves gains above each plan’s invested principal to your internal redeemable balance. External withdrawal requests are reviewed manually; no crypto transfer is executed by this project.</p>
+        <div class="investment-summary"><div><span>Locked capital</span><b id="locked-total">0.00 USDT</b></div><div><span>Released capital</span><b id="released-total">0.00 USDT</b></div><div><span>Redeemable balance</span><b class="green" id="credited-total">0.00 USDT</b></div></div>
+        <button class="primary-button redeem-button" type="button" data-redeem-earnings disabled>Redeem available gains</button>
+        <div class="section-heading"><div><p class="eyebrow">IN PROGRESS</p><h2>Active &amp; paused</h2></div></div>
+        <p class="page-intro">Conservative and balanced plans pause at their fixed stop and resume when a later quote refresh is above it. Aggressive plans close at the stop. Stop checks run when market data refreshes, not continuously.</p>
+        <div class="investment-list" id="active-investments"></div>
+        <div class="empty-card" id="active-empty" hidden><b>No active investments</b><p>Your active investments will appear here.</p><button class="primary-button compact-button" type="button" data-go="catalog">Browse plans</button></div>
+        <div class="section-heading history-heading"><div><p class="eyebrow">PRINCIPAL RETURNED</p><h2>Completed</h2></div></div>
+        <div class="investment-list" id="ended-investments"></div>
+        <div class="empty-card" id="ended-empty"><b>No completed investments</b><p>Completed investments will be listed here.</p></div>
+      </section>
+
+      <section class="view" id="view-profile" aria-labelledby="profile-title">
+        <div class="page-heading"><div><p class="eyebrow">YOUR ACCOUNT</p><h1 id="profile-title">Profile</h1></div></div>
+        <section class="profile-card"><span class="profile-avatar" id="profile-avatar">H</span><span class="profile-user"><b id="profile-username">—</b><small id="profile-email">—</small></span><span class="verified-badge">Account</span></section>
+        <section class="profile-balances"><div><span>Deposit balance</span><b id="profile-deposit">0.00 USDT</b><small>Available for investments</small></div><div><span>Released capital</span><b id="profile-released">0.00 USDT</b><small>Available to withdraw</small></div><div><span>Tracked market value</span><b id="profile-unlocked">0.00 USDT</b><small>Reference estimate; not an asset held by the platform</small></div><div><span>Earnings balance</span><b class="green" id="profile-earnings">0.00 USDT</b><small>Available for withdrawal requests</small></div></section>
+        <section class="info-card"><div class="info-row"><span>Account ID</span><b id="profile-account-id">—</b></div><div class="info-row"><span>Account storage</span><b>Server database</b></div></section>
+        <details class="info-card company-contact-card profile-company-info">
+          <summary class="profile-company-summary"><span class="profile-company-icon" aria-hidden="true">i</span><span class="profile-company-heading"><small>PLATFORM STATUS</small><b>Market data and limitations</b><span>What this account platform does and does not do</span></span><span class="profile-company-toggle" aria-hidden="true"></span></summary>
+          <div class="profile-company-content"><p class="profile-company-intro">Accounts, requests and tracking positions are stored in the platform database. Market quotes are public reference data. The platform is not connected to a broker, exchange, payment processor or blockchain settlement service, and it does not buy or custody the listed assets.</p><div class="profile-company-group"><h3>Stop threshold</h3><p>A threshold is checked when the signed-in account refreshes and market data is available. It updates the internal tracking ledger; it is not a continuous exchange order.</p></div><div class="profile-company-group"><h3>Deposits and withdrawals</h3><p>Deposit addresses must be configured and independently checked by the operator. Requests are reviewed manually. Submitting a request does not transfer or pay funds.</p></div></div>
+        </details>
+        <section class="settings-card">
+          <div class="section-heading settings-heading"><div><p class="eyebrow">PREFERENCES</p><h2>Settings</h2></div></div>
+          <label class="setting-row" for="language-select"><span><b>Preferred language</b><small>Choose your interface language</small></span><select id="language-select"><option value="en">English</option><option value="fr">Français</option><option value="es">Español</option><option value="de">Deutsch</option><option value="pt">Português</option><option value="hi">Hindi (India)</option><option value="zh">中文</option><option value="it">Italiano</option></select></label>
+          <label class="setting-row" for="theme-select"><span><b>Appearance</b><small>Light or dark mode</small></span><select id="theme-select"><option value="dark">Dark</option><option value="light">Light</option></select></label>
+          <div class="setting-row wallet-setting"><span><b>Withdrawal wallet</b><small id="bound-wallet-label">No wallet linked</small></span><button class="outline-button" id="edit-wallet-button" type="button">Link wallet</button></div>
+          <div class="setting-row wallet-setting"><span><b>Email verification</b><small id="email-verification-status">Required for withdrawals</small></span><button class="outline-button" id="request-verification-button" type="button">Verify email</button></div>
+          <button class="outline-wide" id="change-password-button" type="button">Change password</button>
+        </section>
+        <section class="section-block profile-history">
+          <div class="section-heading"><div><p class="eyebrow">ACCOUNT ACTIVITY</p><h2>Money movement history</h2></div></div>
+          <details class="history-disclosure"><summary><span>Open movement history</span><b id="profile-history-count">0</b><i aria-hidden="true">⌄</i></summary>
+            <div class="history-filters" id="history-filters" role="group" aria-label="Filter money movements"></div>
+            <div class="movement-list" id="profile-activity"></div>
+            <div class="empty-card compact-empty" id="profile-activity-empty"><b>No transactions yet</b><p>Your deposits, earnings, investments and withdrawals will appear here.</p></div>
+          </details>
+        </section>
+        <button class="primary-button admin-entry" id="open-admin" type="button" hidden>Open admin</button>
+        <button class="danger-button" type="button" id="logout-button">Log out</button>
+        
+      </section>
+
+      <section class="view" id="view-invites" aria-labelledby="invites-title">
+        <div class="page-heading"><div><p class="eyebrow">YOUR NETWORK</p><h1 id="invites-title">Invitations</h1></div></div>
+        <section class="invite-card">
+          <p class="eyebrow">YOUR INVITE LINK</p>
+          <div class="invite-link-row"><input id="invite-link" type="text" readonly aria-label="Your invitation link"><button class="outline-button" id="copy-invite-link" type="button">Copy</button></div>
+          <div class="invite-stat"><span>Registered team members</span><b id="referral-count">0</b></div>
+          <div class="invite-stat"><span>Recorded commissions</span><b id="referral-commission-total">0.00 USDT</b></div>
+          <div class="invite-levels" id="invite-levels" aria-live="polite"></div>
+          <p class="small-note">The server credits commissions automatically when a referred member’s first deposit is approved. Rates are 10%, 5% and 3% for referral levels 1, 2 and 3; payouts are recorded in your account balance and notifications.</p>
+        </section>
+        <section class="section-block"><div class="section-heading"><div><p class="eyebrow">SERVER RECORDS</p><h2>Your team</h2></div></div><div class="admin-queue" id="invite-team-list"></div><div class="empty-card compact-empty" id="invite-team-empty"><b>No team members yet</b><p>Share your invitation link to invite someone.</p></div></section>
+      </section>
+
+      <section class="view" id="view-admin" aria-labelledby="admin-title">
+        <div class="page-heading"><div><p class="eyebrow">ADMINISTRATION</p><h1 id="admin-title">Admin</h1></div></div>
+        <p class="page-intro">Review requests and manage account information.</p>
+        <div class="admin-section">
+          <div class="section-heading"><div><p class="eyebrow">DEPOSIT NETWORKS</p><h2>Deposit addresses</h2></div></div>
+          <p class="page-intro">Only enter a deposit address after the operator verifies its network and destination. Saving it here does not prove ownership or confirm a payment.</p>
+          <div class="deposit-address-settings">
+            <label>USDT · BNB Smart Chain (BEP-20)<input type="text" id="admin-address-bep20" autocomplete="off"></label>
+            <label>BTC · Bitcoin (BTC only, not USDT)<input type="text" id="admin-address-bitcoin" autocomplete="off"></label>
+            <label>USDT · TRON (TRC-20)<input type="text" id="admin-address-trc20" autocomplete="off"></label>
+            <button class="outline-wide" id="save-deposit-addresses" type="button">Save deposit addresses</button>
+          </div>
+        </div>
+        <div class="admin-section">
+          <div class="section-heading"><div><p class="eyebrow">EMAIL VERIFICATION</p><h2>Requests awaiting a code</h2></div></div>
+          <div class="admin-queue" id="pending-email-verifications"></div>
+          <div class="queue-empty" id="email-verification-queue-empty">No email verification requests.</div>
+        </div>
+        <div class="admin-section">
+          <div class="section-heading"><div><p class="eyebrow">PASSWORD RECOVERY</p><h2>Requests awaiting a code</h2></div></div>
+          <div class="admin-queue" id="pending-password-resets"></div>
+          <div class="queue-empty" id="password-reset-queue-empty">No password recovery requests.</div>
+        </div>
+        <div class="admin-section">
+          <div class="section-heading"><div><p class="eyebrow">WALLET SECURITY</p><h2>Wallet changes to review</h2></div><span class="count-pill" id="pending-wallet-count">0</span></div>
+          <div class="admin-queue" id="pending-wallet-changes"></div><div class="queue-empty" id="wallet-queue-empty">No wallet changes awaiting approval.</div>
+        </div>
+        <div class="admin-section">
+          <div class="section-heading"><div><p class="eyebrow">REGISTERED USERS</p><h2>Manage accounts</h2></div><span class="count-pill" id="registered-user-count">0</span></div>
+          <div class="admin-users-toolbar"><input id="admin-user-search" type="search" placeholder="Search name or email" aria-label="Search users"><select id="admin-user-role-filter" aria-label="Filter by role"><option value="all">All roles</option><option value="user">Users</option><option value="operator">Operators</option><option value="admin">Admins</option></select></div>
+          <div class="admin-table-wrap"><table class="admin-users-table"><thead><tr><th>Account</th><th>Role</th><th>Created</th><th>Email</th><th></th></tr></thead><tbody id="registered-users"></tbody></table></div>
+        </div>
+        <div class="admin-section">
+          <div class="section-heading"><div><p class="eyebrow">ACCOUNTS</p><h2>Pending</h2></div><span class="count-pill" id="pending-user-count">0</span></div>
+          <div class="admin-queue" id="pending-users"></div><div class="queue-empty" id="users-queue-empty">No accounts awaiting approval.</div>
+        </div>
+        <div class="admin-section">
+          <div class="section-heading"><div><p class="eyebrow">DEPOSIT BALANCE</p><h2>Deposits to review</h2></div><span class="count-pill" id="pending-deposit-count">0</span></div>
+          <div class="admin-queue" id="pending-deposits"></div><div class="queue-empty" id="deposits-queue-empty">No pending deposits.</div>
+        </div>
+        <div class="admin-section">
+          <div class="section-heading"><div><p class="eyebrow">EARNINGS BALANCE</p><h2>Withdrawals to review</h2></div><span class="count-pill" id="pending-withdrawal-count">0</span></div>
+          <div class="admin-queue" id="pending-withdrawals"></div><div class="queue-empty" id="withdrawals-queue-empty">No pending withdrawals.</div>
+        </div>
+        <button class="outline-wide" type="button" data-go="profile">Back to profile</button>
+      </section>
+    </main>
+
+    <nav class="bottom-nav" id="bottom-nav" aria-label="Navigazione principale" hidden>
+      <button class="nav-item active" type="button" data-tab="home" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.8 12 3l9 7.8v9.1a1.1 1.1 0 0 1-1.1 1.1h-5.2v-6.4H9.3V21H4.1A1.1 1.1 0 0 1 3 19.9z"/></svg><span>Home</span></button>
+      <button class="nav-item" type="button" data-tab="catalog"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4a1 1 0 0 1 1-1h16a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1zm3 2v12h12V6zm2 2h8v2H8zm0 4h8v2H8z"/></svg><span>Plans</span></button>
+      <button class="nav-item" type="button" data-tab="transactions"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v2H4zm0 7h16v2H4zm0 7h16v2H4zM2 4h1v2H2zm0 7h1v2H2zm0 7h1v2H2z"/></svg><span>Movements</span></button>
+      <button class="nav-item" type="button" data-tab="investments"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3h16a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1m2 13h2v2H6zm0-4h2v2H6zm4 4h2v2h-2zm0-4h2v2h-2zm4 4h4v2h-4zm0-4h4v2h-4zm-8-5h12v2H6z"/></svg><span>Investments</span></button>
+      <button class="nav-item" type="button" data-tab="invites"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 15 8.2l6.8 1-4.9 4.8 1.2 6.8L12 17.6 5.9 20.8l1.2-6.8L2.2 9.2l6.8-1z"/></svg><span>Invites</span></button>
+      <button class="nav-item" type="button" data-tab="profile"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9m0 2c-4.97 0-9 2.24-9 5v2h18v-2c0-2.76-4.03-5-9-5"/></svg><span>Profile</span></button>
+    </nav>
+
+    <dialog class="modal" id="transaction-dialog" aria-labelledby="transaction-title">
+      <div class="modal-card detail-modal-card transaction-modal-card">
+        <button class="modal-close" type="button" data-close="transaction-dialog" aria-label="Close">×</button>
+        <p class="eyebrow" id="transaction-eyebrow">MOVEMENT DETAILS</p><div class="transaction-title-line"><h2 id="transaction-title">Transaction</h2><span id="transaction-status" class="state-badge"></span></div>
+        <div id="transaction-details" class="movement-details transaction-detail-grid"></div>
+        <p class="modal-footnote" id="transaction-note"></p>
+        <button class="primary-button" id="download-receipt" type="button" hidden>Download receipt image</button>
+      </div>
+    </dialog>
+
+    <dialog class="modal" id="deposit-dialog" aria-labelledby="deposit-title">
+      <form class="modal-card" id="deposit-form">
+        <button class="modal-close" type="button" data-close="deposit-dialog" aria-label="Close">×</button>
+        <p class="eyebrow">DEPOSIT REQUEST</p><h2 id="deposit-title">Add deposit funds</h2>
+        <p class="modal-copy">Choose the exact network before sending. USDT is supported here on BNB Smart Chain (BEP-20) and TRON (TRC-20). Bitcoin accepts BTC only, not USDT. Deposit requests are reviewed manually and this form does not transfer funds.</p>
+        <label for="deposit-network">Network</label>
+        <select id="deposit-network" required><option value="BNB">USDT · BNB Smart Chain (BEP-20)</option><option value="TRC20">USDT · TRON (TRC-20)</option><option value="BTC">BTC · Bitcoin (not USDT)</option></select>
+        <div class="deposit-address-box" id="deposit-address-box">
+          <span id="deposit-asset-label">Receiving address</span>
+          <code id="deposit-address-value">Address not available.</code>
+          <button class="text-button" id="copy-deposit-address" type="button">Copy address</button>
+        </div>
+        <p class="deposit-verification-note" id="deposit-verification-note" hidden><b>Operator verified</b> · Verify the address and network independently before sending. This label does not prove address ownership or an on-chain transaction.</p>
+        <p class="deposit-network-warning" id="deposit-network-warning" hidden>Bitcoin network selected: send BTC only. Do not send USDT to this address.</p>
+        <label for="deposit-amount" id="deposit-amount-label">Amount (USD equivalent)</label>
+        <input id="deposit-amount" type="number" inputmode="decimal" min="50" step="0.01" placeholder="Minimum 50 USD" required>
+        <label for="deposit-txhash">Transaction hash</label>
+        <input id="deposit-txhash" type="text" autocomplete="off" placeholder="Paste a hash to review" required>
+        <p class="form-error" id="deposit-error" role="alert"></p>
+        <button class="primary-button" type="submit">Submit for admin review</button>
+      </form>
+    </dialog>
+
+    <dialog class="modal" id="withdraw-dialog" aria-labelledby="withdraw-title">
+      <form class="modal-card" id="withdraw-form">
+        <button class="modal-close" type="button" data-close="withdraw-dialog" aria-label="Close">×</button>
+        <p class="eyebrow">WITHDRAWAL REQUEST</p><h2 id="withdraw-title">Withdraw funds</h2>
+        <label for="withdraw-source">Balance</label>
+        <select id="withdraw-source" required><option value="earnings">Redeemable balance</option><option value="released">Released capital</option></select>
+        <p class="available-line">Available: <b id="withdraw-available">0.00 USDT</b></p>
+        <p class="small-note" id="withdraw-fee-note">Requests are reviewed manually; this form does not send funds.</p>
+        <label for="withdraw-network">Network</label>
+        <select id="withdraw-network" required><option value="BNB">BNB Chain · BEP-20</option><option value="BTC">Bitcoin</option><option value="TRC20">TRON · TRC-20</option></select>
+        <label for="withdraw-address">Destination address</label>
+        <input id="withdraw-address" type="text" autocomplete="off" placeholder="Destination address" readonly required>
+        <label for="withdraw-amount">Amount (USDT)</label>
+        <input id="withdraw-amount" type="number" inputmode="decimal" min="50" step="any" placeholder="Amount" required>
+                <p class="form-error" id="withdraw-error" role="alert"></p>
+        <button class="primary-button" type="submit">Submit withdrawal request</button>
+        <p class="modal-footnote">Submitting a request does not send a payout or transfer funds.</p>
+      </form>
+    </dialog>
+
+    <dialog class="modal" id="plan-dialog" aria-labelledby="plan-dialog-title">
+      <form class="modal-card" id="plan-form">
+        <button class="modal-close" type="button" data-close="plan-dialog" aria-label="Close">×</button>
+        <p class="eyebrow">INVESTMENT</p><h2 id="plan-dialog-title">Invest</h2>
+        <p class="plan-terms" id="plan-terms"></p>
+        <label for="invest-amount">Investment amount (USDT)</label>
+        <input id="invest-amount" type="number" inputmode="decimal" min="0.000001" step="any" placeholder="Amount" required>
+        <label for="invest-source">Pay from</label><select id="invest-source"><option value="deposit">Available balance</option><option value="earnings">Redeemable balance</option></select>
+        <p class="available-line">Available: <b id="invest-available">0.00 USDT</b></p>
+        <label for="invest-risk">Risk level</label><select id="invest-risk"><option value="conservative">Conservative · 8% stop</option><option value="balanced" selected>Balanced · 18% stop</option><option value="aggressive">Aggressive · 35% stop</option></select>
+        <p class="plan-stop-note" id="plan-stop-note">Stop handling</p>
+        <p class="form-error" id="plan-error" role="alert"></p>
+        <button class="primary-button" id="confirm-plan-button" type="submit">Confirm plan</button>
+        <p class="modal-footnote">Simulated market tracking only. Conservative and balanced plans pause at their fixed stop and resume after recovery; aggressive plans close at the stop. Early closure has a 65% fee on current reference value. No market orders or external payouts are executed.</p>
+      </form>
+    </dialog>
+
+    <dialog class="modal" id="add-funds-dialog" aria-labelledby="add-funds-title">
+      <form class="modal-card" id="add-funds-form">
+        <button class="modal-close" type="button" data-close="add-funds-dialog" aria-label="Close">×</button>
+        <p class="eyebrow">ACTIVE PLAN</p><h2 id="add-funds-title">Add funds</h2>
+        <p class="plan-terms" id="add-funds-plan-terms"></p>
+        <label for="add-funds-amount">Additional amount (USDT)</label>
+        <input id="add-funds-amount" type="number" inputmode="decimal" min="0.01" step="0.01" placeholder="Amount" required>
+        <label for="add-funds-source">Pay from</label><select id="add-funds-source"><option value="deposit">Available balance</option><option value="earnings">Redeemable balance</option></select>
+        <p class="available-line">Available: <b id="add-funds-available">0.00 USDT</b></p>
+        <p class="form-error" id="add-funds-error" role="alert"></p>
+        <button class="primary-button" type="submit">Add to existing plan</button>
+        <p class="modal-footnote">The original maturity date and plan terms stay unchanged. Additional funds are included in the value released when the plan ends.</p>
+      </form>
+    </dialog>
+
+    <dialog class="modal" id="details-dialog" aria-labelledby="details-title">
+      <div class="modal-card detail-modal-card">
+        <button class="modal-close" type="button" data-close="details-dialog" aria-label="Close">×</button>
+        <p class="eyebrow" id="details-eyebrow">PLAN DETAILS</p>
+        <h2 id="details-title">Plan details</h2>
+        <div class="details-overview" id="details-overview"></div>
+        <div class="allocation-heading"><b>Illustrative allocation</b><span>percentage</span></div>
+        <p class="allocation-intro" id="allocation-intro">Live reference quotes and portfolio allocation.</p>
+        <div class="allocation-list" id="details-allocation"></div>
+        <p class="modal-footnote">Market quotes drive the simulated portfolio value; the platform does not buy or hold these assets.</p>
+        <button class="primary-button" id="details-invest-button" type="button">Invest in this plan</button>
+      </div>
+    </dialog>
+
+    <dialog class="modal investment-detail-dialog" id="investment-detail-dialog" aria-labelledby="investment-detail-title">
+      <div class="modal-card detail-modal-card">
+        <button class="modal-close" type="button" data-close="investment-detail-dialog" aria-label="Close">×</button>
+        <p class="eyebrow">PORTFOLIO DETAILS</p>
+        <div class="investment-detail-heading"><h2 id="investment-detail-title">Investment plan</h2><span id="investment-detail-status" class="state-badge">Active</span></div>
+        <p id="investment-detail-subtitle" class="modal-copy"></p>
+        <div class="investment-detail-metrics" id="investment-detail-metrics"></div>
+        <section class="investment-chart-section">
+          <div class="investment-chart-heading"><div><p class="eyebrow">REFERENCE PERFORMANCE</p><h3>Plan trend</h3></div><span>Index · 100 start</span></div>
+          <div id="investment-chart-ranges" class="chart-selectors" role="group" aria-label="Investment chart range"><button type="button" class="chart-selector active" data-position-range="all">All</button><button type="button" class="chart-selector" data-position-range="1w">1W</button><button type="button" class="chart-selector" data-position-range="1m">1M</button><button type="button" class="chart-selector" data-position-range="3m">3M</button><button type="button" class="chart-selector" data-position-range="6m">6M</button><button type="button" class="chart-selector" data-position-range="1y">1Y</button></div>
+          <div id="investment-detail-chart" class="asset-history-chart line-chart"></div>
+          <p class="investment-chart-note">Indicative weighted trend from public market prices. It is not a statement of account value or guaranteed performance.</p>
+        </section>
+        <section class="investment-allocation-section"><div class="investment-chart-heading"><div><p class="eyebrow">PORTFOLIO MIX</p><h3>Asset weights</h3></div></div><div id="investment-detail-allocation" class="investment-allocation-list"></div></section>
+        <section class="auto-redeem-panel" id="investment-auto-redeem" hidden aria-labelledby="auto-redeem-title">
+          <div class="auto-redeem-heading"><div><p class="eyebrow">PLAN SETTINGS</p><h3 id="auto-redeem-title">Automatic profit redemption</h3></div><span class="auto-redeem-mark" aria-hidden="true">↗</span></div>
+          <div class="auto-redeem-fields">
+            <label class="auto-redeem-toggle" for="investment-auto-redeem-enabled"><input id="investment-auto-redeem-enabled" type="checkbox"><span>Enable automatic redemption</span></label>
+            <label class="auto-redeem-rate" for="investment-auto-redeem-percent"><span>Gain threshold</span><span class="auto-redeem-input"><input id="investment-auto-redeem-percent" type="number" min="1" max="100" step="1" value="10"><i>%</i></span></label>
+          </div>
+          <p class="auto-redeem-preview" id="investment-auto-redeem-preview"></p>
+          <p class="auto-redeem-help">At this reference value, gains move to your earnings balance; the principal stays invested.</p>
+          <button class="outline-button auto-redeem-save" id="save-investment-auto-redeem" type="button">Save</button>
+        </section>
+        <div class="investment-detail-actions"><button class="primary-button" id="investment-detail-redeem-gains" type="button" hidden>Redeem gains</button><button class="outline-button" id="investment-detail-add-funds" type="button" hidden>Add funds</button><button class="danger-button" id="investment-detail-close-early" type="button" hidden>Close early · 65% fee</button></div>
+        <p class="modal-footnote">The platform tracks reference quotes; it does not purchase or custody these assets. Closing early deducts 65% of current reference value; the remainder stays in the internal balance.</p>
+      </div>
+    </dialog>
+
+    <dialog class="modal asset-detail-dialog" id="asset-detail-dialog" aria-labelledby="asset-detail-title">
+      <div class="modal-card detail-modal-card">
+        <button class="modal-close" type="button" data-close="asset-detail-dialog" aria-label="Close">×</button>
+        <p class="eyebrow">HISTORICAL PERFORMANCE</p><h2 id="asset-detail-title">Asset chart</h2>
+        <div id="asset-chart-ranges" class="asset-chart-ranges" role="group" aria-label="Chart time range"></div>
+        <div id="asset-detail-chart" class="asset-history-chart line-chart"></div>
+        <div id="asset-detail-quote" class="asset-detail-quote"></div>
+      </div>
+    </dialog>
+
+    <dialog class="modal" id="wallet-dialog" aria-labelledby="wallet-title">
+      <form class="modal-card" id="wallet-form">
+        <button class="modal-close" type="button" data-close="wallet-dialog" aria-label="Close">×</button>
+        <p class="eyebrow">PROFILE SETTINGS</p><h2 id="wallet-title">Link a withdrawal wallet</h2>
+        <p class="modal-copy">Link your first wallet here. Changes to a linked wallet require admin approval.</p>
+        <label for="wallet-network">Network</label>
+        <select id="wallet-network" required><option value="BNB">BNB Chain · BEP-20</option><option value="BTC">Bitcoin</option><option value="TRC20">TRON · TRC-20</option></select>
+        <label for="wallet-address">Wallet address</label>
+        <input id="wallet-address" type="text" autocomplete="off" placeholder="Enter a wallet address" required>
+        <button class="primary-button" id="save-wallet-button" type="submit">Save wallet</button>
+        <p class="modal-footnote">Wallet ownership is not verified and saving an address does not send funds.</p>
+      </form>
+    </dialog>
+
+    
+
+    <dialog class="modal" id="password-dialog" aria-labelledby="password-title">
+      <form class="modal-card" id="password-form">
+        <button class="modal-close" type="button" data-close="password-dialog" aria-label="Close">×</button>
+        <p class="eyebrow">PROFILE SETTINGS</p><h2 id="password-title">Change password</h2>
+        <label for="current-password">Current password</label>
+        <input id="current-password" type="password" autocomplete="current-password" required>
+        <label for="new-password">New password</label>
+        <input id="new-password" type="password" minlength="8" autocomplete="new-password" placeholder="At least 8 characters" required>
+        <label for="confirm-new-password">Confirm new password</label>
+        <input id="confirm-new-password" type="password" minlength="8" autocomplete="new-password" required>
+        <p class="form-error" id="password-error" role="alert"></p>
+        <button class="primary-button" type="submit">Update password</button>
+        <p class="modal-footnote">Account credentials are stored in the platform database using password hashing.</p>
+      </form>
+    </dialog>
+
+    
+
+    <dialog class="modal" id="verification-dialog" aria-labelledby="verification-title">
+      <div class="modal-card">
+        <button class="modal-close" type="button" data-close="verification-dialog" aria-label="Close">×</button>
+        <p class="eyebrow">ACCOUNT SECURITY</p><h2 id="verification-title">Verify email</h2>
+        <button class="outline-wide" id="request-email-verification" type="button">Request verification code</button>
+        <a class="outline-wide verification-email-link" id="verification-email-link" href="mailto:info.cup9@yahoo.com"><span>Send email request instead</span><small>info.cup9@yahoo.com</small></a>
+        <p class="verification-email-note">A prefilled email draft will open. Review it and send it to support; support will reply manually.</p>
+        <form id="verification-otp-form" class="auth-form" style="margin-top:12px">
+          <label for="verification-otp">Six-digit code</label><input id="verification-otp" class="otp-input" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" autocapitalize="off" spellcheck="false" aria-describedby="verification-otp-error" required>
+          <p class="form-error" id="verification-otp-error" role="alert"></p>
+          <button class="primary-button" type="submit">Confirm email</button>
+        </form>
+      </div>
+    </dialog>
+    <dialog class="modal" id="notifications-dialog" aria-labelledby="notifications-title">
+      <div class="modal-card detail-modal-card">
+        <button class="modal-close" type="button" data-close="notifications-dialog" aria-label="Close">×</button>
+        <p class="eyebrow">ACCOUNT UPDATES</p><h2 id="notifications-title">Notifications</h2>
+        <button class="text-link" id="mark-notifications-read" type="button">Mark all read</button><div class="activity-list" id="notification-list"></div>
+        <div class="empty-card compact-empty" id="notifications-empty"><b>You're all caught up</b><p>Account updates will appear here.</p></div>
+      </div>
+    </dialog>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <dialog class="modal" id="admin-user-dialog" aria-labelledby="admin-user-title">
+      <section class="modal-card admin-user-card">
+        <button class="modal-close" type="button" data-close="admin-user-dialog" aria-label="Close">×</button>
+        <p class="eyebrow">ACCOUNT RECORD</p><h2 id="admin-user-title">Account details</h2>
+        <div id="admin-user-details"></div>
+      </section>
+    </dialog>
+    <script type="module" src="./script.js"></script>
+
+</body>
+</html>
