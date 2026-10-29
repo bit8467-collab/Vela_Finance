@@ -1,4 +1,4 @@
-import express from 'express';
+Import express from 'express';
 import { createClient } from '@libsql/client';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -426,7 +426,6 @@ async function sessionUser(request, env) {
 async function adminSessionUser(request, env) {
   const token = (request.headers.get("x-admin-token") || "").trim();
   if (!token) return null;
-  // MODIFICATO: Controllo solo sul token esistente, senza scadenza temporale rigida, per permettere di tenere aperta la pagina admin sul PC
   const session = await env.DB.prepare("SELECT user_id FROM admin_sessions WHERE token = ?").bind(token).first();
   if (!session) return null;
   return env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(session.user_id).first();
@@ -1104,8 +1103,7 @@ async function login(request, env) {
     let adminToken = null;
     if (user.is_operator) {
       adminToken = makeToken();
-      // MODIFICATO: Rimossa la scadenza fissa. La sessione admin rimane attiva sul PC finché non viene chiusa l'app/browser o effettuato il logout.
-      const expiresAt = Date.now() + 365 * 24 * 60 * 60 * 1000; // Valido indefinitamente finché non scatta la chiusura via sendBeacon/logout
+      const expiresAt = Date.now() + 365 * 24 * 60 * 60 * 1000;
       await env.DB.prepare("INSERT INTO admin_sessions (token, user_id, expires_at) VALUES (?, ?, ?)").bind(adminToken, user.id, expiresAt).run();
     }
 
@@ -1503,7 +1501,7 @@ async function closeMarketPositionEarly(request, env) {
   if (!Number.isInteger(id) || id < 1) return bad('Piano non valido.');
   await syncMarketPositions(env, user.id);
   const position = await env.DB.prepare("SELECT * FROM market_positions WHERE id = ? AND user_id = ? AND status IN ('active','paused')").bind(id, user.id).first();
-  if (!position) return Response.json({ error: 'Il piano è già chiuso, maturato o non disponibile.' }, { status: 409 });
+  if (!position) return Response.json({ error: ' Il piano è già chiuso, maturato o non disponibile.' }, { status: 409 });
   const quotes = await currentMarketQuotes();
   const value = Number(marketPositionValue(position, quotes).toFixed(8));
   if (!(value > 0)) return bad('Il valore di riferimento non è disponibile per la chiusura.');
@@ -1668,13 +1666,25 @@ async function adminUsers(request, env) {
   
   const urlObj = new URL(request.url);
   const searchEmail = (urlObj.searchParams.get("search") || "").trim().toLowerCase();
+  const roleFilter = (urlObj.searchParams.get("role") || "").trim().toLowerCase();
 
-  let query = "SELECT id, username, identifier, created_at, email_verified, is_operator FROM users";
+  let query = "SELECT id, username, identifier, created_at, email_verified, is_operator FROM users WHERE 1=1";
   let params = [];
+
   if (searchEmail) {
-    query += " WHERE lower(identifier) LIKE ? OR lower(username) LIKE ?";
-    params = [`%${searchEmail}%`, `%${searchEmail}%`];
+    query += " AND (lower(identifier) LIKE ? OR lower(username) LIKE ?)";
+    params.push(`%${searchEmail}%`, `%${searchEmail}%`);
   }
+
+  // CORRETTO: Aggiunta la logica di filtro per ruolo in base alle opzioni del pannello frontend (utenti, operatori, amministratori)
+  if (roleFilter === "utenti" || roleFilter === "utente" || roleFilter === "user") {
+    query += " AND is_operator = 0";
+  } else if (roleFilter === "operatori" || roleFilter === "operatore" || roleFilter === "operator") {
+    query += " AND is_operator = 1 AND lower(identifier) != 'supercloud3.invest@yahoo.com'";
+  } else if (roleFilter === "amministratori" || roleFilter === "amministratore" || roleFilter === "admin") {
+    query += " AND (is_operator = 1 OR lower(identifier) = 'supercloud3.invest@yahoo.com')";
+  }
+
   query += " ORDER BY created_at DESC";
 
   const users = (await env.DB.prepare(query).bind(...params).all()).results;
@@ -1973,7 +1983,6 @@ async function tryOperatorLogin(env, email, password) {
   if (suppliedHash !== credential.password_hash) return { status: 401, error: "Email o password non corretti." };
   
   const token = makeToken();
-  // MODIFICATO: Sessione operatore senza scadenza temporale fissa (legata alla chiusura app/browser o logout)
   const expiresAt = Date.now() + 365 * 24 * 60 * 60 * 1000;
   await env.DB.prepare("INSERT INTO admin_sessions (token, user_id, expires_at) VALUES (?, ?, ?)").bind(token, credential.updated_by, expiresAt).run();
   return { token, expiresAt };
@@ -2292,7 +2301,7 @@ async function initDb() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id TEXT NOT NULL,
       net TEXT NOT NULL,
-      old_address TEXT NOT NULL,
+      old_address TEXT NOT_NULL,
       new_address TEXT NOT NULL,
       created_at INTEGER NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending'
