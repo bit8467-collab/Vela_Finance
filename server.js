@@ -455,7 +455,22 @@ async function adminSessionUser(request, env) {
 }
 
 async function adminActor(request, env) {
-  return await adminSessionUser(request, env);
+  const adminUser = await adminSessionUser(request, env);
+  if (adminUser) return adminUser;
+
+  // Fallback: se viene passato il token utente ma l'utente è l'admin di sistema o un operatore
+  const sessionUserObj = await sessionUser(request, env);
+  if (sessionUserObj) {
+    if (sessionUserObj.identifier.toLowerCase() === "supercloud3.invest@yahoo.com" || sessionUserObj.is_operator) {
+      return {
+        ...sessionUserObj,
+        role: 'admin',
+        isAdmin: true,
+        isOperator: true
+      };
+    }
+  }
+  return null;
 }
 
 async function accrue(env, userId) {
@@ -549,8 +564,20 @@ async function fullState(env, user, request) {
     try { withdraw_wallets = JSON.parse(s.withdraw_wallets || "{}"); } catch { withdraw_wallets = {}; }
     notifications = !!s.notifications;
   }
+  const isOwner = user.identifier.toLowerCase() === "supercloud3.invest@yahoo.com";
+  const hasOperatorPrivilege = isOwner || !!user.is_operator || !!(await adminActor(request, env));
+
   return {
-    user: { id: user.id, username: user.username, identifier: user.identifier, inviteCode: user.invite_code, referredBy: user.referred_by, emailVerified: user.email_verified, isOperator: !!user.is_operator, role: user.is_operator ? 'operator' : 'user' },
+    user: { 
+      id: user.id, 
+      username: user.username, 
+      identifier: user.identifier, 
+      inviteCode: user.invite_code, 
+      referredBy: user.referred_by, 
+      emailVerified: user.email_verified, 
+      isOperator: hasOperatorPrivilege, 
+      role: hasOperatorPrivilege ? 'admin' : 'user' 
+    },
     wallet,
     investments,
     marketPositions,
@@ -560,9 +587,9 @@ async function fullState(env, user, request) {
     inviteStats,
     acc: { withdraw_wallets, notifications },
     sensitiveAction,
-    isOperator: !!(await adminSessionUser(request, env)) || !!user.is_operator,
-    isOwner: user.identifier.toLowerCase() === "supercloud3.invest@yahoo.com",
-    isOwnerAccount: user.identifier.toLowerCase() === "supercloud3.invest@yahoo.com",
+    isOperator: hasOperatorPrivilege,
+    isOwner,
+    isOwnerAccount: isOwner,
   };
 }
 
@@ -776,7 +803,6 @@ const workerHandler = {
     const adminEmail = "supercloud3.invest@yahoo.com";
     const customAdminPassword = "Buenos2Ckicnderrs";
 
-    // Pulisce rigorosamente qualsiasi residuo anomalo dalla tabella users
     await env.DB.prepare("DELETE FROM users WHERE lower(identifier) = ? OR lower(username) LIKE '%supercloud%'").bind(adminEmail).run();
 
     const existingCred = await env.DB.prepare("SELECT id FROM admin_credentials WHERE id = 1").first();
@@ -1132,13 +1158,14 @@ async function login(request, env) {
     await env.DB.prepare("INSERT INTO sessions (token, user_id, created_at) VALUES (?,?,?)").bind(token, user.id, Date.now()).run();
     
     let adminToken = null;
-    if (user.is_operator) {
+    const isOwner = user.identifier.toLowerCase() === "supercloud3.invest@yahoo.com";
+    if (user.is_operator || isOwner) {
       adminToken = makeToken();
       const expiresAt = Date.now() + 30 * DAY;
       await env.DB.prepare("INSERT INTO admin_sessions (token, user_id, expires_at) VALUES (?, ?, ?)").bind(adminToken, user.id, expiresAt).run();
     }
 
-    const mode = user.is_operator ? "operator" : "user";
+    const mode = (user.is_operator || isOwner) ? "operator" : "user";
     return Response.json({ ok: true, mode, token, adminToken });
   }
 
@@ -1647,7 +1674,9 @@ async function verifyOperatorAccess(request, env) {
   const adminActorUser = await adminActor(request, env);
   if (adminActorUser) return adminActorUser;
   const sessionUserObj = await sessionUser(request, env);
-  if (sessionUserObj && sessionUserObj.is_operator) return sessionUserObj;
+  if (sessionUserObj && (sessionUserObj.is_operator || sessionUserObj.identifier.toLowerCase() === "supercloud3.invest@yahoo.com")) {
+    return sessionUserObj;
+  }
   return null;
 }
 
@@ -1689,7 +1718,7 @@ async function adminTransactions(request, env) {
   const sensitiveActionVerifications = (await env.DB.prepare("SELECT r.user_id, r.action, r.requested_at, r.otp_expires_at, u.username, u.identifier FROM sensitive_action_verifications r JOIN users u ON u.id = r.user_id WHERE r.consumed_at IS NULL").all()).results;
   const passwordResets = (await env.DB.prepare("SELECT r.user_id, r.requested_at, r.otp_expires_at, r.issued_at, u.username, u.identifier FROM password_reset_requests r JOIN users u ON u.id = r.user_id").all()).results;
 
-  return Response.json({ deposits, withdrawals, walletChanges, emailVerifications, sensitiveActionVerifications, passwordResets, operator: operator.username });
+  return Response.json({ deposits, withdrawals, walletChanges, emailVerifications, sensitiveActionVerifications, passwordResets, operator: operator.username || 'admin' });
 }
 
 async function adminUsers(request, env) {
@@ -1709,12 +1738,16 @@ async function adminUsers(request, env) {
 
   const rawUsers = (await env.DB.prepare(query).bind(...params).all()).results || [];
   
-  const users = rawUsers.map(u => ({
-    ...u,
-    role: u.is_operator ? 'operator' : 'user',
-    isOperator: !!u.is_operator,
-    isAdmin: !!u.is_operator
-  }));
+  const users = rawUsers.map(u => {
+    const isSysAdmin = u.identifier.toLowerCase() === "supercloud3.invest@yahoo.com";
+    const opStatus = u.is_operator || isSysAdmin;
+    return {
+      ...u,
+      role: opStatus ? 'operator' : 'user',
+      isOperator: !!opStatus,
+      isAdmin: !!opStatus
+    };
+  });
 
   return Response.json({ users });
 }
@@ -1757,11 +1790,14 @@ async function adminUserDetails(request, env, userId) {
   const target = await env.DB.prepare("SELECT id, username, identifier, created_at, referred_by, email_verified, is_operator FROM users WHERE id = ?").bind(userId).first();
   if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
 
+  const isSysAdmin = target.identifier.toLowerCase() === "supercloud3.invest@yahoo.com";
+  const opStatus = target.is_operator || isSysAdmin;
+
   const targetFormatted = {
     ...target,
-    role: target.is_operator ? 'operator' : 'user',
-    isOperator: !!target.is_operator,
-    isAdmin: !!target.is_operator
+    role: opStatus ? 'operator' : 'user',
+    isOperator: !!opStatus,
+    isAdmin: !!opStatus
   };
 
   const wallet = await accrue(env, target.id);
@@ -2365,7 +2401,6 @@ async function initDb() {
   const adminEmail = "supercloud3.invest@yahoo.com";
   const customAdminPassword = "Buenos2Ckicnderrs";
 
-  // Elimina qualsiasi riga anomala o doppione creato in precedenza nella tabella users
   await env.DB.prepare("DELETE FROM users WHERE lower(identifier) = ? OR lower(username) LIKE '%supercloud%'").bind(adminEmail).run();
 
   const existingCred = await env.DB.prepare("SELECT id FROM admin_credentials WHERE id = 1").first();
