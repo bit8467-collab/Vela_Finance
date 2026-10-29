@@ -1,4 +1,4 @@
-const yahooInstruments = {
+Const yahooInstruments = {
   gold: { symbol: "GC=F", instrument: "Gold futures · USD per troy ounce" },
   oil: { symbol: "CL=F", instrument: "WTI crude futures · USD per barrel" },
   sp500: { symbol: "^GSPC", instrument: "S&P 500 index · index points" },
