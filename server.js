@@ -1,4 +1,4 @@
-Import express from 'express';
+import express from 'express';
 import { createClient } from '@libsql/client';
 import path from 'path';
 import { fileURLToPath } from 'url';
