@@ -426,7 +426,8 @@ async function sessionUser(request, env) {
 async function adminSessionUser(request, env) {
   const token = (request.headers.get("x-admin-token") || "").trim();
   if (!token) return null;
-  const session = await env.DB.prepare("SELECT user_id FROM admin_sessions WHERE token = ? AND expires_at > ?").bind(token, Date.now()).first();
+  // MODIFICATO: Controllo solo sul token esistente, senza scadenza temporale rigida, per permettere di tenere aperta la pagina admin sul PC
+  const session = await env.DB.prepare("SELECT user_id FROM admin_sessions WHERE token = ?").bind(token).first();
   if (!session) return null;
   return env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(session.user_id).first();
 }
@@ -1103,8 +1104,8 @@ async function login(request, env) {
     let adminToken = null;
     if (user.is_operator) {
       adminToken = makeToken();
-      // MODIFICA APPLICATA: La sessione admin dura solo 5 minuti e non viene salvata in localStorage
-      const expiresAt = Date.now() + 5 * 60 * 1000;
+      // MODIFICATO: Rimossa la scadenza fissa. La sessione admin rimane attiva sul PC finché non viene chiusa l'app/browser o effettuato il logout.
+      const expiresAt = Date.now() + 365 * 24 * 60 * 60 * 1000; // Valido indefinitamente finché non scatta la chiusura via sendBeacon/logout
       await env.DB.prepare("INSERT INTO admin_sessions (token, user_id, expires_at) VALUES (?, ?, ?)").bind(adminToken, user.id, expiresAt).run();
     }
 
@@ -1972,8 +1973,8 @@ async function tryOperatorLogin(env, email, password) {
   if (suppliedHash !== credential.password_hash) return { status: 401, error: "Email o password non corretti." };
   
   const token = makeToken();
-  // MODIFICA APPLICATA: Scadenza a 5 minuti per l'operatore
-  const expiresAt = Date.now() + 5 * 60 * 1000;
+  // MODIFICATO: Sessione operatore senza scadenza temporale fissa (legata alla chiusura app/browser o logout)
+  const expiresAt = Date.now() + 365 * 24 * 60 * 60 * 1000;
   await env.DB.prepare("INSERT INTO admin_sessions (token, user_id, expires_at) VALUES (?, ?, ?)").bind(token, credential.updated_by, expiresAt).run();
   return { token, expiresAt };
 }
