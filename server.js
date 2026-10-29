@@ -40,10 +40,14 @@ const env = {
         async run(...params) { return (await this.bind(...params)).run(); }
       };
     },
-    async exec(sql) {
-      const statements = sql.split(';').map(s => s.trim()).filter(Boolean);
+    async exec(sqlStatements) {
+      const statements = Array.isArray(sqlStatements) 
+        ? sqlStatements 
+        : sqlStatements.split(';').map(s => s.trim()).filter(Boolean);
       for (const stmt of statements) {
-        await db.execute(stmt);
+        if (stmt) {
+          await db.execute(stmt);
+        }
       }
     },
     async batch(statements) {
@@ -565,195 +569,195 @@ const workerHandler = {
       return marketApi.fetch(request);
     }
     if (!schemaPromise) schemaPromise = (async () => {
-      await env.DB.exec(`
-      CREATE TABLE IF NOT EXISTS users (
-        id TEXT PRIMARY KEY,
-        username TEXT NOT NULL,
-        identifier TEXT NOT NULL,
-        password_hash TEXT NOT NULL,
-        salt TEXT NOT NULL,
-        invite_code TEXT NOT NULL,
-        referred_by TEXT,
-        created_at INTEGER NOT NULL,
-        email_verified INTEGER NOT NULL DEFAULT 0
-      );
-      CREATE TABLE IF NOT EXISTS sessions (
-        token TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL,
-        created_at INTEGER NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS email_verification_requests (
-        user_id TEXT PRIMARY KEY,
-        requested_at INTEGER NOT NULL,
-        otp_hash TEXT,
-        otp_salt TEXT,
-        otp_expires_at INTEGER,
-        otp_attempts INTEGER NOT NULL DEFAULT 0,
-        issued_at INTEGER,
-        issued_by TEXT,
-        verified_at INTEGER
-      );
-      CREATE TABLE IF NOT EXISTS password_reset_requests (
-        user_id TEXT PRIMARY KEY,
-        requested_at INTEGER NOT NULL,
-        otp_hash TEXT,
-        otp_salt TEXT,
-        otp_expires_at INTEGER,
-        otp_attempts INTEGER NOT NULL DEFAULT 0,
-        issued_at INTEGER,
-        issued_by TEXT
-      );
-      CREATE TABLE IF NOT EXISTS sensitive_action_verifications (
-        user_id TEXT PRIMARY KEY,
-        action TEXT NOT NULL,
-        payload_json TEXT NOT NULL,
-        requested_at INTEGER NOT NULL,
-        otp_hash TEXT,
-        otp_salt TEXT,
-        otp_expires_at INTEGER,
-        otp_attempts INTEGER NOT NULL DEFAULT 0,
-        issued_at INTEGER,
-        issued_by TEXT,
-        consumed_at INTEGER
-      );
-      CREATE TABLE IF NOT EXISTS notifications (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id TEXT NOT NULL,
-        kind TEXT NOT NULL,
-        title TEXT NOT NULL,
-        message TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        read_at INTEGER,
-        expires_at INTEGER
-      );
-      CREATE INDEX IF NOT EXISTS notifications_user_created ON notifications(user_id, created_at DESC);
-      CREATE TABLE IF NOT EXISTS wallets (
-        user_id TEXT PRIMARY KEY,
-        deposit REAL NOT NULL DEFAULT 0,
-        earnings REAL NOT NULL DEFAULT 0,
-        released REAL NOT NULL DEFAULT 0,
-        total_deposited REAL NOT NULL DEFAULT 0,
-        total_earned REAL NOT NULL DEFAULT 0,
-        total_withdrawn REAL NOT NULL DEFAULT 0
-      );
-      CREATE TABLE IF NOT EXISTS investments (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id TEXT NOT NULL,
-        amount REAL NOT NULL,
-        days INTEGER NOT NULL,
-        rate REAL NOT NULL,
-        created INTEGER NOT NULL,
-        credited REAL NOT NULL DEFAULT 0,
-        active INTEGER NOT NULL DEFAULT 1,
-        commission_event_id TEXT
-      );
-      CREATE TABLE IF NOT EXISTS market_positions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id TEXT NOT NULL,
-        plan_id TEXT NOT NULL,
-        months INTEGER NOT NULL,
-        amount REAL NOT NULL,
-        stop_loss_pct REAL NOT NULL DEFAULT 20,
-        allocations_json TEXT NOT NULL,
-        entry_quotes_json TEXT NOT NULL,
-        last_value REAL NOT NULL,
-        status TEXT NOT NULL DEFAULT 'active',
-        created_at INTEGER NOT NULL,
-        closed_at INTEGER,
-        risk_level TEXT NOT NULL DEFAULT 'legacy',
-        early_close_fee REAL NOT NULL DEFAULT 0,
-        last_redemption_id TEXT NOT NULL DEFAULT '',
-        basis_updated_at INTEGER NOT NULL DEFAULT 0,
-        auto_redeem_enabled INTEGER NOT NULL DEFAULT 0,
-        auto_redeem_pct REAL NOT NULL DEFAULT 10,
-        custom_fee REAL NOT NULL DEFAULT 0
-      );
-      CREATE INDEX IF NOT EXISTS market_positions_user ON market_positions(user_id, status, created_at DESC);
-      CREATE TABLE IF NOT EXISTS referral_commissions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id TEXT NOT NULL,
-        source_user_id TEXT NOT NULL,
-        event_id TEXT NOT NULL,
-        level INTEGER NOT NULL,
-        amount REAL NOT NULL,
-        created_at INTEGER NOT NULL,
-        UNIQUE(event_id, level)
-      );
-      CREATE TABLE IF NOT EXISTS referral_first_deposits (
-        source_user_id TEXT PRIMARY KEY,
-        deposit_id INTEGER NOT NULL UNIQUE,
-        created_at INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS users_referred_by ON users(referred_by);
-      CREATE INDEX IF NOT EXISTS investments_user_active ON investments(user_id, active);
-      CREATE TABLE IF NOT EXISTS deposits (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id TEXT NOT NULL,
-        amount REAL NOT NULL,
-        net TEXT NOT NULL,
-        date INTEGER NOT NULL,
-        status TEXT NOT NULL DEFAULT 'approved',
-        tx_reference TEXT NOT NULL DEFAULT ''
-      );
-      CREATE TABLE IF NOT EXISTS withdrawals (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id TEXT NOT NULL,
-        amount REAL NOT NULL,
-        net TEXT NOT NULL,
-        date INTEGER NOT NULL,
-        status TEXT NOT NULL DEFAULT 'approved',
-        wallet_address TEXT NOT NULL DEFAULT '',
-        source TEXT NOT NULL DEFAULT 'earnings',
-        tx_reference TEXT NOT NULL DEFAULT ''
-      );
-      CREATE TABLE IF NOT EXISTS platform_config (
-        config_key TEXT PRIMARY KEY,
-        config_value TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS settings (
-        user_id TEXT PRIMARY KEY,
-        withdraw_wallets TEXT NOT NULL DEFAULT '{}',
-        notifications INTEGER NOT NULL DEFAULT 1,
-        auto_redeem_pct REAL NOT NULL DEFAULT 0
-      );
-      CREATE TABLE IF NOT EXISTS user_withdrawal_addresses (
-        user_id TEXT NOT NULL,
-        net TEXT NOT NULL,
-        address TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        PRIMARY KEY (user_id, net, address)
-      );
-      CREATE INDEX IF NOT EXISTS idx_withdrawal_address_lookup ON user_withdrawal_addresses(net, address);
-      CREATE TABLE IF NOT EXISTS wallet_change_requests (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id TEXT NOT NULL,
-        net TEXT NOT NULL,
-        old_address TEXT NOT NULL,
-        new_address TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        status TEXT NOT NULL DEFAULT 'pending'
-      );
-      CREATE TABLE IF NOT EXISTS admin_credentials (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        salt TEXT NOT NULL,
-        password_hash TEXT NOT NULL,
-        updated_by TEXT NOT NULL,
-        updated_at INTEGER NOT NULL,
-        iterations INTEGER NOT NULL DEFAULT 20000,
-        email TEXT NOT NULL DEFAULT ''
-      );
-      CREATE TABLE IF NOT EXISTS admin_sessions (
-        token TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL,
-        expires_at INTEGER NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS admin_roles (
-        user_id TEXT PRIMARY KEY,
-        role TEXT NOT NULL CHECK (role IN ('admin','operator')),
-        granted_by TEXT NOT NULL,
-        granted_at INTEGER NOT NULL
-      );
-    `);
+      await env.DB.exec([
+        `CREATE TABLE IF NOT EXISTS users (
+          id TEXT PRIMARY KEY,
+          username TEXT NOT NULL,
+          identifier TEXT NOT NULL,
+          password_hash TEXT NOT NULL,
+          salt TEXT NOT NULL,
+          invite_code TEXT NOT NULL,
+          referred_by TEXT,
+          created_at INTEGER NOT NULL,
+          email_verified INTEGER NOT NULL DEFAULT 0
+        );`,
+        `CREATE TABLE IF NOT EXISTS sessions (
+          token TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        );`,
+        `CREATE TABLE IF NOT EXISTS email_verification_requests (
+          user_id TEXT PRIMARY KEY,
+          requested_at INTEGER NOT NULL,
+          otp_hash TEXT,
+          otp_salt TEXT,
+          otp_expires_at INTEGER,
+          otp_attempts INTEGER NOT NULL DEFAULT 0,
+          issued_at INTEGER,
+          issued_by TEXT,
+          verified_at INTEGER
+        );`,
+        `CREATE TABLE IF NOT EXISTS password_reset_requests (
+          user_id TEXT PRIMARY KEY,
+          requested_at INTEGER NOT NULL,
+          otp_hash TEXT,
+          otp_salt TEXT,
+          otp_expires_at INTEGER,
+          otp_attempts INTEGER NOT NULL DEFAULT 0,
+          issued_at INTEGER,
+          issued_by TEXT
+        );`,
+        `CREATE TABLE IF NOT EXISTS sensitive_action_verifications (
+          user_id TEXT PRIMARY KEY,
+          action TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          requested_at INTEGER NOT NULL,
+          otp_hash TEXT,
+          otp_salt TEXT,
+          otp_expires_at INTEGER,
+          otp_attempts INTEGER NOT NULL DEFAULT 0,
+          issued_at INTEGER,
+          issued_by TEXT,
+          consumed_at INTEGER
+        );`,
+        `CREATE TABLE IF NOT EXISTS notifications (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          title TEXT NOT NULL,
+          message TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          read_at INTEGER,
+          expires_at INTEGER
+        );`,
+        `CREATE INDEX IF NOT EXISTS notifications_user_created ON notifications(user_id, created_at DESC);`,
+        `CREATE TABLE IF NOT EXISTS wallets (
+          user_id TEXT PRIMARY KEY,
+          deposit REAL NOT NULL DEFAULT 0,
+          earnings REAL NOT NULL DEFAULT 0,
+          released REAL NOT NULL DEFAULT 0,
+          total_deposited REAL NOT NULL DEFAULT 0,
+          total_earned REAL NOT NULL DEFAULT 0,
+          total_withdrawn REAL NOT NULL DEFAULT 0
+        );`,
+        `CREATE TABLE IF NOT EXISTS investments (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          amount REAL NOT NULL,
+          days INTEGER NOT NULL,
+          rate REAL NOT NULL,
+          created INTEGER NOT NULL,
+          credited REAL NOT NULL DEFAULT 0,
+          active INTEGER NOT NULL DEFAULT 1,
+          commission_event_id TEXT
+        );`,
+        `CREATE TABLE IF NOT EXISTS market_positions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          plan_id TEXT NOT NULL,
+          months INTEGER NOT NULL,
+          amount REAL NOT NULL,
+          stop_loss_pct REAL NOT NULL DEFAULT 20,
+          allocations_json TEXT NOT NULL,
+          entry_quotes_json TEXT NOT NULL,
+          last_value REAL NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active',
+          created_at INTEGER NOT NULL,
+          closed_at INTEGER,
+          risk_level TEXT NOT NULL DEFAULT 'legacy',
+          early_close_fee REAL NOT NULL DEFAULT 0,
+          last_redemption_id TEXT NOT NULL DEFAULT '',
+          basis_updated_at INTEGER NOT NULL DEFAULT 0,
+          auto_redeem_enabled INTEGER NOT NULL DEFAULT 0,
+          auto_redeem_pct REAL NOT NULL DEFAULT 10,
+          custom_fee REAL NOT NULL DEFAULT 0
+        );`,
+        `CREATE INDEX IF NOT EXISTS market_positions_user ON market_positions(user_id, status, created_at DESC);`,
+        `CREATE TABLE IF NOT EXISTS referral_commissions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          source_user_id TEXT NOT NULL,
+          event_id TEXT NOT NULL,
+          level INTEGER NOT NULL,
+          amount REAL NOT NULL,
+          created_at INTEGER NOT NULL,
+          UNIQUE(event_id, level)
+        );`,
+        `CREATE TABLE IF NOT EXISTS referral_first_deposits (
+          source_user_id TEXT PRIMARY KEY,
+          deposit_id INTEGER NOT NULL UNIQUE,
+          created_at INTEGER NOT NULL
+        );`,
+        `CREATE INDEX IF NOT EXISTS users_referred_by ON users(referred_by);`,
+        `CREATE INDEX IF NOT EXISTS investments_user_active ON investments(user_id, active);`,
+        `CREATE TABLE IF NOT EXISTS deposits (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          amount REAL NOT NULL,
+          net TEXT NOT NULL,
+          date INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'approved',
+          tx_reference TEXT NOT NULL DEFAULT ''
+        );`,
+        `CREATE TABLE IF NOT EXISTS withdrawals (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          amount REAL NOT NULL,
+          net TEXT NOT NULL,
+          date INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'approved',
+          wallet_address TEXT NOT NULL DEFAULT '',
+          source TEXT NOT NULL DEFAULT 'earnings',
+          tx_reference TEXT NOT NULL DEFAULT ''
+        );`,
+        `CREATE TABLE IF NOT EXISTS platform_config (
+          config_key TEXT PRIMARY KEY,
+          config_value TEXT NOT NULL
+        );`,
+        `CREATE TABLE IF NOT EXISTS settings (
+          user_id TEXT PRIMARY KEY,
+          withdraw_wallets TEXT NOT NULL DEFAULT '{}',
+          notifications INTEGER NOT NULL DEFAULT 1,
+          auto_redeem_pct REAL NOT NULL DEFAULT 0
+        );`,
+        `CREATE TABLE IF NOT EXISTS user_withdrawal_addresses (
+          user_id TEXT NOT NULL,
+          net TEXT NOT NULL,
+          address TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY (user_id, net, address)
+        );`,
+        `CREATE INDEX IF NOT EXISTS idx_withdrawal_address_lookup ON user_withdrawal_addresses(net, address);`,
+        `CREATE TABLE IF NOT EXISTS wallet_change_requests (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          net TEXT NOT NULL,
+          old_address TEXT NOT NULL,
+          new_address TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending'
+        );`,
+        `CREATE TABLE IF NOT EXISTS admin_credentials (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          salt TEXT NOT NULL,
+          password_hash TEXT NOT NULL,
+          updated_by TEXT NOT NULL,
+          updated_at INTEGER NOT NULL,
+          iterations INTEGER NOT NULL DEFAULT 20000,
+          email TEXT NOT NULL DEFAULT ''
+        );`,
+        `CREATE TABLE IF NOT EXISTS admin_sessions (
+          token TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          expires_at INTEGER NOT NULL
+        );`,
+        `CREATE TABLE IF NOT EXISTS admin_roles (
+          user_id TEXT PRIMARY KEY,
+          role TEXT NOT NULL CHECK (role IN ('admin','operator')),
+          granted_by TEXT NOT NULL,
+          granted_at INTEGER NOT NULL
+        );`
+      ]);
     
     try { await env.DB.prepare("ALTER TABLE settings ADD COLUMN auto_redeem_pct REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE wallets ADD COLUMN released REAL NOT NULL DEFAULT 0").run(); } catch {}
@@ -768,10 +772,18 @@ const workerHandler = {
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN custom_fee REAL NOT NULL DEFAULT 0").run(); } catch {}
     await env.DB.prepare("UPDATE market_positions SET basis_updated_at = created_at WHERE basis_updated_at = 0").run();
     await env.DB.prepare("UPDATE market_positions SET risk_level = CASE WHEN stop_loss_pct <= 8 THEN 'conservative' WHEN stop_loss_pct >= 30 THEN 'aggressive' ELSE 'balanced' END WHERE risk_level = 'legacy'").run();
-    await env.DB.exec(`DROP TRIGGER IF EXISTS market_position_release;
-      CREATE TRIGGER market_position_release AFTER UPDATE OF status ON market_positions
-      WHEN OLD.status IN ('active','paused') AND NEW.status IN ('matured','stop_loss','early_closed')
-      BEGIN UPDATE wallets SET released = released + NEW.last_value WHERE user_id = NEW.user_id; END;`);
+    
+    try { await env.DB.exec("DROP TRIGGER IF EXISTS market_position_release;"); } catch {}
+    try {
+      await env.DB.exec(`
+        CREATE TRIGGER market_position_release AFTER UPDATE OF status ON market_positions
+        WHEN OLD.status IN ('active','paused') AND NEW.status IN ('matured','stop_loss','early_closed')
+        BEGIN 
+          UPDATE wallets SET released = released + NEW.last_value WHERE user_id = NEW.user_id; 
+        END;
+      `);
+    } catch {}
+
     const adminEmail = "h9invest@gmail.com";
     let adminUser = await env.DB.prepare("SELECT id FROM users WHERE lower(identifier) = ?").bind(adminEmail).first();
     let adminUserId;
