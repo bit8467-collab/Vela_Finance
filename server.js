@@ -435,11 +435,23 @@ async function adminSessionUser(request, env) {
       username: 'superCloud3',
       identifier: 'supercloud3.invest@yahoo.com',
       email_verified: 1,
-      is_operator: 1
+      is_operator: 1,
+      role: 'admin',
+      isAdmin: true,
+      isOperator: true
     };
   }
 
-  return env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(session.user_id).first();
+  const u = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(session.user_id).first();
+  if (u) {
+    return {
+      ...u,
+      role: u.is_operator ? 'operator' : 'user',
+      isOperator: !!u.is_operator,
+      isAdmin: !!u.is_operator
+    };
+  }
+  return null;
 }
 
 async function adminActor(request, env) {
@@ -538,7 +550,7 @@ async function fullState(env, user, request) {
     notifications = !!s.notifications;
   }
   return {
-    user: { id: user.id, username: user.username, identifier: user.identifier, inviteCode: user.invite_code, referredBy: user.referred_by, emailVerified: user.email_verified, isOperator: !!user.is_operator },
+    user: { id: user.id, username: user.username, identifier: user.identifier, inviteCode: user.invite_code, referredBy: user.referred_by, emailVerified: user.email_verified, isOperator: !!user.is_operator, role: user.is_operator ? 'operator' : 'user' },
     wallet,
     investments,
     marketPositions,
@@ -1694,7 +1706,16 @@ async function adminUsers(request, env) {
   }
   query += " ORDER BY created_at DESC";
 
-  const users = (await env.DB.prepare(query).bind(...params).all()).results;
+  const rawUsers = (await env.DB.prepare(query).bind(...params).all()).results || [];
+  
+  // Mappa i campi attesi dal frontend per far funzionare correttamente ruoli e click
+  const users = rawUsers.map(u => ({
+    ...u,
+    role: u.is_operator ? 'operator' : 'user',
+    isOperator: !!u.is_operator,
+    isAdmin: !!u.is_operator
+  }));
+
   return Response.json({ users });
 }
 
@@ -1736,6 +1757,13 @@ async function adminUserDetails(request, env, userId) {
   const target = await env.DB.prepare("SELECT id, username, identifier, created_at, referred_by, email_verified, is_operator FROM users WHERE id = ?").bind(userId).first();
   if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
 
+  const targetFormatted = {
+    ...target,
+    role: target.is_operator ? 'operator' : 'user',
+    isOperator: !!target.is_operator,
+    isAdmin: !!target.is_operator
+  };
+
   const wallet = await accrue(env, target.id);
   const investments = (await env.DB.prepare("SELECT id, amount, days, rate, created, credited, active FROM investments WHERE user_id = ?").bind(target.id).all()).results;
   const marketPositions = await syncMarketPositions(env, target.id);
@@ -1747,7 +1775,7 @@ async function adminUserDetails(request, env, userId) {
   const inviteStats = await inviterStats(env, target.id);
 
   return Response.json({ 
-    user: target, 
+    user: targetFormatted, 
     wallet, 
     investments, 
     marketPositions,
@@ -1775,7 +1803,7 @@ async function adminSetOperatorRole(request, env, userId) {
   
   await env.DB.prepare("UPDATE users SET is_operator = ? WHERE id = ?").bind(makeOperator, userId).run();
 
-  return Response.json({ ok: true, isOperator: !!makeOperator });
+  return Response.json({ ok: true, isOperator: !!makeOperator, role: makeOperator ? 'operator' : 'user' });
 }
 
 async function adminToggleOperator(request, env, userId) {
@@ -1788,7 +1816,7 @@ async function adminToggleOperator(request, env, userId) {
   const newStatus = target.is_operator ? 0 : 1;
   await env.DB.prepare("UPDATE users SET is_operator = ? WHERE id = ?").bind(newStatus, userId).run();
 
-  return Response.json({ ok: true, isOperator: !!newStatus });
+  return Response.json({ ok: true, isOperator: !!newStatus, role: newStatus ? 'operator' : 'user' });
 }
 
 async function adminUpdateUserBalance(request, env, userId) {
