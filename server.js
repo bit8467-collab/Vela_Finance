@@ -1103,7 +1103,7 @@ async function login(request, env) {
     let adminToken = null;
     if (user.is_operator) {
       adminToken = makeToken();
-      // MODIFICA APPLICATA QUI: La sessione admin scade dopo 5 minuti di inattività/chiusura (anziché 30 giorni)
+      // MODIFICA APPLICATA: La sessione admin dura solo 5 minuti e non viene salvata in localStorage
       const expiresAt = Date.now() + 5 * 60 * 1000;
       await env.DB.prepare("INSERT INTO admin_sessions (token, user_id, expires_at) VALUES (?, ?, ?)").bind(adminToken, user.id, expiresAt).run();
     }
@@ -1972,7 +1972,7 @@ async function tryOperatorLogin(env, email, password) {
   if (suppliedHash !== credential.password_hash) return { status: 401, error: "Email o password non corretti." };
   
   const token = makeToken();
-  // MODIFICA APPLICATA QUI: Scadenza a breve termine anche per il login diretto operatore
+  // MODIFICA APPLICATA: Scadenza a 5 minuti per l'operatore
   const expiresAt = Date.now() + 5 * 60 * 1000;
   await env.DB.prepare("INSERT INTO admin_sessions (token, user_id, expires_at) VALUES (?, ?, ?)").bind(token, credential.updated_by, expiresAt).run();
   return { token, expiresAt };
