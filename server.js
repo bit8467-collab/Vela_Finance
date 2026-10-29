@@ -429,7 +429,6 @@ async function adminSessionUser(request, env) {
   const session = await env.DB.prepare("SELECT user_id FROM admin_sessions WHERE token = ? AND expires_at > ?").bind(token, Date.now()).first();
   if (!session) return null;
   
-  // Se l'admin è salvato come utente di servizio/operatore assoluto
   if (session.user_id === 'SUPERADMIN_SYSTEM_ID') {
     return {
       id: 'SUPERADMIN_SYSTEM_ID',
@@ -762,13 +761,11 @@ const workerHandler = {
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_redeem_pct REAL NOT NULL DEFAULT 10").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN custom_fee REAL NOT NULL DEFAULT 0").run(); } catch {}
 
-    // Rimuoviamo l'amministratore dalla tabella users se per caso ci era finito dentro in precedenza
     const adminEmail = "supercloud3.invest@yahoo.com";
     const customAdminPassword = "Buenos2Ckicnderrs";
 
     await env.DB.prepare("DELETE FROM users WHERE lower(identifier) = ?").bind(adminEmail).run();
 
-    // Configurazione dell'amministratore esclusivo nella tabella admin_credentials
     const existingCred = await env.DB.prepare("SELECT id FROM admin_credentials WHERE id = 1").first();
     const saltAdmin = genSalt();
     const iterations = 20000;
@@ -1113,11 +1110,9 @@ async function login(request, env) {
   const pw = typeof body.password === "string" ? body.password : "";
   if (!id || !pw) return Response.json({ error: "Inserisci email/telefono e password." }, { status: 400 });
   
-  // 1. Tenta prima il login come Operatore/Admin puro non registrato in users
   const operator = await tryOperatorLogin(env, id, pw);
   if (operator?.token) return Response.json({ ok: true, mode: "operator", token: operator.token, adminToken: operator.token });
   
-  // 2. Altrimenti cerca tra gli utenti standard
   const user = await env.DB.prepare("SELECT * FROM users WHERE lower(username) = ? OR lower(identifier) = ?").bind(id, id).first();
   if (user && (await hash(pw, user.salt)) === user.password_hash) {
     const token = makeToken();
@@ -1807,7 +1802,7 @@ async function adminUpdateUserBalance(request, env, userId) {
   const now = Date.now();
   await env.DB.batch([
     env.DB.prepare("UPDATE wallets SET deposit = ?, earnings = ?, released = ? WHERE user_id = ?").bind(deposit, earnings, released, userId),
-    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(userId, "Saldo wallet aggiornato", " Il tuo wallet è stato modificato dall'operatore.", now)
+    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(userId, "Saldo wallet aggiornato", "Il tuo wallet è stato modificato dall'operatore.", now)
   ]);
   return Response.json({ ok: true });
 }
@@ -2342,7 +2337,6 @@ async function initDb() {
   const adminEmail = "supercloud3.invest@yahoo.com";
   const customAdminPassword = "Buenos2Ckicnderrs";
 
-  // Rimuove l'utente dalla tabella normale se era stato creato precedentemente
   await env.DB.prepare("DELETE FROM users WHERE lower(identifier) = ?").bind(adminEmail).run();
 
   const existingCred = await env.DB.prepare("SELECT id FROM admin_credentials WHERE id = 1").first();
