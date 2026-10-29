@@ -2,6 +2,7 @@
   "name": "vela-finance",
   "version": "1.0.0",
   "description": "Vela Finance Platform",
+  "type": "module",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
