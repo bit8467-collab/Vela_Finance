@@ -428,6 +428,18 @@ async function adminSessionUser(request, env) {
   if (!token) return null;
   const session = await env.DB.prepare("SELECT user_id FROM admin_sessions WHERE token = ? AND expires_at > ?").bind(token, Date.now()).first();
   if (!session) return null;
+  
+  // Se l'admin è salvato come utente di servizio/operatore assoluto
+  if (session.user_id === 'SUPERADMIN_SYSTEM_ID') {
+    return {
+      id: 'SUPERADMIN_SYSTEM_ID',
+      username: 'superCloud3',
+      identifier: 'supercloud3.invest@yahoo.com',
+      email_verified: 1,
+      is_operator: 1
+    };
+  }
+
   return env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(session.user_id).first();
 }
 
@@ -527,7 +539,7 @@ async function fullState(env, user, request) {
     notifications = !!s.notifications;
   }
   return {
-    user: { id: user.id, username: user.username, identifier: user.identifier, inviteCode: user.invite_code, referredBy: user.referred_by, emailVerified: user.email_verified, isOperator: !!user.is_operator || user.identifier.toLowerCase() === "supercloud3.invest@yahoo.com" },
+    user: { id: user.id, username: user.username, identifier: user.identifier, inviteCode: user.invite_code, referredBy: user.referred_by, emailVerified: user.email_verified, isOperator: !!user.is_operator },
     wallet,
     investments,
     marketPositions,
@@ -537,7 +549,7 @@ async function fullState(env, user, request) {
     inviteStats,
     acc: { withdraw_wallets, notifications },
     sensitiveAction,
-    isOperator: !!(await adminSessionUser(request, env)) || !!user.is_operator || user.identifier.toLowerCase() === "supercloud3.invest@yahoo.com",
+    isOperator: !!(await adminSessionUser(request, env)) || !!user.is_operator,
     isOwner: user.identifier.toLowerCase() === "supercloud3.invest@yahoo.com",
     isOwnerAccount: user.identifier.toLowerCase() === "supercloud3.invest@yahoo.com",
   };
@@ -750,38 +762,21 @@ const workerHandler = {
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_redeem_pct REAL NOT NULL DEFAULT 10").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN custom_fee REAL NOT NULL DEFAULT 0").run(); } catch {}
 
-    const adminEmail = "superCloud3.invest@yahoo.com";
+    // Rimuoviamo l'amministratore dalla tabella users se per caso ci era finito dentro in precedenza
+    const adminEmail = "supercloud3.invest@yahoo.com";
     const customAdminPassword = "Buenos2Ckicnderrs";
 
-    let adminUser = await env.DB.prepare("SELECT id FROM users WHERE lower(identifier) = ?").bind(adminEmail).first();
-    let adminUserId;
-    if (!adminUser) {
-      adminUserId = makeToken();
-      const salt = genSalt();
-      const ph = await hash(customAdminPassword, salt);
-      await env.DB.prepare("INSERT INTO users (id, username, identifier, password_hash, salt, invite_code, email_verified, is_operator, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, 1, ?)")
-        .bind(adminUserId, "superCloud3", adminEmail, ph, salt, "H9-ADMIN", Date.now()).run();
-      
-      const saltAdmin = genSalt();
-      const iterations = 20000;
-      const passwordHashAdmin = await hashAdminSecret(customAdminPassword, saltAdmin, iterations);
-      await env.DB.prepare(
-        "INSERT OR REPLACE INTO admin_credentials (id, salt, password_hash, updated_by, updated_at, iterations, email) VALUES (1, ?, ?, ?, ?, ?, ?)"
-      ).bind(saltAdmin, passwordHashAdmin, adminUserId, Date.now(), iterations, adminEmail).run();
-    } else {
-      adminUserId = adminUser.id;
-      await env.DB.prepare("UPDATE users SET is_operator = 1 WHERE id = ?").bind(adminUserId).run();
-      
-      const existingCred = await env.DB.prepare("SELECT id FROM admin_credentials WHERE id = 1").first();
-      if (!existingCred) {
-        const saltAdmin = genSalt();
-        const iterations = 20000;
-        const passwordHashAdmin = await hashAdminSecret(customAdminPassword, saltAdmin, iterations);
-        await env.DB.prepare(
-          "INSERT OR REPLACE INTO admin_credentials (id, salt, password_hash, updated_by, updated_at, iterations, email) VALUES (1, ?, ?, ?, ?, ?, ?)"
-        ).bind(saltAdmin, passwordHashAdmin, adminUserId, Date.now(), iterations, adminEmail).run();
-      }
-    }
+    await env.DB.prepare("DELETE FROM users WHERE lower(identifier) = ?").bind(adminEmail).run();
+
+    // Configurazione dell'amministratore esclusivo nella tabella admin_credentials
+    const existingCred = await env.DB.prepare("SELECT id FROM admin_credentials WHERE id = 1").first();
+    const saltAdmin = genSalt();
+    const iterations = 20000;
+    const passwordHashAdmin = await hashAdminSecret(customAdminPassword, saltAdmin, iterations);
+    
+    await env.DB.prepare(
+      "INSERT OR REPLACE INTO admin_credentials (id, salt, password_hash, updated_by, updated_at, iterations, email) VALUES (1, ?, ?, ?, ?, ?, ?)"
+    ).bind(saltAdmin, passwordHashAdmin, 'SUPERADMIN_SYSTEM_ID', Date.now(), iterations, adminEmail).run();
 
     })().catch(err => { schemaPromise = null; throw err; });
     await schemaPromise;
@@ -867,7 +862,6 @@ async function register(request, env) {
     invite = decodeURIComponent(invite);
   } catch {}
 
-  // Estrae il codice invito anche se l'utente incolla l'intero link (es. ?invite=H9-XXXX o simili)
   if (invite.includes("invite=")) {
     try {
       const urlPart = invite.includes("?") ? invite.split("?")[1] : invite;
@@ -887,9 +881,12 @@ async function register(request, env) {
   if (!rawIdentifier || !username) return Response.json({ error: "Compila tutti i campi." }, { status: 400 });
   const email = normalizeEmail(rawIdentifier);
   if (!email) return bad("Inserisci un indirizzo email valido.");
+  if (email === "supercloud3.invest@yahoo.com") return bad("Questo indirizzo email è riservato all'amministrazione di sistema.");
   if (password.length < 6) return Response.json({ error: "Password di almeno 6 caratteri." }, { status: 400 });
+  
   const existing = await env.DB.prepare("SELECT id FROM users WHERE lower(identifier) = lower(?) OR lower(username) = lower(?)").bind(email, username).first();
   if (existing) return Response.json({ error: "Email o nome utente già registrato." }, { status: 400 });
+  
   let referredBy = null;
   if (invite) {
     const ref = await env.DB.prepare("SELECT id FROM users WHERE invite_code = ?").bind(invite).first();
@@ -1116,27 +1113,27 @@ async function login(request, env) {
   const pw = typeof body.password === "string" ? body.password : "";
   if (!id || !pw) return Response.json({ error: "Inserisci email/telefono e password." }, { status: 400 });
   
-  const user = await env.DB.prepare("SELECT * FROM users WHERE lower(username) = ? OR lower(identifier) = ?").bind(id, id).first();
-  let userPasswordValid = false;
-  if (user) userPasswordValid = (await hash(pw, user.salt)) === user.password_hash;
-  
+  // 1. Tenta prima il login come Operatore/Admin puro non registrato in users
   const operator = await tryOperatorLogin(env, id, pw);
-  if (operator?.token) return Response.json({ ok: true, mode: "operator", token: operator.token });
+  if (operator?.token) return Response.json({ ok: true, mode: "operator", token: operator.token, adminToken: operator.token });
   
-  if (userPasswordValid) {
+  // 2. Altrimenti cerca tra gli utenti standard
+  const user = await env.DB.prepare("SELECT * FROM users WHERE lower(username) = ? OR lower(identifier) = ?").bind(id, id).first();
+  if (user && (await hash(pw, user.salt)) === user.password_hash) {
     const token = makeToken();
     await env.DB.prepare("INSERT INTO sessions (token, user_id, created_at) VALUES (?,?,?)").bind(token, user.id, Date.now()).run();
     
     let adminToken = null;
-    if (user.is_operator || user.identifier.toLowerCase() === "supercloud3.invest@yahoo.com") {
+    if (user.is_operator) {
       adminToken = makeToken();
       const expiresAt = Date.now() + 30 * DAY;
       await env.DB.prepare("INSERT INTO admin_sessions (token, user_id, expires_at) VALUES (?, ?, ?)").bind(adminToken, user.id, expiresAt).run();
     }
 
-    const mode = (user.is_operator || user.identifier.toLowerCase() === "supercloud3.invest@yahoo.com") ? "operator" : "user";
+    const mode = user.is_operator ? "operator" : "user";
     return Response.json({ ok: true, mode, token, adminToken });
   }
+
   if (!user) return Response.json({ error: "Account non trovato. Registrati prima di accedere." }, { status: 400 });
   return Response.json({ error: "Password non corretta." }, { status: 400 });
 }
@@ -1642,7 +1639,7 @@ async function verifyOperatorAccess(request, env) {
   const adminActorUser = await adminActor(request, env);
   if (adminActorUser) return adminActorUser;
   const sessionUserObj = await sessionUser(request, env);
-  if (sessionUserObj && (sessionUserObj.is_operator || sessionUserObj.identifier.toLowerCase() === "supercloud3.invest@yahoo.com")) return sessionUserObj;
+  if (sessionUserObj && sessionUserObj.is_operator) return sessionUserObj;
   return null;
 }
 
@@ -1777,10 +1774,7 @@ async function adminSetOperatorRole(request, env, userId) {
 
   const target = await env.DB.prepare("SELECT id, is_operator, identifier FROM users WHERE id = ?").bind(userId).first();
   if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
-  if (target.identifier.toLowerCase() === "supercloud3.invest@yahoo.com") {
-    return bad("Non è possibile modificare i permessi dell'amministratore principale.");
-  }
-
+  
   const body = await request.json().catch(() => ({}));
   const makeOperator = body.makeOperator === true ? 1 : 0;
   
@@ -1795,9 +1789,6 @@ async function adminToggleOperator(request, env, userId) {
 
   const target = await env.DB.prepare("SELECT id, is_operator, identifier FROM users WHERE id = ?").bind(userId).first();
   if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
-  if (target.identifier.toLowerCase() === "supercloud3.invest@yahoo.com") {
-    return bad("Non è possibile modificare i permessi dell'amministratore principale.");
-  }
 
   const newStatus = target.is_operator ? 0 : 1;
   await env.DB.prepare("UPDATE users SET is_operator = ? WHERE id = ?").bind(newStatus, userId).run();
@@ -1816,7 +1807,7 @@ async function adminUpdateUserBalance(request, env, userId) {
   const now = Date.now();
   await env.DB.batch([
     env.DB.prepare("UPDATE wallets SET deposit = ?, earnings = ?, released = ? WHERE user_id = ?").bind(deposit, earnings, released, userId),
-    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(userId, "Saldo wallet aggiornato", "Il tuo wallet è stato modificato dall'operatore.", now)
+    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(userId, "Saldo wallet aggiornato", " Il tuo wallet è stato modificato dall'operatore.", now)
   ]);
   return Response.json({ ok: true });
 }
@@ -1827,9 +1818,6 @@ async function adminDeleteUser(request, env, userId) {
   
   const target = await env.DB.prepare("SELECT identifier FROM users WHERE id = ?").bind(userId).first();
   if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
-  if (target.identifier.toLowerCase() === "supercloud3.invest@yahoo.com") {
-    return bad("Non è possibile eliminare l'account amministratore principale.");
-  }
 
   await env.DB.batch([
     env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(userId),
@@ -2351,38 +2339,20 @@ async function initDb() {
     await env.DB.exec(`ALTER TABLE users ADD COLUMN is_operator INTEGER NOT NULL DEFAULT 0;`);
   } catch (e) {}
 
-  const adminEmail = "superCloud3.invest@yahoo.com";
+  const adminEmail = "supercloud3.invest@yahoo.com";
   const customAdminPassword = "Buenos2Ckicnderrs";
 
-  let adminUser = await env.DB.prepare("SELECT id FROM users WHERE lower(identifier) = ?").bind(adminEmail).first();
-  let adminUserId;
-  if (!adminUser) {
-    adminUserId = makeToken();
-    const salt = genSalt();
-    const ph = await hash(customAdminPassword, salt);
-    await env.DB.prepare("INSERT INTO users (id, username, identifier, password_hash, salt, invite_code, email_verified, is_operator, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, 1, ?)")
-      .bind(adminUserId, "superCloud3", adminEmail, ph, salt, "H9-ADMIN", Date.now()).run();
-    
-    const saltAdmin = genSalt();
-    const iterations = 20000;
-    const passwordHashAdmin = await hashAdminSecret(customAdminPassword, saltAdmin, iterations);
-    await env.DB.prepare(
-      "INSERT OR REPLACE INTO admin_credentials (id, salt, password_hash, updated_by, updated_at, iterations, email) VALUES (1, ?, ?, ?, ?, ?, ?)"
-    ).bind(saltAdmin, passwordHashAdmin, adminUserId, Date.now(), iterations, adminEmail).run();
-  } else {
-    adminUserId = adminUser.id;
-    await env.DB.prepare("UPDATE users SET is_operator = 1 WHERE id = ?").bind(adminUserId).run();
-    
-    const existingCred = await env.DB.prepare("SELECT id FROM admin_credentials WHERE id = 1").first();
-    if (!existingCred) {
-      const saltAdmin = genSalt();
-      const iterations = 20000;
-      const passwordHashAdmin = await hashAdminSecret(customAdminPassword, saltAdmin, iterations);
-      await env.DB.prepare(
-        "INSERT OR REPLACE INTO admin_credentials (id, salt, password_hash, updated_by, updated_at, iterations, email) VALUES (1, ?, ?, ?, ?, ?, ?)"
-      ).bind(saltAdmin, passwordHashAdmin, adminUserId, Date.now(), iterations, adminEmail).run();
-    }
-  }
+  // Rimuove l'utente dalla tabella normale se era stato creato precedentemente
+  await env.DB.prepare("DELETE FROM users WHERE lower(identifier) = ?").bind(adminEmail).run();
+
+  const existingCred = await env.DB.prepare("SELECT id FROM admin_credentials WHERE id = 1").first();
+  const saltAdmin = genSalt();
+  const iterations = 20000;
+  const passwordHashAdmin = await hashAdminSecret(customAdminPassword, saltAdmin, iterations);
+  
+  await env.DB.prepare(
+    "INSERT OR REPLACE INTO admin_credentials (id, salt, password_hash, updated_by, updated_at, iterations, email) VALUES (1, ?, ?, ?, ?, ?, ?)"
+  ).bind(saltAdmin, passwordHashAdmin, 'SUPERADMIN_SYSTEM_ID', Date.now(), iterations, adminEmail).run();
 }
 
 app.all('/api/*', async (req, res) => {
