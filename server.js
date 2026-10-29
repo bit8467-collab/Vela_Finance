@@ -425,32 +425,45 @@ async function sessionUser(request, env) {
 
 async function adminSessionUser(request, env) {
   const token = (request.headers.get("x-admin-token") || "").trim();
-  if (!token) return null;
-  const session = await env.DB.prepare("SELECT user_id FROM admin_sessions WHERE token = ? AND expires_at > ?").bind(token, Date.now()).first();
-  if (!session) return null;
-  
-  if (session.user_id === 'SUPERADMIN_SYSTEM_ID') {
+  if (token) {
+    const session = await env.DB.prepare("SELECT user_id FROM admin_sessions WHERE token = ? AND expires_at > ?").bind(token, Date.now()).first();
+    if (session) {
+      if (session.user_id === 'SUPERADMIN_SYSTEM_ID') {
+        return {
+          id: 'SUPERADMIN_SYSTEM_ID',
+          username: 'superCloud3',
+          identifier: 'supercloud3.invest@yahoo.com',
+          email_verified: 1,
+          is_operator: 1,
+          role: 'admin',
+          isAdmin: true,
+          isOperator: true
+        };
+      }
+      const u = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(session.user_id).first();
+      if (u) {
+        return {
+          ...u,
+          role: 'admin',
+          isOperator: true,
+          isAdmin: true
+        };
+      }
+    }
+  }
+
+  // Fallback universale: se l'utente loggato è l'admin di sistema, concedi i poteri admin assoluti
+  const user = await sessionUser(request, env);
+  if (user && user.identifier.toLowerCase() === "supercloud3.invest@yahoo.com") {
     return {
-      id: 'SUPERADMIN_SYSTEM_ID',
-      username: 'superCloud3',
-      identifier: 'supercloud3.invest@yahoo.com',
-      email_verified: 1,
-      is_operator: 1,
+      ...user,
       role: 'admin',
+      isOperator: 1,
       isAdmin: true,
       isOperator: true
     };
   }
 
-  const u = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(session.user_id).first();
-  if (u) {
-    return {
-      ...u,
-      role: u.is_operator ? 'operator' : 'user',
-      isOperator: !!u.is_operator,
-      isAdmin: !!u.is_operator
-    };
-  }
   return null;
 }
 
@@ -458,17 +471,14 @@ async function adminActor(request, env) {
   const adminUser = await adminSessionUser(request, env);
   if (adminUser) return adminUser;
 
-  // Fallback: se viene passato il token utente ma l'utente è l'admin di sistema o un operatore
   const sessionUserObj = await sessionUser(request, env);
-  if (sessionUserObj) {
-    if (sessionUserObj.identifier.toLowerCase() === "supercloud3.invest@yahoo.com" || sessionUserObj.is_operator) {
-      return {
-        ...sessionUserObj,
-        role: 'admin',
-        isAdmin: true,
-        isOperator: true
-      };
-    }
+  if (sessionUserObj && (sessionUserObj.identifier.toLowerCase() === "supercloud3.invest@yahoo.com" || sessionUserObj.is_operator)) {
+    return {
+      ...sessionUserObj,
+      role: 'admin',
+      isAdmin: true,
+      isOperator: true
+    };
   }
   return null;
 }
@@ -564,6 +574,7 @@ async function fullState(env, user, request) {
     try { withdraw_wallets = JSON.parse(s.withdraw_wallets || "{}"); } catch { withdraw_wallets = {}; }
     notifications = !!s.notifications;
   }
+  
   const isOwner = user.identifier.toLowerCase() === "supercloud3.invest@yahoo.com";
   const hasOperatorPrivilege = isOwner || !!user.is_operator || !!(await adminActor(request, env));
 
