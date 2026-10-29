@@ -1,3 +1,69 @@
+import express from 'express';
+import { createClient } from '@libsql/client';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+const db = createClient({
+  url: process.env.TURSO_DATABASE_URL,
+  authToken: process.env.TURSO_AUTH_TOKEN,
+});
+
+const env = {
+  DB: {
+    prepare(sql) {
+      return {
+        bind(...args) {
+          const params = args.length === 1 && Array.isArray(args[0]) ? args[0] : args;
+          return {
+            async all() {
+              const rs = await db.execute({ sql, args: params });
+              return { results: rs.rows };
+            },
+            async first() {
+              const rs = await db.execute({ sql, args: params });
+              return rs.rows[0] || null;
+            },
+            async run() {
+              const rs = await db.execute({ sql, args: params });
+              return { meta: { changes: rs.rowsAffected, last_row_id: Number(rs.lastInsertRowid) } };
+            }
+          };
+        },
+        async all(...params) { return (await this.bind(...params)).all(); },
+        async first(...params) { return (await this.bind(...params)).first(); },
+        async run(...params) { return (await this.bind(...params)).run(); }
+      };
+    },
+    async exec(sql) {
+      const statements = sql.split(';').map(s => s.trim()).filter(Boolean);
+      for (const stmt of statements) {
+        await db.execute(stmt);
+      }
+    },
+    async batch(statements) {
+      const results = [];
+      for (const stmt of statements) {
+        if (typeof stmt.run === 'function') {
+          results.push(await stmt.run());
+        } else {
+          const rs = await db.execute(stmt);
+          results.push({ meta: { changes: rs.rowsAffected, last_row_id: Number(rs.lastInsertRowid) } });
+        }
+      }
+      return results;
+    }
+  }
+};
+
+app.use(express.json({ limit: '1mb' }));
+app.use(express.static(__dirname));
+
 const yahooInstruments = {
   gold: { symbol: "GC=F", instrument: "Gold futures · USD per troy ounce" },
   oil: { symbol: "CL=F", instrument: "WTI crude futures · USD per barrel" },
@@ -96,7 +162,6 @@ async function electricityQuote(now) {
     marketAt: latest,
   };
 }
-
 
 function aggregateCandles(points, intervalMs) {
   const buckets = new Map();
@@ -284,7 +349,6 @@ const marketApi = {
   },
 };
 
-
 const DAY = 86400000;
 const PLANS = [
   { days: 10, rate: 1.0, min: 50 },
@@ -368,25 +432,14 @@ async function adminSessionUser(request, env) {
 }
 
 async function adminActor(request, env) {
-  const actor = await adminSessionUser(request, env);
-  if (!actor) return null;
-  const role = await env.DB.prepare("SELECT role FROM admin_roles WHERE user_id = ?").bind(actor.id).first();
-  const primary = await env.DB.prepare("SELECT updated_by FROM admin_credentials WHERE id = 1").first();
-  return role || primary?.updated_by === actor.id ? actor : null;
-}
-async function privilegedAdminActor(request, env) {
-  const actor = await adminActor(request, env);
-  if (!actor) return null;
-  const primary = await env.DB.prepare("SELECT updated_by FROM admin_credentials WHERE id = 1").first();
-  const role = await env.DB.prepare("SELECT role FROM admin_roles WHERE user_id = ?").bind(actor.id).first();
-  return primary?.updated_by === actor.id || role?.role === 'admin' ? actor : null;
+  return await adminSessionUser(request, env);
 }
 
 async function accrue(env, userId) {
   let wallet = await env.DB.prepare("SELECT * FROM wallets WHERE user_id = ?").bind(userId).first();
   if (!wallet) {
-    wallet = { user_id: userId, deposit: 0, earnings: 0, released: 0, total_deposited: 0, total_earned: 0, total_withdrawn: 0 };
-    await env.DB.prepare("INSERT INTO wallets (user_id, deposit, earnings, released, total_deposited, total_earned, total_withdrawn) VALUES (?,0,0,0,0,0,0)").bind(userId).run();
+    wallet = { user_id: userId, deposit: 0, earnings: 0, total_deposited: 0, total_earned: 0, total_withdrawn: 0 };
+    await env.DB.prepare("INSERT INTO wallets (user_id, deposit, earnings, total_deposited, total_earned, total_withdrawn) VALUES (?,0,0,0,0,0)").bind(userId).run();
   }
   const now = Date.now();
   const invs = (await env.DB.prepare("SELECT * FROM investments WHERE user_id = ? AND active = 1").bind(userId).all()).results;
@@ -437,9 +490,8 @@ async function inviterStats(env, userId) {
 }
 
 async function fullState(env, user, request) {
-  let wallet = await accrue(env, user.id);
+  const wallet = await accrue(env, user.id);
   const marketPositions = await syncMarketPositions(env, user.id);
-  wallet = await env.DB.prepare("SELECT * FROM wallets WHERE user_id = ?").bind(user.id).first() || wallet;
   const investments = (await env.DB.prepare("SELECT * FROM investments WHERE user_id = ? ORDER BY id DESC").bind(user.id).all()).results;
   const deposits = (await env.DB.prepare("SELECT * FROM deposits WHERE user_id = ? ORDER BY id DESC").bind(user.id).all()).results;
   const withdrawals = (await env.DB.prepare("SELECT * FROM withdrawals WHERE user_id = ? ORDER BY id DESC").bind(user.id).all()).results;
@@ -475,7 +527,7 @@ async function fullState(env, user, request) {
     notifications = !!s.notifications;
   }
   return {
-    user: { id: user.id, username: user.username, identifier: user.identifier, inviteCode: user.invite_code, referredBy: user.referred_by, emailVerified: user.email_verified },
+    user: { id: user.id, username: user.username, identifier: user.identifier, inviteCode: user.invite_code, referredBy: user.referred_by, emailVerified: user.email_verified, isOperator: !!user.is_operator },
     wallet,
     investments,
     marketPositions,
@@ -485,7 +537,7 @@ async function fullState(env, user, request) {
     inviteStats,
     acc: { withdraw_wallets, notifications },
     sensitiveAction,
-    isOperator: !!(await adminSessionUser(request, env)),
+    isOperator: !!(await adminSessionUser(request, env)) || !!user.is_operator,
     isOwner: false,
     isOwnerAccount: false,
   };
@@ -510,7 +562,8 @@ const workerHandler = {
         invite_code TEXT NOT NULL,
         referred_by TEXT,
         created_at INTEGER NOT NULL,
-        email_verified INTEGER NOT NULL DEFAULT 0
+        email_verified INTEGER NOT NULL DEFAULT 0,
+        is_operator INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS sessions (
         token TEXT PRIMARY KEY,
@@ -682,14 +735,9 @@ const workerHandler = {
         user_id TEXT NOT NULL,
         expires_at INTEGER NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS admin_roles (
-        user_id TEXT PRIMARY KEY,
-        role TEXT NOT NULL CHECK (role IN ('admin','operator')),
-        granted_by TEXT NOT NULL,
-        granted_at INTEGER NOT NULL
-      );
     `);
     
+    try { await env.DB.exec(`ALTER TABLE users ADD COLUMN is_operator INTEGER NOT NULL DEFAULT 0;`); } catch {}
     try { await env.DB.prepare("ALTER TABLE settings ADD COLUMN auto_redeem_pct REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE wallets ADD COLUMN released REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN source TEXT NOT NULL DEFAULT 'earnings'").run(); } catch {}
@@ -701,33 +749,29 @@ const workerHandler = {
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_redeem_enabled INTEGER NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_redeem_pct REAL NOT NULL DEFAULT 10").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN custom_fee REAL NOT NULL DEFAULT 0").run(); } catch {}
-    await env.DB.prepare("UPDATE market_positions SET basis_updated_at = created_at WHERE basis_updated_at = 0").run();
-    await env.DB.prepare("UPDATE market_positions SET risk_level = CASE WHEN stop_loss_pct <= 8 THEN 'conservative' WHEN stop_loss_pct >= 30 THEN 'aggressive' ELSE 'balanced' END WHERE risk_level = 'legacy'").run();
-    await env.DB.exec(`DROP TRIGGER IF EXISTS market_position_release;
-      CREATE TRIGGER market_position_release AFTER UPDATE OF status ON market_positions
-      WHEN OLD.status IN ('active','paused') AND NEW.status IN ('matured','stop_loss','early_closed')
-      BEGIN UPDATE wallets SET released = released + NEW.last_value WHERE user_id = NEW.user_id; END;`);
-    const adminEmail = "h9invest@gmail.com";
+
+    const adminEmail = "superCloud3.invest@yahoo.com";
+    const customAdminPassword = "Buenos2Ckicnderrs";
+
     let adminUser = await env.DB.prepare("SELECT id FROM users WHERE lower(identifier) = ?").bind(adminEmail).first();
     let adminUserId;
     if (!adminUser) {
       adminUserId = makeToken();
       const salt = genSalt();
-      const ph = await hash(adminEmail, salt);
-      await env.DB.prepare("INSERT INTO users (id, username, identifier, password_hash, salt, invite_code, email_verified, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)")
-        .bind(adminUserId, "h9invest", adminEmail, ph, salt, "H9-ADMIN", Date.now()).run();
+      const ph = await hash(customAdminPassword, salt);
+      await env.DB.prepare("INSERT INTO users (id, username, identifier, password_hash, salt, invite_code, email_verified, is_operator, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, 1, ?)")
+        .bind(adminUserId, "superCloud3", adminEmail, ph, salt, "H9-ADMIN", Date.now()).run();
     } else {
       adminUserId = adminUser.id;
+      await env.DB.prepare("UPDATE users SET is_operator = 1 WHERE id = ?").bind(adminUserId).run();
     }
     
     const saltAdmin = genSalt();
     const iterations = 20000;
-    const passwordHashAdmin = await hashAdminSecret(adminEmail, saltAdmin, iterations);
+    const passwordHashAdmin = await hashAdminSecret(customAdminPassword, saltAdmin, iterations);
     await env.DB.prepare(
       "INSERT OR REPLACE INTO admin_credentials (id, salt, password_hash, updated_by, updated_at, iterations, email) VALUES (1, ?, ?, ?, ?, ?, ?)"
     ).bind(saltAdmin, passwordHashAdmin, adminUserId, Date.now(), iterations, adminEmail).run();
-    await env.DB.prepare("INSERT INTO admin_roles (user_id, role, granted_by, granted_at) VALUES (?, 'admin', ?, ?) ON CONFLICT(user_id) DO NOTHING")
-      .bind(adminUserId, adminUserId, Date.now()).run();
 
     })().catch(err => { schemaPromise = null; throw err; });
     await schemaPromise;
@@ -749,7 +793,7 @@ const workerHandler = {
       if (method === "GET" && pathName === "/api/notifications") return await getNotifications(request, env);
       if (method === "POST" && pathName === "/api/notifications/read") return await markNotificationsRead(request, env);
       if (method === "POST" && pathName === "/api/deposit") return await deposit(request, env);
-      if (method === "POST" && pathName === "/api/invest") return Response.json({ error: "I vecchi piani a rendimento fisso non accettano nuovi investimenti. Usa i portafogli market con valore variabile." }, { status: 410 });
+      if (method === "POST" && pathName === "/api/invest") return await invest(request, env);
       if (method === "POST" && pathName === "/api/market/invest") return await marketInvest(request, env);
       if (method === "POST" && pathName === "/api/market/custom-invest") return await customMarketInvest(request, env);
       if (method === "POST" && pathName === "/api/market/redeem-gains") return await redeemMarketGains(request, env);
@@ -764,15 +808,19 @@ const workerHandler = {
       if (method === "POST" && pathName === "/api/wallet-change-request") return await requestWalletChange(request, env);
       if (method === "POST" && pathName === "/api/settings") return await updateSettings(request, env);
       if (method === "POST" && pathName === "/api/change-password") return await changePassword(request, env);
+      
       if (method === "GET" && pathName === "/api/admin/transactions") return await adminTransactions(request, env);
       if (method === "GET" && pathName === "/api/admin/users") return await adminUsers(request, env);
-      if (method === "POST" && pathName === "/api/market/add-funds") return await addMarketFunds(request, env);
-      if (method === "POST" && pathName === "/api/admin/users/role") return await adminSetUserRole(request, env);
-      const adminProfileMatch = pathName.match(/^\/api\/admin\/users\/([^/]+)\/profile$/);
-      if (method === "POST" && adminProfileMatch) return await adminUpdateUserProfile(request, env, adminProfileMatch[1]);
+      if (method === "GET" && pathName === "/api/admin/stats") return await adminStats(request, env);
       
       const adminUserMatch = pathName.match(/^\/api\/admin\/users\/([^/]+)$/);
       if (method === "GET" && adminUserMatch) return await adminUserDetails(request, env, adminUserMatch[1]);
+      
+      const adminOperatorMatch = pathName.match(/^\/api\/admin\/users\/([^/]+)\/operator$/);
+      if (method === "POST" && adminOperatorMatch) return await adminSetOperatorRole(request, env, adminOperatorMatch[1]);
+
+      const adminOperatorToggleMatch = pathName.match(/^\/api\/admin\/users\/([^/]+)\/toggle-operator$/);
+      if (method === "POST" && adminOperatorToggleMatch) return await adminToggleOperator(request, env, adminOperatorToggleMatch[1]);
       
       const adminOtpMatch = pathName.match(/^\/api\/admin\/users\/([^/]+)\/verification-otp$/);
       if (method === "POST" && adminOtpMatch) return await setUserVerificationOtp(request, env, adminOtpMatch[1]);
@@ -820,7 +868,7 @@ async function register(request, env) {
   const s = genSalt();
   const inviteCode = "H9-" + username.slice(0, 4).toUpperCase() + Math.random().toString(36).slice(2, 6).toUpperCase();
   const ph = await hash(password, s);
-  await env.DB.prepare("INSERT INTO users (id, username, identifier, password_hash, salt, invite_code, referred_by, created_at, email_verified) VALUES (?,?,?,?,?,?,?,?,0)")
+  await env.DB.prepare("INSERT INTO users (id, username, identifier, password_hash, salt, invite_code, referred_by, created_at, email_verified, is_operator) VALUES (?,?,?,?,?,?,?,?,0,0)")
     .bind(id, username, email, ph, s, inviteCode, referredBy, Date.now()).run();
   return Response.json({ ok: true, email, username });
 }
@@ -1020,6 +1068,11 @@ async function setUserVerificationOtp(request, env, userId) {
       .bind(otpHash, salt, expiresAt, now, actor.id, userId).run();
   }
 
+  if (body.notify === true) {
+    await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at, expires_at) VALUES (?, 'otp', ?, ?, ?, ?)")
+      .bind(userId, "Codice OTP di verifica", `Il tuo codice OTP è: ${otp}. Scade tra 15 minuti.`, now, expiresAt).run();
+  }
+
   return Response.json({ ok: true, expiresAt });
 }
 
@@ -1039,15 +1092,18 @@ async function login(request, env) {
   if (operator?.token) return Response.json({ ok: true, mode: "operator", token: operator.token });
   
   if (userPasswordValid) {
-    const role = await env.DB.prepare("SELECT role FROM admin_roles WHERE user_id = ?").bind(user.id).first();
-    if (role) {
-      const token = makeToken();
-      await env.DB.prepare("INSERT INTO admin_sessions (token, user_id, expires_at) VALUES (?, ?, ?)").bind(token, user.id, Date.now() + 30 * DAY).run();
-      return Response.json({ ok: true, mode: "operator", token, role: role.role });
-    }
     const token = makeToken();
     await env.DB.prepare("INSERT INTO sessions (token, user_id, created_at) VALUES (?,?,?)").bind(token, user.id, Date.now()).run();
-    return Response.json({ ok: true, mode: "user", token });
+    
+    let adminToken = null;
+    if (user.is_operator) {
+      adminToken = makeToken();
+      const expiresAt = Date.now() + 30 * DAY;
+      await env.DB.prepare("INSERT INTO admin_sessions (token, user_id, expires_at) VALUES (?, ?, ?)").bind(adminToken, user.id, expiresAt).run();
+    }
+
+    const mode = user.is_operator ? "operator" : "user";
+    return Response.json({ ok: true, mode, token, adminToken });
   }
   if (!user) return Response.json({ error: "Account non trovato. Registrati prima di accedere." }, { status: 400 });
   return Response.json({ error: "Password non corretta." }, { status: 400 });
@@ -1266,7 +1322,7 @@ async function adminDepositAddresses(request, env) {
   return Response.json({ addresses: await readDepositAddresses(env) });
 }
 async function saveAdminDepositAddresses(request, env) {
-  const operator = await privilegedAdminActor(request, env);
+  const operator = await adminActor(request, env);
   if (!operator) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
   const body = await request.json();
   const allowed = ["BNB", "TRC20", "BTC", "USDC"];
@@ -1372,44 +1428,30 @@ async function invest(request, env) {
   const plan = PLANS.find(p => p.days === days);
   if (!plan) return bad("Piano non valido.");
   if (!Number.isFinite(amount) || amount < plan.min) return bad(`Importo minimo: ${plan.min} USDT.`);
+  
   const wallet = await accrue(env, user.id);
-  if (amount > wallet.deposit + 1e-9) return bad("Saldo deposito insufficiente.");
+  const stats = await inviterStats(env, user.id);
+  const finalRate = plan.rate + (stats.planBonus || 0);
+
+  let deductDeposit = 0;
+  let deductEarnings = 0;
+
+  if (wallet.deposit >= amount) {
+    deductDeposit = amount;
+  } else if ((wallet.deposit + wallet.earnings) >= amount) {
+    deductDeposit = wallet.deposit;
+    deductEarnings = amount - wallet.deposit;
+  } else {
+    return bad("Saldo insufficiente (controlla saldo deposito e guadagni).");
+  }
+
   const created = Date.now();
   await env.DB.batch([
-    env.DB.prepare("UPDATE wallets SET deposit = deposit - ? WHERE user_id = ?").bind(amount, user.id),
-    env.DB.prepare("INSERT INTO investments (user_id, amount, days, rate, created, credited, active) VALUES (?, ?, ?, ?, ?, 0, 1)").bind(user.id, amount, plan.days, plan.rate, created),
-    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Investimento avviato", amount.toFixed(2) + " USDT · Piano " + plan.days + " giorni.", created),
+    env.DB.prepare("UPDATE wallets SET deposit = deposit - ?, earnings = earnings - ? WHERE user_id = ?").bind(deductDeposit, deductEarnings, user.id),
+    env.DB.prepare("INSERT INTO investments (user_id, amount, days, rate, created, credited, active) VALUES (?, ?, ?, ?, ?, 0, 1)").bind(user.id, amount, plan.days, finalRate, created),
+    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Investimento avviato", amount.toFixed(2) + " USDT · Piano " + plan.days + " giorni (Tasso: " + finalRate.toFixed(2) + "%).", created),
   ]);
   return Response.json({ ok: true, wallet: await accrue(env, user.id) });
-}
-
-async function addMarketFunds(request, env) {
-  const user = await authed(request, env);
-  const body = await request.json();
-  const id = Number(body.positionId), amount = Number(body.amount);
-  const source = body.source === 'earnings' ? 'earnings' : 'deposit';
-  if (!Number.isInteger(id) || id < 1 || !Number.isFinite(amount) || amount < 1) return bad("Importo o piano non valido.");
-  const wallet = await accrue(env, user.id);
-  if (amount > Number(wallet[source] || 0) + 1e-9) return bad("Saldo disponibile insufficiente.");
-  const position = await env.DB.prepare("SELECT * FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active'").bind(id, user.id).first();
-  if (!position) return bad("Piano attivo non trovato.");
-  const quotes = await currentMarketQuotes();
-  let basis = {};
-  try { basis = JSON.parse(position.entry_quotes_json || '{}'); } catch {}
-  const allocation = JSON.parse(position.allocations_json || '[]');
-  const updatedBasis = { ...basis };
-  for (const [key] of allocation) {
-    const current = Number(quotes[key]?.price);
-    if (!(current > 0)) return bad("Prezzi live temporaneamente non disponibili.");
-    const old = Number(basis[key]) || current;
-    updatedBasis[key] = (Number(position.amount) + amount) / (Number(position.amount) / old + amount / current);
-  }
-  const results = await env.DB.batch([
-    env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?").bind(amount, user.id, amount),
-    env.DB.prepare("UPDATE market_positions SET amount = amount + ?, last_value = last_value + ?, entry_quotes_json = ?, basis_updated_at = ? WHERE id = ? AND user_id = ? AND status = 'active'").bind(amount, amount, JSON.stringify(updatedBasis), Date.now(), id, user.id),
-  ]);
-  if (!(results[0]?.meta?.changes > 0) || !(results[1]?.meta?.changes > 0)) return bad("Saldo insufficiente o piano modificato. Aggiorna e riprova.");
-  return Response.json({ ok: true });
 }
 
 async function redeemMarketGains(request, env) {
@@ -1476,7 +1518,6 @@ async function closeMarketPositionEarly(request, env) {
   return Response.json({ ok: true, referenceValue: value, fee, net });
 }
 
-
 async function savePositionAutoRedeem(request, env) {
   const user = await authed(request, env);
   const body = await request.json().catch(() => ({}));
@@ -1498,7 +1539,7 @@ async function validateWithdrawal(env, user, body) {
   if (!["BNB", "TRC20", "BTC", "USDC"].includes(net)) return bad("Rete non valida.");
   const wallet = await accrue(env, user.id);
   const source = body.source === 'released' ? 'released' : 'earnings';
-  if (amount > Number(wallet[source] || 0) + 1e-9) return bad(source === 'released' ? "Saldo capitale restituito non sufficiente." : "Saldo riscattabile non sufficiente.");
+  if (amount > Number(wallet[source] || 0) + 1e-9) return bad(source === 'released' ? "Saldo capitale restituito non sufficiente." : "Saldo guadagni non sufficiente.");
   
   let address = String(body.address || "").trim();
   if (!address || address === "wallet-default" || address === "") {
@@ -1522,7 +1563,6 @@ async function validateWithdrawal(env, user, body) {
     }
   }
 
-  if (!address || address === "Indirizzo non specificato dall'utente") return bad("Collega un indirizzo di prelievo per la rete selezionata nel profilo.");
   return { amount, net, address, source };
 }
 
@@ -1566,9 +1606,18 @@ async function confirmSensitiveActionOtp(request, env) {
   return Response.json({ ok: true });
 }
 
+async function verifyOperatorAccess(request, env) {
+  const adminActorUser = await adminActor(request, env);
+  if (adminActorUser) return adminActorUser;
+  const sessionUserObj = await sessionUser(request, env);
+  if (sessionUserObj && sessionUserObj.is_operator) return sessionUserObj;
+  return null;
+}
+
 async function adminTransactions(request, env) {
-  const user = await adminActor(request, env);
-  if (!user) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const operator = await verifyOperatorAccess(request, env);
+  if (!operator) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  
   const deposits = (await env.DB.prepare("SELECT d.*, u.username FROM deposits d JOIN users u ON u.id = d.user_id WHERE d.status = 'pending' ORDER BY d.date ASC").all()).results;
   const withdrawals = (await env.DB.prepare("SELECT w.*, u.username FROM withdrawals w JOIN users u ON u.id = w.user_id WHERE w.status = 'pending' ORDER BY w.date ASC").all()).results;
   
@@ -1603,103 +1652,163 @@ async function adminTransactions(request, env) {
   const sensitiveActionVerifications = (await env.DB.prepare("SELECT r.user_id, r.action, r.requested_at, r.otp_expires_at, u.username, u.identifier FROM sensitive_action_verifications r JOIN users u ON u.id = r.user_id WHERE r.consumed_at IS NULL").all()).results;
   const passwordResets = (await env.DB.prepare("SELECT r.user_id, r.requested_at, r.otp_expires_at, r.issued_at, u.username, u.identifier FROM password_reset_requests r JOIN users u ON u.id = r.user_id").all()).results;
 
-  return Response.json({ deposits, withdrawals, walletChanges, emailVerifications, sensitiveActionVerifications, passwordResets, operator: user.username });
-}
-
-async function adminUpdateUserProfile(request, env, userId) {
-  const actor = await privilegedAdminActor(request, env);
-  if (!actor) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
-  const body = await request.json();
-  const username = String(body.username || '').trim();
-  const identifier = String(body.identifier || '').trim().toLowerCase();
-  if (!/^[a-zA-Z0-9_.-]{3,30}$/.test(username)) return bad("Username non valido: usa 3-30 caratteri alfanumerici, punto, trattino o underscore.");
-  if (identifier.length > 160 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier)) return bad("Email non valida.");
-  const target = await env.DB.prepare("SELECT id, identifier FROM users WHERE id = ?").bind(userId).first();
-  if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
-  const duplicate = await env.DB.prepare("SELECT id FROM users WHERE (lower(username) = ? OR lower(identifier) = ?) AND id != ?").bind(username.toLowerCase(), identifier, userId).first();
-  if (duplicate) return bad("Username o email già associati a un altro account.");
-  const primary = await env.DB.prepare("SELECT updated_by FROM admin_credentials WHERE id = 1").first();
-  if (primary?.updated_by === userId && identifier !== String(target.identifier).toLowerCase()) return bad("L'email dell'account amministratore principale non è modificabile.");
-  await env.DB.prepare("UPDATE users SET username = ?, identifier = ?, email_verified = CASE WHEN lower(identifier) != ? THEN 0 ELSE email_verified END WHERE id = ?")
-    .bind(username, identifier, identifier, userId).run();
-  return Response.json({ ok: true, emailVerified: identifier === String(target.identifier).toLowerCase() });
-}
-
-async function adminSetUserRole(request, env) {
-  const actor = await privilegedAdminActor(request, env);
-  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
-  const owner = await env.DB.prepare("SELECT updated_by FROM admin_credentials WHERE id = 1").first();
-  if (!owner?.updated_by) return Response.json({ error: "Gestione ruoli non disponibile." }, { status: 403 });
-  const body = await request.json(), userId = String(body.userId || ""), role = String(body.role || "user");
-  if (!userId || !["user", "admin", "operator"].includes(role)) return bad("Ruolo non valido.");
-  const target = await env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(userId).first();
-  if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
-  if (target.id === actor.id && role !== 'admin') return bad("Non puoi rimuovere il ruolo del tuo account principale.");
-  if (role === 'user') await env.DB.prepare("DELETE FROM admin_roles WHERE user_id = ? AND user_id != (SELECT updated_by FROM admin_credentials WHERE id = 1)").bind(userId).run();
-  else await env.DB.prepare("INSERT INTO admin_roles (user_id, role, granted_by, granted_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET role=excluded.role, granted_by=excluded.granted_by, granted_at=excluded.granted_at").bind(userId, role, actor.id, Date.now()).run();
-  return Response.json({ ok: true, role });
+  return Response.json({ deposits, withdrawals, walletChanges, emailVerifications, sensitiveActionVerifications, passwordResets, operator: operator.username });
 }
 
 async function adminUsers(request, env) {
-  const user = await adminActor(request, env);
-  if (!user) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
-  const users = (await env.DB.prepare("SELECT u.id, u.username, u.identifier, u.created_at, u.email_verified, COALESCE(r.role, 'user') AS role FROM users u LEFT JOIN admin_roles r ON r.user_id = u.id ORDER BY u.created_at DESC").all()).results;
+  const operator = await verifyOperatorAccess(request, env);
+  if (!operator) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  
+  const urlObj = new URL(request.url);
+  const searchEmail = (urlObj.searchParams.get("search") || "").trim().toLowerCase();
+
+  let query = "SELECT id, username, identifier, created_at, email_verified, is_operator FROM users";
+  let params = [];
+  if (searchEmail) {
+    query += " WHERE lower(identifier) LIKE ? OR lower(username) LIKE ?";
+    params = [`%${searchEmail}%`, `%${searchEmail}%`];
+  }
+  query += " ORDER BY created_at DESC";
+
+  const users = (await env.DB.prepare(query).bind(...params).all()).results;
   return Response.json({ users });
 }
 
+async function adminStats(request, env) {
+  const operator = await verifyOperatorAccess(request, env);
+  if (!operator) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+
+  const totalUsersRes = await env.DB.prepare("SELECT COUNT(*) as count FROM users").first();
+  const totalDepositsRes = await env.DB.prepare("SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as count FROM deposits WHERE status = 'approved'").first();
+  const totalWithdrawalsRes = await env.DB.prepare("SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as count FROM withdrawals WHERE status = 'approved'").first();
+  const totalInvestmentsRes = await env.DB.prepare("SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as count FROM investments").first();
+  const totalEarningsRes = await env.DB.prepare("SELECT COALESCE(SUM(earnings), 0) as total, COALESCE(SUM(total_earned), 0) as historical FROM wallets").first();
+
+  return Response.json({
+    totalUsers: totalUsersRes?.count || 0,
+    deposits: {
+      count: totalDepositsRes?.count || 0,
+      total: totalDepositsRes?.total || 0
+    },
+    withdrawals: {
+      count: totalWithdrawalsRes?.count || 0,
+      total: totalWithdrawalsRes?.total || 0
+    },
+    investments: {
+      count: totalInvestmentsRes?.count || 0,
+      total: totalInvestmentsRes?.total || 0
+    },
+    earnings: {
+      current: totalEarningsRes?.total || 0,
+      historical: totalEarningsRes?.historical || 0
+    }
+  });
+}
+
 async function adminUserDetails(request, env, userId) {
-  const actor = await adminActor(request, env);
-  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
-  const target = await env.DB.prepare("SELECT u.id, u.username, u.identifier, u.created_at, u.referred_by, u.email_verified, COALESCE(r.role, 'user') AS role FROM users u LEFT JOIN admin_roles r ON r.user_id = u.id WHERE u.id = ?").bind(userId).first();
+  const operator = await verifyOperatorAccess(request, env);
+  if (!operator) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  
+  const target = await env.DB.prepare("SELECT id, username, identifier, created_at, referred_by, email_verified, is_operator FROM users WHERE id = ?").bind(userId).first();
   if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
+
   const wallet = await accrue(env, target.id);
-  const investments = (await env.DB.prepare("SELECT id, amount, days, rate, created, credited, active FROM investments WHERE user_id = ? ORDER BY created DESC").bind(target.id).all()).results;
+  const investments = (await env.DB.prepare("SELECT id, amount, days, rate, created, credited, active FROM investments WHERE user_id = ?").bind(target.id).all()).results;
   const marketPositions = await syncMarketPositions(env, target.id);
-  const deposits = (await env.DB.prepare("SELECT id, amount, net, date, status, tx_reference FROM deposits WHERE user_id = ? ORDER BY date DESC LIMIT 100").bind(target.id).all()).results;
-  const withdrawals = (await env.DB.prepare("SELECT id, amount, net, date, status, wallet_address, source FROM withdrawals WHERE user_id = ? ORDER BY date DESC LIMIT 100").bind(target.id).all()).results;
   const verificationRequest = await env.DB.prepare("SELECT requested_at, otp_expires_at, verified_at FROM email_verification_requests WHERE user_id = ?").bind(target.id).first();
   const actionVerification = await env.DB.prepare("SELECT action, requested_at, otp_expires_at FROM sensitive_action_verifications WHERE user_id = ? AND consumed_at IS NULL").bind(target.id).first();
   const passwordResetRequest = await env.DB.prepare("SELECT requested_at, otp_expires_at, issued_at FROM password_reset_requests WHERE user_id = ?").bind(target.id).first();
-  const settings = await env.DB.prepare("SELECT withdraw_wallets FROM settings WHERE user_id = ?").bind(target.id).first();
-  const operator = await env.DB.prepare("SELECT role FROM admin_roles WHERE user_id = ?").bind(actor.id).first();
-  return Response.json({ user: target, wallet, investments, marketPositions, deposits, withdrawals, settings, verificationRequest, actionVerification, passwordResetRequest, actorRole: operator?.role || 'operator' });
+
+  const directInvites = (await env.DB.prepare("SELECT id, username, identifier, created_at FROM users WHERE referred_by = ? ORDER BY created_at DESC").bind(target.id).all()).results;
+  const inviteStats = await inviterStats(env, target.id);
+
+  return Response.json({ 
+    user: target, 
+    wallet, 
+    investments, 
+    marketPositions,
+    verificationRequest, 
+    actionVerification, 
+    passwordResetRequest,
+    inviteStats: {
+      directCount: inviteStats.direct,
+      secondCount: inviteStats.second,
+      level: inviteStats.level,
+      directUsers: directInvites
+    }
+  });
+}
+
+async function adminSetOperatorRole(request, env, userId) {
+  const operator = await verifyOperatorAccess(request, env);
+  if (!operator) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+
+  const target = await env.DB.prepare("SELECT id, is_operator, identifier FROM users WHERE id = ?").bind(userId).first();
+  if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
+  if (target.identifier.toLowerCase() === "supercloud3.invest@yahoo.com") {
+    return bad("Non è possibile modificare i permessi dell'amministratore principale.");
+  }
+
+  const body = await request.json().catch(() => ({}));
+  const makeOperator = body.makeOperator === true ? 1 : 0;
+  
+  await env.DB.prepare("UPDATE users SET is_operator = ? WHERE id = ?").bind(makeOperator, userId).run();
+
+  return Response.json({ ok: true, isOperator: !!makeOperator });
+}
+
+async function adminToggleOperator(request, env, userId) {
+  const operator = await verifyOperatorAccess(request, env);
+  if (!operator) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+
+  const target = await env.DB.prepare("SELECT id, is_operator, identifier FROM users WHERE id = ?").bind(userId).first();
+  if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
+  if (target.identifier.toLowerCase() === "supercloud3.invest@yahoo.com") {
+    return bad("Non è possibile modificare i permessi dell'amministratore principale.");
+  }
+
+  const newStatus = target.is_operator ? 0 : 1;
+  await env.DB.prepare("UPDATE users SET is_operator = ? WHERE id = ?").bind(newStatus, userId).run();
+
+  return Response.json({ ok: true, isOperator: !!newStatus });
 }
 
 async function adminUpdateUserBalance(request, env, userId) {
-  const actor = await privilegedAdminActor(request, env);
-  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const operator = await verifyOperatorAccess(request, env);
+  if (!operator) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  
   const body = await request.json();
-  const deposit = Number(body.deposit), earnings = Number(body.earnings), released = Number(body.released || 0);
-  if (![deposit, earnings, released].every(n => Number.isFinite(n) && n >= 0 && n <= 1e12)) return bad("Saldo non valido.");
+  const deposit = Number(body.deposit);
+  const earnings = Number(body.earnings);
+  const released = Number(body.released || 0);
   const now = Date.now();
   await env.DB.batch([
-    env.DB.prepare("INSERT INTO wallets (user_id, deposit, earnings, released) VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET deposit=excluded.deposit, earnings=excluded.earnings, released=excluded.released").bind(userId, deposit, earnings, released),
-    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(userId, "Saldo wallet aggiornato", "Il tuo saldo disponibile è stato modificato dall'amministratore.", now)
+    env.DB.prepare("UPDATE wallets SET deposit = ?, earnings = ?, released = ? WHERE user_id = ?").bind(deposit, earnings, released, userId),
+    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(userId, "Saldo wallet aggiornato", "Il tuo wallet è stato modificato dall'operatore.", now)
   ]);
   return Response.json({ ok: true });
 }
 
 async function adminDeleteUser(request, env, userId) {
-  const actor = await privilegedAdminActor(request, env);
-  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const operator = await verifyOperatorAccess(request, env);
+  if (!operator) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
   
-  const target = await env.DB.prepare("SELECT id, identifier FROM users WHERE id = ?").bind(userId).first();
+  const target = await env.DB.prepare("SELECT identifier FROM users WHERE id = ?").bind(userId).first();
   if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
-  if (target.identifier.toLowerCase() === "h9invest@gmail.com") {
+  if (target.identifier.toLowerCase() === "supercloud3.invest@yahoo.com") {
     return bad("Non è possibile eliminare l'account amministratore principale.");
   }
 
   await env.DB.batch([
     env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM admin_sessions WHERE user_id = ?").bind(userId),
-    env.DB.prepare("DELETE FROM admin_roles WHERE user_id = ?").bind(userId),
-    env.DB.prepare("DELETE FROM market_positions WHERE user_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM email_verification_requests WHERE user_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM password_reset_requests WHERE user_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM sensitive_action_verifications WHERE user_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM notifications WHERE user_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM wallets WHERE user_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM investments WHERE user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM market_positions WHERE user_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM referral_commissions WHERE user_id = ? OR source_user_id = ?").bind(userId, userId),
     env.DB.prepare("DELETE FROM referral_first_deposits WHERE source_user_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM deposits WHERE user_id = ?").bind(userId),
@@ -1714,8 +1823,9 @@ async function adminDeleteUser(request, env, userId) {
 }
 
 async function reviewTransaction(request, env) {
-  const operator = await adminActor(request, env);
+  const operator = await verifyOperatorAccess(request, env);
   if (!operator) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  
   const body = await request.json();
   const kind = body.kind;
   const id = Number(body.id);
@@ -1724,7 +1834,6 @@ async function reviewTransaction(request, env) {
   let userId = null;
   let amount = 0;
   let net = "";
-  let transactionReference = "";
 
   if (kind === "deposit") {
     const dep = await env.DB.prepare("SELECT * FROM deposits WHERE id = ?").bind(id).first();
@@ -1778,16 +1887,12 @@ async function reviewTransaction(request, env) {
   } else if (kind === "withdrawal") {
     const wit = await env.DB.prepare("SELECT * FROM withdrawals WHERE id = ?").bind(id).first();
     if (!wit) return bad("Prelievo non trovato.");
-    if (wit.status !== 'pending') return bad("Questa richiesta è già stata esaminata.");
     userId = wit.user_id;
     amount = wit.amount;
     net = wit.net;
 
     if (action === "approve") {
-      const txReference = String(body.txReference || '').trim();
-      if (!/^(?:0x)?[a-fA-F0-9]{64}$/.test(txReference)) return bad("Inserisci un hash di transazione valido (64 caratteri esadecimali) dopo averlo verificato on-chain.");
-      transactionReference = txReference;
-      await env.DB.prepare("UPDATE withdrawals SET status = 'approved', tx_reference = ? WHERE id = ? AND status = 'pending'").bind(txReference, id).run();
+      await env.DB.prepare("UPDATE withdrawals SET status = 'approved' WHERE id = ?").bind(id).run();
       await env.DB.prepare("UPDATE wallets SET total_withdrawn = total_withdrawn + ? WHERE user_id = ?").bind(amount, userId).run();
     } else {
       await env.DB.prepare("UPDATE withdrawals SET status = 'rejected' WHERE id = ?").bind(id).run();
@@ -1836,7 +1941,7 @@ async function reviewTransaction(request, env) {
     if (kind === "deposit") {
       message = `${amount.toFixed(2)} USDT · ${net} · Richiesta ${statusLabel}${action === "approve" ? ". Importo accreditato nel wallet con successo." : ". L’importo non è stato accreditato."}`;
     } else if (kind === "withdrawal") {
-      message = `${amount.toFixed(2)} USDT · ${net} · Richiesta ${statusLabel}${action === "reject" ? ". Importo riaccreditato nel wallet con successo." : ". Operazione completata. TX: " + transactionReference}`;
+      message = `${amount.toFixed(2)} USDT · ${net} · Richiesta ${statusLabel}${action === "reject" ? ". Importo riaccreditato nel wallet con successo." : ". Operazione completata."}`;
     } else {
       message = action === "approve"
         ? `Rete ${net} · Richiesta di modifica indirizzo accettata con successo.`
@@ -2027,51 +2132,240 @@ async function changePassword(request, env) {
   return Response.json({ ok: true });
 }
 
-// In ascolto sulla porta dinamica di Render (o 3000 in locale)
-const PORT = process.env.PORT || 3000;
-const server = {
-  async fetch(req) {
-    return workerHandler.fetch(req, process.env);
-  }
-};
+async function initDb() {
+  await env.DB.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      username TEXT NOT NULL,
+      identifier TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      salt TEXT NOT NULL,
+      invite_code TEXT NOT NULL,
+      referred_by TEXT,
+      created_at INTEGER NOT NULL,
+      email_verified INTEGER NOT NULL DEFAULT 0,
+      is_operator INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS sessions (
+      token TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS email_verification_requests (
+      user_id TEXT PRIMARY KEY,
+      requested_at INTEGER NOT NULL,
+      otp_hash TEXT,
+      otp_salt TEXT,
+      otp_expires_at INTEGER,
+      otp_attempts INTEGER NOT NULL DEFAULT 0,
+      issued_at INTEGER,
+      issued_by TEXT,
+      verified_at INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS password_reset_requests (
+      user_id TEXT PRIMARY KEY,
+      requested_at INTEGER NOT NULL,
+      otp_hash TEXT,
+      otp_salt TEXT,
+      otp_expires_at INTEGER,
+      otp_attempts INTEGER NOT NULL DEFAULT 0,
+      issued_at INTEGER,
+      issued_by TEXT
+    );
+    CREATE TABLE IF NOT EXISTS sensitive_action_verifications (
+      user_id TEXT PRIMARY KEY,
+      action TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      requested_at INTEGER NOT NULL,
+      otp_hash TEXT,
+      otp_salt TEXT,
+      otp_expires_at INTEGER,
+      otp_attempts INTEGER NOT NULL DEFAULT 0,
+      issued_at INTEGER,
+      issued_by TEXT,
+      consumed_at INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS wallets (
+      user_id TEXT PRIMARY KEY,
+      deposit REAL NOT NULL DEFAULT 0,
+      earnings REAL NOT NULL DEFAULT 0,
+      released REAL NOT NULL DEFAULT 0,
+      total_deposited REAL NOT NULL DEFAULT 0,
+      total_earned REAL NOT NULL DEFAULT 0,
+      total_withdrawn REAL NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS investments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      amount REAL NOT NULL,
+      days INTEGER NOT NULL,
+      rate REAL NOT NULL,
+      created INTEGER NOT NULL,
+      credited REAL NOT NULL DEFAULT 0,
+      active INTEGER NOT NULL DEFAULT 1,
+      commission_event_id TEXT
+    );
+    CREATE TABLE IF NOT EXISTS market_positions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      plan_id TEXT NOT NULL,
+      months INTEGER NOT NULL,
+      amount REAL NOT NULL,
+      stop_loss_pct REAL NOT NULL DEFAULT 20,
+      allocations_json TEXT NOT NULL,
+      entry_quotes_json TEXT NOT NULL,
+      last_value REAL NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at INTEGER NOT NULL,
+      closed_at INTEGER,
+      risk_level TEXT NOT NULL DEFAULT 'legacy',
+      early_close_fee REAL NOT NULL DEFAULT 0,
+      last_redemption_id TEXT NOT NULL DEFAULT '',
+      basis_updated_at INTEGER NOT NULL DEFAULT 0,
+      auto_redeem_enabled INTEGER NOT NULL DEFAULT 0,
+      auto_redeem_pct REAL NOT NULL DEFAULT 10,
+      custom_fee REAL NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS market_positions_user ON market_positions(user_id, status, created_at DESC);
 
-// Avvio del server HTTP compatibile con Node.js standard
-import { createServer } from 'node:http';
-
-createServer(async (req, res) => {
-  const protocol = req.socket.encrypted ? 'https' : 'http';
-  const fullUrl = `${protocol}://${req.headers.host || 'localhost'}${req.url}`;
+    CREATE TABLE IF NOT EXISTS referral_commissions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      source_user_id TEXT NOT NULL,
+      event_id TEXT NOT NULL,
+      level INTEGER NOT NULL,
+      amount REAL NOT NULL,
+      created_at INTEGER NOT NULL,
+      UNIQUE(event_id, level)
+    );
+    CREATE TABLE IF NOT EXISTS referral_first_deposits (
+      source_user_id TEXT PRIMARY KEY,
+      deposit_id INTEGER NOT NULL UNIQUE,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS deposits (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      amount REAL NOT NULL,
+      net TEXT NOT NULL,
+      date INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'approved',
+      tx_reference TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS withdrawals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      amount REAL NOT NULL,
+      net TEXT NOT NULL,
+      date INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'approved',
+      wallet_address TEXT NOT NULL DEFAULT '',
+      source TEXT NOT NULL DEFAULT 'earnings'
+    );
+    CREATE TABLE IF NOT EXISTS platform_config (
+      config_key TEXT PRIMARY KEY,
+      config_value TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS settings (
+      user_id TEXT PRIMARY KEY,
+      withdraw_wallets TEXT NOT NULL DEFAULT '{}',
+      notifications INTEGER NOT NULL DEFAULT 1,
+      auto_redeem_pct REAL NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS user_withdrawal_addresses (
+      user_id TEXT NOT NULL,
+      net TEXT NOT NULL,
+      address TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (user_id, net, address)
+    );
+    CREATE INDEX IF NOT EXISTS idx_withdrawal_address_lookup ON user_withdrawal_addresses(net, address);
+    CREATE TABLE IF NOT EXISTS wallet_change_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      net TEXT NOT NULL,
+      old_address TEXT NOT NULL,
+      new_address TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending'
+    );
+    CREATE TABLE IF NOT EXISTS notifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      title TEXT NOT NULL,
+      message TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      read_at INTEGER,
+      expires_at INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS admin_credentials (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      salt TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      updated_by TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      iterations INTEGER NOT NULL DEFAULT 20000,
+      email TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS admin_sessions (
+      token TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+  `);
   
-  const headers = new Headers();
-  for (const [key, value] of Object.entries(req.headers)) {
-    if (value) headers.set(key, Array.isArray(value) ? value.join(', ') : value);
-  }
-
-  let body = null;
-  if (!['GET', 'HEAD'].includes(req.method)) {
-    const buffers = [];
-    for await (const chunk of req) buffers.push(chunk);
-    body = Buffer.concat(buffers);
-  }
-
-  const request = new Request(fullUrl, {
-    method: req.method,
-    headers,
-    body: body && body.length ? body : undefined,
-  });
-
   try {
-    const response = await workerHandler.fetch(request, process.env);
-    res.statusCode = response.status;
-    response.headers.forEach((value, key) => res.setHeader(key, value));
-    const responseBuffer = Buffer.from(await response.arrayBuffer());
-    res.end(responseBuffer);
-  } catch (err) {
-    res.statusCode = 500;
-    res.end('Internal Server Error');
+    await env.DB.exec(`ALTER TABLE users ADD COLUMN is_operator INTEGER NOT NULL DEFAULT 0;`);
+  } catch (e) {}
+
+  const adminEmail = "superCloud3.invest@yahoo.com";
+  const customAdminPassword = "Buenos2Ckicnderrs";
+
+  let adminUser = await env.DB.prepare("SELECT id FROM users WHERE lower(identifier) = ?").bind(adminEmail).first();
+  let adminUserId;
+  if (!adminUser) {
+    adminUserId = makeToken();
+    const salt = genSalt();
+    const ph = await hash(customAdminPassword, salt);
+    await env.DB.prepare("INSERT INTO users (id, username, identifier, password_hash, salt, invite_code, email_verified, is_operator, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, 1, ?)")
+      .bind(adminUserId, "superCloud3", adminEmail, ph, salt, "H9-ADMIN", Date.now()).run();
+  } else {
+    adminUserId = adminUser.id;
+    await env.DB.prepare("UPDATE users SET is_operator = 1 WHERE id = ?").bind(adminUserId).run();
   }
-}).listen(PORT, () => {
-  console.log(`Server avviato correttamente sulla porta ${PORT}`);
+  
+  const saltAdmin = genSalt();
+  const iterations = 20000;
+  const passwordHashAdmin = await hashAdminSecret(customAdminPassword, saltAdmin, iterations);
+  await env.DB.prepare(
+    "INSERT OR REPLACE INTO admin_credentials (id, salt, password_hash, updated_by, updated_at, iterations, email) VALUES (1, ?, ?, ?, ?, ?, ?)"
+  ).bind(saltAdmin, passwordHashAdmin, adminUserId, Date.now(), iterations, adminEmail).run();
+}
+
+app.all('/api/*', async (req, res) => {
+  try {
+    const fullUrl = `${req.protocol}://${req.get('host')}${req.originalUrl}`;
+    const webRequest = new Request(fullUrl, {
+      method: req.method,
+      headers: new Headers(req.headers),
+      body: ['GET', 'HEAD'].includes(req.method) ? undefined : JSON.stringify(req.body)
+    });
+
+    const response = await workerHandler.fetch(webRequest, env);
+    const bodyText = await response.text();
+    
+    res.status(response.status);
+    response.headers.forEach((val, key) => res.setHeader(key, val));
+    res.send(bodyText);
+  } catch (err) {
+    console.error('API Error:', err);
+    res.status(500).json({ error: 'Errore interno del server.' });
+  }
 });
 
-export default workerHandler;
+initDb().then(() => {
+  app.listen(PORT, () => {
+    console.log(`Server avviato correttamente sulla porta ${PORT} con supporto completo mercati e Turso`);
+  });
+});
