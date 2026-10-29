@@ -2027,4 +2027,51 @@ async function changePassword(request, env) {
   return Response.json({ ok: true });
 }
 
+// In ascolto sulla porta dinamica di Render (o 3000 in locale)
+const PORT = process.env.PORT || 3000;
+const server = {
+  async fetch(req) {
+    return workerHandler.fetch(req, process.env);
+  }
+};
+
+// Avvio del server HTTP compatibile con Node.js standard
+import { createServer } from 'node:http';
+
+createServer(async (req, res) => {
+  const protocol = req.socket.encrypted ? 'https' : 'http';
+  const fullUrl = `${protocol}://${req.headers.host || 'localhost'}${req.url}`;
+  
+  const headers = new Headers();
+  for (const [key, value] of Object.entries(req.headers)) {
+    if (value) headers.set(key, Array.isArray(value) ? value.join(', ') : value);
+  }
+
+  let body = null;
+  if (!['GET', 'HEAD'].includes(req.method)) {
+    const buffers = [];
+    for await (const chunk of req) buffers.push(chunk);
+    body = Buffer.concat(buffers);
+  }
+
+  const request = new Request(fullUrl, {
+    method: req.method,
+    headers,
+    body: body && body.length ? body : undefined,
+  });
+
+  try {
+    const response = await workerHandler.fetch(request, process.env);
+    res.statusCode = response.status;
+    response.headers.forEach((value, key) => res.setHeader(key, value));
+    const responseBuffer = Buffer.from(await response.arrayBuffer());
+    res.end(responseBuffer);
+  } catch (err) {
+    res.statusCode = 500;
+    res.end('Internal Server Error');
+  }
+}).listen(PORT, () => {
+  console.log(`Server avviato correttamente sulla porta ${PORT}`);
+});
+
 export default workerHandler;
