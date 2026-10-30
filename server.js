@@ -1730,7 +1730,8 @@ async function adminUserDetails(request, env, userId) {
   const passwordResetRequest = await env.DB.prepare("SELECT requested_at, otp_expires_at, issued_at FROM password_reset_requests WHERE user_id = ?").bind(target.id).first();
   const settings = await env.DB.prepare("SELECT withdraw_wallets FROM settings WHERE user_id = ?").bind(target.id).first();
   const operator = await env.DB.prepare("SELECT role FROM admin_roles WHERE user_id = ?").bind(actor.id).first();
-  return Response.json({ user: target, wallet, investments, marketPositions, deposits, withdrawals, settings, verificationRequest, actionVerification, passwordResetRequest, actorRole: operator?.role || 'operator' });
+  const invitedCount = await env.DB.prepare("SELECT COUNT(*) AS count FROM users WHERE referred_by = ?").bind(target.id).first();
+  return Response.json({ user: target, wallet, investments, marketPositions, deposits, withdrawals, settings, verificationRequest, actionVerification, passwordResetRequest, invitedCount: Number(invitedCount?.count || 0), actorRole: operator?.role || 'operator' });
 }
 
 async function adminUpdateUserBalance(request, env, userId) {

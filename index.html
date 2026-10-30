@@ -294,9 +294,13 @@
           </div><div class="admin-stats-breakdown" id="global-stats-breakdown"></div>
         </div>
         <div class="admin-section admin-referral-overview" id="admin-referral-overview">
-          <div class="section-heading"><div><p class="eyebrow">INVITATION NETWORK</p><h2>Referral statistics</h2></div></div>
-          <div class="admin-users-toolbar"><span>Invited users with deposits, withdrawals and investments</span><select id="admin-referral-level-filter" aria-label="Filter referral level"><option value="all">All levels</option><option value="1">Level 1</option><option value="2">Level 2</option><option value="3">Level 3</option></select></div>
-          <div class="admin-referral-list" id="admin-referral-list"></div><div class="queue-empty" id="admin-referral-empty" hidden>No invited users recorded.</div>
+          <details class="admin-referral-panel">
+            <summary class="section-heading"><div><p class="eyebrow">INVITATION NETWORK</p><h2>Referral statistics</h2></div><span class="admin-referral-toggle-label">Open</span></summary>
+            <div class="admin-referral-content">
+              <div class="admin-users-toolbar"><span>Invited users with deposits, withdrawals and investments</span><select id="admin-referral-level-filter" aria-label="Filter referral level"><option value="all">All levels</option><option value="1">Level 1</option><option value="2">Level 2</option><option value="3">Level 3</option></select></div>
+              <div class="admin-referral-list" id="admin-referral-list"></div><div class="queue-empty" id="admin-referral-empty" hidden>No invited users recorded.</div>
+            </div>
+          </details>
         </div>
         <div class="admin-section">
           <div class="section-heading"><div><p class="eyebrow">DEPOSIT NETWORKS</p><h2>Deposit addresses</h2></div></div>

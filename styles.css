@@ -1976,3 +1976,12 @@ button[data-redeem-earnings]:disabled { opacity:.55; cursor:not-allowed; }
 .invite-team-toolbar { display:flex; justify-content:flex-end; margin:0 0 10px; }
 .invite-team-toolbar select { max-width:180px; }
 @media (max-width:720px) { .admin-stat-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .admin-stat-card:first-child { grid-column:1/-1; } .admin-stats-breakdown { grid-template-columns:1fr; } .admin-referral-inviter > summary,.admin-referral-level > summary { align-items:flex-start; flex-direction:column; gap:5px; } .admin-referral-inviter > summary span,.admin-referral-level > summary span { text-align:left; } #view-admin .admin-section { padding:13px; } }
+
+/* Keep referral analytics collapsed until the admin opens the section */
+.admin-referral-panel > summary { cursor:pointer; list-style:none; }
+.admin-referral-panel > summary::-webkit-details-marker { display:none; }
+.admin-referral-panel > summary::after { content:'＋'; color:var(--muted); margin-left:auto; }
+.admin-referral-panel[open] > summary::after { content:'−'; }
+.admin-referral-toggle-label { color:var(--muted); font-size:12px; margin-left:auto; }
+.admin-referral-panel[open] .admin-referral-toggle-label { display:none; }
+.admin-referral-content { padding-top:12px; }
