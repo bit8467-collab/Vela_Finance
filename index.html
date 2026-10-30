@@ -26,7 +26,7 @@
       <header class="landing-header">
         <a class="brand landing-brand" href="#top" aria-label="You Invest, pagina iniziale"><span class="brand-mark">YI</span><span>YOU <b>INVEST</b></span></a>
         <nav class="landing-nav" aria-label="Company navigation">
-          <a href="#company-info">Company &amp; legal</a>
+          <a href="#about-info" data-open-info="about-info">Chi siamo</a>
         </nav>
         <div class="landing-controls">
           <label class="landing-language-label" for="landing-language-select">Language</label>
@@ -44,36 +44,55 @@
           <p class="hero-lede">You Invest is an evolving project that aims to make tools for exploring the world of investing easier to understand.</p>
           <div class="hero-actions">
             <button class="hero-button" type="button" data-auth="register">Create an account <span aria-hidden="true">↗</span></button>
-            <a class="hero-secondary" href="#company-info">Company information <span aria-hidden="true">↓</span></a>
+            <a class="hero-secondary" href="#more-info" data-open-info="more-info">Per saperne di più <span aria-hidden="true">↓</span></a>
           </div>
           <p class="hero-disclaimer">Do not send cryptocurrency until the operator has configured and verified an address for the correct network. Deposit and withdrawal requests are reviewed manually.</p>
         </div>
-        <div class="hero-art" aria-hidden="true">
-          <div class="orbit orbit-one"></div><div class="orbit orbit-two"></div>
-          <div class="orbit-core"><span>YI</span><i></i></div>
-          <div class="floating-note note-top"><span>01</span><b>Clarity</b></div>
-          <div class="floating-note note-bottom"><span>02</span><b>Awareness</b></div>
-          <div class="hero-spark spark-one">✳</div><div class="hero-spark spark-two">✳</div>
+        <div class="hero-art">
+          <div class="orbit orbit-one" aria-hidden="true"></div><div class="orbit orbit-two" aria-hidden="true"></div>
+          <button class="orbit-core" type="button" data-open-info="about-info" aria-label="Apri Chi siamo"><span>YI</span><i aria-hidden="true"></i></button>
+          <a class="floating-note note-top" href="#about-info" data-open-info="about-info" aria-label="Apri Chi siamo: chiarezza"><span>01</span><b>Clarity</b></a>
+          <a class="floating-note note-bottom" href="#more-info" data-open-info="more-info" aria-label="Apri Per saperne di più: consapevolezza"><span>02</span><b>Awareness</b></a>
+          <div class="hero-spark spark-one" aria-hidden="true">✳</div><div class="hero-spark spark-two" aria-hidden="true">✳</div>
         </div>
-        <a class="scroll-cue" href="#company-info"><span></span> COMPANY INFORMATION</a>
+        <a class="scroll-cue" href="#about-info" data-open-info="about-info"><span></span> CHI SIAMO</a>
       </section>
 
-      <div class="landing-notice"><span>PROJECT IN DEVELOPMENT</span> Company identity, authorization, and external financial-service integrations have not been verified.</div>
+      <div class="landing-notice"><span>LIVE PLATFORM</span> Company identity, authorization, and external financial-service integrations have not been verified.</div>
 
-      <details class="company-info" id="company-info">
+      <details class="company-info" id="about-info">
         <summary class="company-info-summary">
           <span class="company-info-icon" aria-hidden="true">i</span>
-          <span class="company-info-copy"><span class="company-info-kicker">PROJECT STATUS</span><strong>Company &amp; service information</strong><small>Platform status, market data and limitations</small></span>
+          <span class="company-info-copy"><span class="company-info-kicker">VELA_FINANCE · BY YOU INVEST</span><strong>Chi siamo</strong><small>Informazioni essenziali</small></span>
           <span class="company-info-toggle" aria-hidden="true"></span>
         </summary>
         <div class="company-info-content">
-          <section class="company-section about-section"><div class="section-label"><span>01</span> THE PROJECT</div><div class="about-grid"><h2>You Invest<span class="accent-dot">.</span></h2><div class="about-copy"><p class="about-lead">A database-backed account platform with public market reference data.</p><p>Registered accounts, balance records, requests, and tracked portfolios are stored by the platform backend. Asset prices and charts are sourced from public market-data providers and may be delayed or unavailable.</p><p>Market tracking positions do not mean that the platform has bought or holds Bitcoin, gold, shares, or other assets.</p></div></div></section>
-          <section class="company-section compliance-section"><div class="section-label"><span>02</span> LIMITATIONS</div><div class="section-title-row"><div><h2>Services and permissions<span class="accent-dot">.</span></h2><p>No broker, exchange, bank, payment processor, or blockchain settlement integration is configured.</p></div></div><p class="legal-note">Deposits and withdrawals are requests recorded for manual review; submitting a request does not move cryptocurrency or issue a payout. A stop threshold is evaluated against public reference quotes when the account refreshes, not continuously and not as a market order. No regulatory approval, legal entity, company office, certificate, or support contact is asserted here. This is not financial advice.</p></section>
+          <section class="company-section about-section"><div class="about-grid"><h2>VELA_FINANCE<span class="accent-dot">.</span></h2><div class="about-copy"><p class="about-lead">VELA_FINANCE by You Invest.</p><p>Interfaccia per consultare dati pubblici di mercato e visualizzare l’andamento indicativo dei piani.</p></div></div></section>
+        </div>
+      </details>
+
+      <details class="company-info" id="contact-info">
+        <summary class="company-info-summary">
+          <span class="company-info-icon" aria-hidden="true">@</span>
+          <span class="company-info-copy"><span class="company-info-kicker">CONTATTI</span><strong>Contatti</strong><small>Scrivici via email</small></span>
+          <span class="company-info-toggle" aria-hidden="true"></span>
+        </summary>
+        <div class="company-info-content"><section class="company-section"><p class="about-lead"><a href="mailto:Vela.Finance@youinvest.yahoo.com">Vela.Finance@youinvest.yahoo.com</a></p></section></div>
+      </details>
+
+      <details class="company-info" id="more-info">
+        <summary class="company-info-summary">
+          <span class="company-info-icon" aria-hidden="true">+</span>
+          <span class="company-info-copy"><span class="company-info-kicker">INFORMAZIONI</span><strong>Per saperne di più</strong><small>Dati e limiti del servizio</small></span>
+          <span class="company-info-toggle" aria-hidden="true"></span>
+        </summary>
+        <div class="company-info-content">
+          <section class="company-section compliance-section"><div class="section-title-row"><div><h2>Informazioni sul servizio<span class="accent-dot">.</span></h2><p>I valori e i grafici dei piani sono indicativi e derivano da quotazioni pubbliche; non attestano l’acquisto o la custodia degli asset.</p></div></div><p class="legal-note">Le richieste di deposito e prelievo sono sottoposte a revisione manuale; inviarle non trasferisce fondi né costituisce un pagamento. Le soglie dei piani vengono controllate quando i dati di mercato si aggiornano e non corrispondono a ordini di mercato continui. I grafici mostrano dati di riferimento disponibili e non garantiscono risultati. Le informazioni non costituiscono consulenza finanziaria.</p></section>
         </div>
       </details>
 
 
-      <footer class="landing-footer"><a class="brand footer-brand" href="#top"><span class="brand-mark">YI</span><span>YOU <b>INVEST</b></span></a><span>© 2026 You Invest · Project in development.</span><a href="#company-info">Legal information ↑</a></footer>
+      <footer class="landing-footer"><a class="brand footer-brand" href="#top"><span class="brand-mark">YI</span><span>YOU <b>INVEST</b></span></a><span>© 2026 You Invest · Live platform.</span><a href="#more-info" data-open-info="more-info">Per saperne di più ↑</a></footer>
     </main>
 
     
@@ -197,7 +216,7 @@
         <section class="market-history-card" aria-labelledby="plan-history-title">
           <div class="market-history-heading"><div><p class="eyebrow">HISTORICAL PERFORMANCE</p><h2 id="plan-history-title">Plan performance</h2></div><span>Value · USDT</span></div>
           <div class="chart-selectors" id="plan-chart-selectors"></div>
-          <div id="plan-history-chart" class="asset-history-chart line-chart" aria-live="polite"><p>Historical market data is loading...</p></div>
+          <div id="plan-history-chart" class="asset-history-chart line-chart" aria-live="polite"><p>Historical market data is loading...</p></div><div id="market-trend-indicator" class="market-trend neutral" role="status" aria-live="polite"><span class="market-trend-dot" aria-hidden="true"></span><span class="market-trend-copy"><b id="market-trend-label">Trend in caricamento</b><small id="market-trend-value">Indicatore informativo · non indica il momento migliore per investire</small></span></div>
           <p class="asset-history-source">Market-weighted reference performance, derived from available live asset history.</p>
         </section>
         <section class="market-history-card" aria-labelledby="asset-market-title">
@@ -277,12 +296,31 @@
           <div class="invite-levels" id="invite-levels" aria-live="polite"></div>
           <p class="small-note">The server credits commissions automatically when a referred member’s first deposit is approved. Rates are 10%, 5% and 3% for referral levels 1, 2 and 3; payouts are recorded in your account balance and notifications.</p>
         </section>
-        <section class="section-block"><div class="section-heading"><div><p class="eyebrow">SERVER RECORDS</p><h2>Your team</h2></div></div><div class="admin-queue" id="invite-team-list"></div><div class="empty-card compact-empty" id="invite-team-empty"><b>No team members yet</b><p>Share your invitation link to invite someone.</p></div></section>
+        <section class="section-block"><div class="section-heading"><div><p class="eyebrow">SERVER RECORDS</p><h2>Your team</h2></div></div><div class="invite-team-toolbar"><select id="invite-level-filter" aria-label="Filter invitations by level"><option value="all">All levels</option><option value="1">Level 1</option><option value="2">Level 2</option><option value="3">Level 3</option></select></div><div class="admin-queue invite-level-groups" id="invite-team-list"></div><div class="empty-card compact-empty" id="invite-team-empty"><b>No team members yet</b><p>Share your invitation link to invite someone.</p></div></section>
       </section>
 
       <section class="view" id="view-admin" aria-labelledby="admin-title">
         <div class="page-heading"><div><p class="eyebrow">ADMINISTRATION</p><h1 id="admin-title">Admin</h1></div></div>
         <p class="page-intro">Review requests and manage account information.</p>
+        <div class="admin-section admin-overview" id="admin-overview">
+          <div class="section-heading"><div><p class="eyebrow">PLATFORM OVERVIEW</p><h2>Global statistics</h2></div></div>
+          <div class="admin-stat-grid">
+            <article class="admin-stat-card"><span>Registered users</span><b id="global-users-count">—</b><small>All platform accounts</small></article>
+            <article class="admin-stat-card"><span>Approved deposits</span><b id="global-deposits-count">—</b><small id="global-deposits-total">—</small></article>
+            <article class="admin-stat-card"><span>Approved withdrawals</span><b id="global-withdrawals-count">—</b><small id="global-withdrawals-total">—</small></article>
+            <article class="admin-stat-card"><span>Investments</span><b id="global-investments-count">—</b><small id="global-investments-total">—</small></article>
+            <article class="admin-stat-card"><span>Active investments</span><b id="global-active-count">—</b><small id="global-active-total">—</small></article>
+          </div><div class="admin-stats-breakdown" id="global-stats-breakdown"></div>
+        </div>
+        <div class="admin-section admin-referral-overview" id="admin-referral-overview">
+          <details class="admin-referral-panel">
+            <summary class="section-heading"><div><p class="eyebrow">INVITATION NETWORK</p><h2>Referral statistics</h2></div><span class="admin-referral-toggle-label">Open</span></summary>
+            <div class="admin-referral-content">
+              <div class="admin-users-toolbar"><span>Invited users with deposits, withdrawals and investments</span><select id="admin-referral-level-filter" aria-label="Filter referral level"><option value="all">All levels</option><option value="1">Level 1</option><option value="2">Level 2</option><option value="3">Level 3</option></select></div>
+              <div class="admin-referral-list" id="admin-referral-list"></div><div class="queue-empty" id="admin-referral-empty" hidden>No invited users recorded.</div>
+            </div>
+          </details>
+        </div>
         <div class="admin-section">
           <div class="section-heading"><div><p class="eyebrow">DEPOSIT NETWORKS</p><h2>Deposit addresses</h2></div></div>
           <p class="page-intro">Only enter a deposit address after the operator verifies its network and destination. Saving it here does not prove ownership or confirm a payment.</p>
@@ -403,7 +441,7 @@
         <p class="plan-stop-note" id="plan-stop-note">Stop handling</p>
         <p class="form-error" id="plan-error" role="alert"></p>
         <button class="primary-button" id="confirm-plan-button" type="submit">Confirm plan</button>
-        <p class="modal-footnote">Simulated market tracking only. Conservative and balanced plans pause at their fixed stop and resume after recovery; aggressive plans close at the stop. Early closure has a 65% fee on current reference value. No market orders or external payouts are executed.</p>
+        <p class="modal-footnote">Plans are market-tracking records based on public quotes; no market orders or external payments are executed. Conservative and balanced plans pause at their stop and resume after recovery; aggressive plans close at the stop. Early closure has a 65% fee on the current reference value.</p>
       </form>
     </dialog>
 
@@ -431,7 +469,7 @@
         <div class="allocation-heading"><b>Illustrative allocation</b><span>percentage</span></div>
         <p class="allocation-intro" id="allocation-intro">Live reference quotes and portfolio allocation.</p>
         <div class="allocation-list" id="details-allocation"></div>
-        <p class="modal-footnote">Market quotes drive the simulated portfolio value; the platform does not buy or hold these assets.</p>
+        <p class="modal-footnote">Market quotes update the tracked portfolio value; the platform does not buy, hold, or trade these assets.</p>
         <button class="primary-button" id="details-invest-button" type="button">Invest in this plan</button>
       </div>
     </dialog>
@@ -445,9 +483,9 @@
         <div class="investment-detail-metrics" id="investment-detail-metrics"></div>
         <section class="investment-chart-section">
           <div class="investment-chart-heading"><div><p class="eyebrow">REFERENCE PERFORMANCE</p><h3>Plan trend</h3></div><span>Index · 100 start</span></div>
-          <div id="investment-chart-ranges" class="chart-selectors" role="group" aria-label="Investment chart range"><button type="button" class="chart-selector active" data-position-range="all">All</button><button type="button" class="chart-selector" data-position-range="1w">1W</button><button type="button" class="chart-selector" data-position-range="1m">1M</button><button type="button" class="chart-selector" data-position-range="3m">3M</button><button type="button" class="chart-selector" data-position-range="6m">6M</button><button type="button" class="chart-selector" data-position-range="1y">1Y</button></div>
+          <div id="investment-chart-ranges" class="chart-selectors" role="group" aria-label="Investment chart range"><button type="button" class="chart-selector active" data-position-range="all">Dall’inizio</button></div>
           <div id="investment-detail-chart" class="asset-history-chart line-chart"></div>
-          <p class="investment-chart-note">Indicative weighted trend from public market prices. It is not a statement of account value or guaranteed performance.</p>
+          <p class="investment-chart-note">Indicative weighted trend from available public market prices since the plan start. It is not a statement of account value or guaranteed performance.</p>
         </section>
         <section class="investment-allocation-section"><div class="investment-chart-heading"><div><p class="eyebrow">PORTFOLIO MIX</p><h3>Asset weights</h3></div></div><div id="investment-detail-allocation" class="investment-allocation-list"></div></section>
         <section class="auto-redeem-panel" id="investment-auto-redeem" hidden aria-labelledby="auto-redeem-title">
