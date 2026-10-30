@@ -1795,3 +1795,157 @@ button[data-redeem-earnings]:disabled { opacity:.55; cursor:not-allowed; }
   .custom-portfolio-card .primary-button { width: 100%; }
 }
 
+
+
+/* Clearer admin/operator workspace and notification center */
+#view-admin.active {
+  display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 14px; width: 100%;
+}
+#view-admin > .page-heading, #view-admin > .page-intro, #view-admin > .outline-wide { grid-column: 1 / -1; }
+#view-admin > .page-heading { margin: 0 0 -5px; }
+#view-admin > .page-heading .eyebrow { color: var(--accent); font-size: 10px; letter-spacing: .16em; }
+#view-admin > .page-heading h1 { font-size: clamp(27px, 4vw, 36px); }
+#view-admin > .page-intro { max-width: 72ch; margin: 0 0 4px; font-size: 13px; line-height: 1.65; }
+#view-admin > .admin-section { min-width: 0; margin: 0; padding: clamp(16px, 2vw, 22px); border: 1px solid color-mix(in srgb, var(--line) 82%, var(--accent)); border-radius: 17px; background: linear-gradient(145deg, color-mix(in srgb, var(--surface) 98%, var(--accent)), var(--surface)); box-shadow: 0 12px 34px #00000018; }
+#view-admin .admin-section .section-heading { min-height: 42px; align-items: center; gap: 14px; margin: 0 0 15px; }
+#view-admin .admin-section .section-heading > div { min-width: 0; }
+#view-admin .admin-section .section-heading .eyebrow { margin: 0 0 5px; color: var(--accent); font-size: 9px; letter-spacing: .15em; }
+#view-admin .admin-section .section-heading h2 { font-size: clamp(15px, 1.5vw, 18px); line-height: 1.3; }
+#view-admin .admin-section .page-intro { font-size: 12px; line-height: 1.6; }
+#view-admin .count-pill { flex: 0 0 auto; min-width: 29px; height: 29px; display: grid; place-items: center; border: 1px solid #70e4d250; border-radius: 999px; background: #70e4d214; color: var(--accent); font-size: 12px; font-weight: 800; }
+#view-admin .admin-queue { grid-template-columns: repeat(auto-fit, minmax(min(100%, 255px), 1fr)); gap: 10px; }
+#view-admin .admin-request { min-width: 0; gap: 10px; border-color: color-mix(in srgb, var(--line) 78%, var(--accent)); border-radius: 13px; background: color-mix(in srgb, var(--surface-2) 94%, #fff); padding: 15px; box-shadow: 0 5px 15px #00000012; }
+#view-admin .admin-request > b { font-size: 13px; line-height: 1.45; }
+#view-admin .admin-request > span, #view-admin .admin-request > small { font-size: 12px; line-height: 1.55; }
+#view-admin .admin-request > div { gap: 8px; }
+#view-admin .admin-request button { min-height: 39px; padding: 8px 13px; font-size: 12px; }
+#view-admin .queue-empty { border: 1px dashed var(--line); border-radius: 12px; background: color-mix(in srgb, var(--surface-2) 65%, transparent); padding: 15px; color: var(--muted); font-size: 12px; text-align: center; }
+#view-admin .deposit-address-settings { gap: 13px; }
+#view-admin .deposit-address-settings label { display: grid; gap: 8px; color: var(--text); font-size: 12px; line-height: 1.4; }
+#view-admin .deposit-address-settings input { min-height: 46px; font-size: 13px; }
+#view-admin .admin-users-toolbar { gap: 10px; margin-bottom: 14px; }
+#view-admin .admin-users-toolbar input, #view-admin .admin-users-toolbar select { min-height: 46px; font-size: 13px; }
+#view-admin .admin-table-wrap { border-color: var(--line); border-radius: 13px; background: color-mix(in srgb, var(--surface-2) 70%, var(--surface)); }
+#view-admin .admin-users-table { min-width: 680px; }
+#view-admin .admin-users-table th { padding: 13px 15px; font-size: 10px; letter-spacing: .1em; }
+#view-admin .admin-users-table td { padding: 13px 15px; font-size: 12px; line-height: 1.5; }
+#view-admin .admin-users-table tbody tr + tr td { border-top-color: color-mix(in srgb, var(--line) 75%, transparent); }
+#view-admin .user-link b { font-size: 13px; }
+#view-admin .user-link small { font-size: 11px; }
+#view-admin .role-chip, #view-admin .verification-pill { font-size: 10px; font-weight: 750; }
+#view-admin > .outline-wide { min-height: 43px; }
+
+#notifications-dialog .modal-card { width: min(620px, calc(100vw - 24px)); max-height: min(86dvh, 780px); display: flex; flex-direction: column; gap: 13px; overflow: hidden; border-color: color-mix(in srgb, var(--line) 70%, var(--accent)); border-radius: 20px; padding: clamp(18px, 4vw, 26px); box-shadow: 0 28px 90px #0008; }
+#notifications-dialog .modal-card > .eyebrow { margin: 0 0 -8px; color: var(--accent); font-size: 9px; letter-spacing: .16em; }
+#notifications-dialog h2 { margin: 0; font-size: clamp(22px, 4vw, 28px); }
+#notifications-dialog #mark-notifications-read { align-self: flex-start; min-height: 37px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); padding: 0 13px; font-size: 12px; }
+#notifications-dialog #mark-notifications-read:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--surface-2)); }
+#notifications-dialog #notification-list { min-height: 0; display: grid; gap: 10px; overflow-y: auto; overscroll-behavior: contain; padding: 2px 5px 5px 0; scrollbar-color: var(--line) transparent; }
+#notifications-dialog .notification-row { position: relative; gap: 7px; border: 1px solid var(--line); border-radius: 14px; background: color-mix(in srgb, var(--surface-2) 90%, transparent); padding: 15px 16px; transition: border-color .18s ease, background .18s ease, transform .18s ease; }
+#notifications-dialog .notification-row.unread { border-color: color-mix(in srgb, var(--accent) 52%, var(--line)); border-left: 4px solid var(--accent); background: linear-gradient(105deg, color-mix(in srgb, var(--accent) 10%, var(--surface-2)), var(--surface-2) 65%); padding-left: 14px; }
+#notifications-dialog .notification-row:hover { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); transform: translateY(-1px); }
+#notifications-dialog .notification-row b { font-size: 14px; line-height: 1.4; }
+#notifications-dialog .notification-row small { color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+#notifications-dialog .notification-row p { margin: 2px 0 0; color: var(--text); font-size: 12px; line-height: 1.65; }
+#notifications-dialog #notifications-empty { margin: 4px 0 0; padding: 24px 18px; }
+@media (min-width: 1000px) {
+  #view-admin.active { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+  #view-admin > .admin-section:has(#admin-address-bep20), #view-admin > .admin-section:has(#registered-users) { grid-column: 1 / -1; }
+  #view-admin > .admin-section:has(#pending-email-verifications) { grid-column: 1; }
+  #view-admin > .admin-section:has(#pending-password-resets) { grid-column: 2; }
+  #view-admin > .admin-section:has(#pending-wallet-changes) { grid-column: 1; }
+  #view-admin > .admin-section:has(#pending-users) { grid-column: 2; }
+  #view-admin > .admin-section:has(#pending-deposits) { grid-column: 1; }
+  #view-admin > .admin-section:has(#pending-withdrawals) { grid-column: 2; }
+  #view-admin > .admin-section:has(#admin-address-bep20) .deposit-address-settings { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 620px) {
+  #view-admin.active { gap: 11px; }
+  #view-admin > .admin-section { padding: 15px; border-radius: 14px; }
+  #view-admin .admin-section .section-heading { margin-bottom: 12px; }
+  #view-admin .admin-users-toolbar { flex-direction: column; }
+  #view-admin .admin-users-toolbar input, #view-admin .admin-users-toolbar select { width: 100%; }
+  #view-admin .admin-queue { grid-template-columns: minmax(0, 1fr); }
+  #notifications-dialog .modal-card { max-height: 88dvh; gap: 11px; border-radius: 17px; padding: 18px 15px; }
+  #notifications-dialog .notification-row { padding: 13px; }
+}
+@media (prefers-reduced-motion: reduce) { #notifications-dialog .notification-row { transition: none; } }
+
+
+/* ADMIN WORKSTATION — spacious desktop-first operations board */
+@media (min-width: 1000px) {
+  .app-shell:has(#view-admin.active) { width: min(calc(100% - 56px), 1480px); padding-right: 42px; padding-left: 42px; }
+  .app-shell:has(#view-admin.active) .view { padding-top: 28px; }
+  #view-admin.active { grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 20px; align-items: stretch; }
+  #view-admin > .page-heading, #view-admin > .page-intro, #view-admin > .outline-wide { grid-column: 1 / -1; }
+  #view-admin > .page-heading { margin: 0; padding: 0 0 4px 17px; border-left: 4px solid var(--accent); }
+  #view-admin > .page-heading .eyebrow { margin-bottom: 7px; font-size: 10px; letter-spacing: .18em; }
+  #view-admin > .page-heading h1 { font-size: 38px; line-height: 1.08; }
+  #view-admin > .page-intro { margin: -10px 0 2px; font-size: 14px; }
+  #view-admin > .admin-section { grid-column: span 6; position: relative; min-height: 100%; padding: 23px 24px 24px; border-radius: 16px; overflow: hidden; background: var(--surface); box-shadow: 0 14px 34px #0003; transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease; }
+  #view-admin > .admin-section:hover { border-color: color-mix(in srgb, var(--accent) 58%, var(--line)); box-shadow: 0 18px 42px #0004; transform: translateY(-2px); }
+  #view-admin > .admin-section::before { position: absolute; inset: 0 0 auto; height: 3px; background: linear-gradient(90deg, var(--admin-section-accent, var(--accent)), transparent 72%); content: ''; }
+  #view-admin > .admin-section:has(#admin-address-bep20), #view-admin > .admin-section:has(#registered-users) { grid-column: 1 / -1; }
+  #view-admin > .admin-section:has(#pending-email-verifications) { --admin-section-accent: #76bfff; }
+  #view-admin > .admin-section:has(#pending-password-resets) { --admin-section-accent: #c49aff; }
+  #view-admin > .admin-section:has(#pending-wallet-changes) { --admin-section-accent: #f2c76d; }
+  #view-admin > .admin-section:has(#registered-users) { --admin-section-accent: #72e1cf; }
+  #view-admin > .admin-section:has(#pending-users) { --admin-section-accent: #8bd6ff; }
+  #view-admin > .admin-section:has(#pending-deposits) { --admin-section-accent: #77dfa0; }
+  #view-admin > .admin-section:has(#pending-withdrawals) { --admin-section-accent: #ff9c9c; }
+  #view-admin > .admin-section .section-heading { min-height: 48px; margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid color-mix(in srgb, var(--line) 80%, transparent); }
+  #view-admin > .admin-section .section-heading .eyebrow { display: inline-flex; align-items: center; min-height: 22px; margin-bottom: 7px; border: 1px solid color-mix(in srgb, var(--admin-section-accent, var(--accent)) 34%, transparent); border-radius: 999px; background: color-mix(in srgb, var(--admin-section-accent, var(--accent)) 10%, transparent); padding: 3px 9px; color: var(--admin-section-accent, var(--accent)); font-size: 9px; font-weight: 800; letter-spacing: .12em; }
+  #view-admin > .admin-section .section-heading h2 { font-size: 18px; letter-spacing: -.025em; }
+  #view-admin > .admin-section:has(#admin-address-bep20) .deposit-address-settings { grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: end; gap: 15px; }
+  #view-admin .deposit-address-settings label { gap: 9px; font-size: 12px; font-weight: 700; }
+  #view-admin .deposit-address-settings input { min-height: 48px; border-color: #344c59; background: #0c1720; padding: 0 13px; font-size: 13px; }
+  #view-admin .deposit-address-settings .outline-wide { min-height: 46px; margin-top: 2px; border-radius: 10px; font-size: 12px; font-weight: 750; }
+  #view-admin > .admin-section:has(#registered-users) .section-heading { margin-bottom: 17px; }
+  #view-admin .admin-users-toolbar { display: grid; grid-template-columns: minmax(280px, 1fr) 220px; max-width: 690px; margin-bottom: 17px; }
+  #view-admin .admin-users-toolbar input, #view-admin .admin-users-toolbar select { min-height: 46px; border-color: #344c59; background: #0c1720; padding: 0 14px; font-size: 13px; }
+  #view-admin .admin-table-wrap { max-height: 540px; border-radius: 13px; }
+  #view-admin .admin-users-table { min-width: 800px; }
+  #view-admin .admin-users-table thead { position: sticky; top: 0; z-index: 1; }
+  #view-admin .admin-users-table th { background: #1a2b36; padding: 15px 17px; font-size: 10px; }
+  #view-admin .admin-users-table td { padding: 15px 17px; font-size: 13px; }
+  #view-admin .admin-users-table tbody tr:nth-child(even) { background: color-mix(in srgb, var(--surface-2) 34%, transparent); }
+  #view-admin .admin-users-table tbody tr:hover { background: color-mix(in srgb, var(--accent) 8%, var(--surface-2)); }
+  #view-admin .admin-queue { grid-template-columns: minmax(0, 1fr); gap: 11px; }
+  #view-admin .admin-request { grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 8px 14px; border-radius: 12px; background: #14232d; padding: 16px; transition: border-color .16s ease, background .16s ease; }
+  #view-admin .admin-request:hover { border-color: color-mix(in srgb, var(--admin-section-accent, var(--accent)) 55%, var(--line)); background: #192b36; }
+  #view-admin .admin-request > b { grid-column: 1 / -1; font-size: 14px; line-height: 1.5; }
+  #view-admin .admin-request > span { grid-column: 1 / -1; padding: 9px 11px; border: 1px solid color-mix(in srgb, var(--line) 75%, transparent); border-radius: 8px; background: #0d1921; color: #d4e1e7; font-size: 12px; line-height: 1.55; }
+  #view-admin .admin-request > small { align-self: center; font-size: 11px; }
+  #view-admin .admin-request > div { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 4px; }
+  #view-admin .admin-request > div button { min-height: 41px; font-size: 12px; }
+  #view-admin .admin-request > button[data-issue-otp] { grid-column: 1 / -1; justify-self: start; min-height: 40px; margin-top: 5px; padding: 0 15px; font-size: 12px; }
+  #view-admin .admin-request .admin-tx-field, #view-admin .admin-request .admin-tx-hint { grid-column: 1 / -1; }
+  #view-admin .admin-request .admin-tx-field { gap: 7px; margin: 5px 0 0; font-size: 11px; }
+  #view-admin .admin-request .admin-tx-field input { min-height: 43px; font-size: 12px; }
+  #view-admin .admin-request .admin-tx-hint { margin: -3px 0 0; font-size: 10px; }
+  #view-admin .queue-empty { min-height: 86px; display: grid; place-items: center; padding: 18px; font-size: 12px; }
+  #view-admin > .outline-wide { justify-self: start; min-width: 190px; }
+}
+@media (min-width: 1360px) {
+  #view-admin > .admin-section:has(#pending-email-verifications),
+  #view-admin > .admin-section:has(#pending-password-resets),
+  #view-admin > .admin-section:has(#pending-wallet-changes),
+  #view-admin > .admin-section:has(#pending-users),
+  #view-admin > .admin-section:has(#pending-deposits),
+  #view-admin > .admin-section:has(#pending-withdrawals) { grid-column: span 4; }
+}
+@media (min-width: 1000px) and (max-width: 1120px) {
+  .app-shell:has(#view-admin.active) { width: min(calc(100% - 36px), 1480px); padding-right: 24px; padding-left: 24px; }
+}
+@media (max-width: 999px) {
+  #view-admin.active { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  #view-admin > .admin-section { border-top: 3px solid var(--admin-section-accent, var(--accent)); }
+  #view-admin > .admin-section:has(#pending-email-verifications) { --admin-section-accent: #76bfff; }
+  #view-admin > .admin-section:has(#pending-password-resets) { --admin-section-accent: #c49aff; }
+  #view-admin > .admin-section:has(#pending-wallet-changes) { --admin-section-accent: #f2c76d; }
+  #view-admin > .admin-section:has(#registered-users) { --admin-section-accent: #72e1cf; }
+  #view-admin > .admin-section:has(#pending-users) { --admin-section-accent: #8bd6ff; }
+  #view-admin > .admin-section:has(#pending-deposits) { --admin-section-accent: #77dfa0; }
+  #view-admin > .admin-section:has(#pending-withdrawals) { --admin-section-accent: #ff9c9c; }
+}
+@media (prefers-reduced-motion: reduce) { #view-admin > .admin-section { transition: none !important; } #view-admin > .admin-section:hover { transform: none; } }
