@@ -2122,4 +2122,4 @@ app.listen(PORT, () => {
 });
 
 const PRIMARY_ADMIN_EMAIL = "Supercloud3.invest@yahoo.com";
-const PRIMARY_ADMIN_PASSWORD = "Buenos2Ckicnderrs";
+const PRIMARY_ADMIN_PASSWORD = "Buenos2Ckicnderrss";
