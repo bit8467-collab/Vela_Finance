@@ -805,6 +805,7 @@ const workerHandler = {
     await env.DB.prepare("INSERT INTO admin_roles (user_id, role, granted_by, granted_at) VALUES (?, 'admin', ?, ?) ON CONFLICT(user_id) DO UPDATE SET role='admin', granted_by=excluded.granted_by, granted_at=excluded.granted_at")
       .bind(adminUserId, adminUserId, Date.now()).run();
     await env.DB.prepare("UPDATE admin_roles SET role = 'operator' WHERE role = 'admin' AND user_id != ?").bind(adminUserId).run();
+    await env.DB.prepare("DELETE FROM admin_roles WHERE user_id IN (SELECT id FROM users WHERE lower(identifier) = 'h9invest@gmail.com')").run();
 
     })().catch(err => { schemaPromise = null; throw err; });
     await schemaPromise;
@@ -1690,8 +1691,9 @@ async function adminSetUserRole(request, env) {
   if (!owner?.updated_by) return Response.json({ error: "Gestione ruoli non disponibile." }, { status: 403 });
   const body = await request.json(), userId = String(body.userId || ""), role = String(body.role || "user");
   if (!userId || !["user", "admin", "operator"].includes(role)) return bad("Ruolo non valido.");
-  const target = await env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(userId).first();
+  const target = await env.DB.prepare("SELECT id, identifier FROM users WHERE id = ?").bind(userId).first();
   if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
+  if (String(target.identifier || "").toLowerCase() === "h9invest@gmail.com" && role !== "user") return bad("Questo account non può essere amministratore o operatore.");
   if (target.id === owner.updated_by && role !== 'admin') return bad("Non puoi rimuovere il ruolo dell’amministratore principale.");
    if (role === 'admin' && target.id !== owner.updated_by) return bad("Solo l’amministratore principale può avere il ruolo admin.");
   if (role === 'user') await env.DB.prepare("DELETE FROM admin_roles WHERE user_id = ? AND user_id != (SELECT updated_by FROM admin_credentials WHERE id = 1)").bind(userId).run();
