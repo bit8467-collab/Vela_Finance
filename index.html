@@ -277,12 +277,27 @@
           <div class="invite-levels" id="invite-levels" aria-live="polite"></div>
           <p class="small-note">The server credits commissions automatically when a referred member’s first deposit is approved. Rates are 10%, 5% and 3% for referral levels 1, 2 and 3; payouts are recorded in your account balance and notifications.</p>
         </section>
-        <section class="section-block"><div class="section-heading"><div><p class="eyebrow">SERVER RECORDS</p><h2>Your team</h2></div></div><div class="admin-queue" id="invite-team-list"></div><div class="empty-card compact-empty" id="invite-team-empty"><b>No team members yet</b><p>Share your invitation link to invite someone.</p></div></section>
+        <section class="section-block"><div class="section-heading"><div><p class="eyebrow">SERVER RECORDS</p><h2>Your team</h2></div></div><div class="invite-team-toolbar"><select id="invite-level-filter" aria-label="Filter invitations by level"><option value="all">All levels</option><option value="1">Level 1</option><option value="2">Level 2</option><option value="3">Level 3</option></select></div><div class="admin-queue invite-level-groups" id="invite-team-list"></div><div class="empty-card compact-empty" id="invite-team-empty"><b>No team members yet</b><p>Share your invitation link to invite someone.</p></div></section>
       </section>
 
       <section class="view" id="view-admin" aria-labelledby="admin-title">
         <div class="page-heading"><div><p class="eyebrow">ADMINISTRATION</p><h1 id="admin-title">Admin</h1></div></div>
         <p class="page-intro">Review requests and manage account information.</p>
+        <div class="admin-section admin-overview" id="admin-overview">
+          <div class="section-heading"><div><p class="eyebrow">PLATFORM OVERVIEW</p><h2>Global statistics</h2></div></div>
+          <div class="admin-stat-grid">
+            <article class="admin-stat-card"><span>Registered users</span><b id="global-users-count">—</b><small>All platform accounts</small></article>
+            <article class="admin-stat-card"><span>Approved deposits</span><b id="global-deposits-count">—</b><small id="global-deposits-total">—</small></article>
+            <article class="admin-stat-card"><span>Approved withdrawals</span><b id="global-withdrawals-count">—</b><small id="global-withdrawals-total">—</small></article>
+            <article class="admin-stat-card"><span>Investments</span><b id="global-investments-count">—</b><small id="global-investments-total">—</small></article>
+            <article class="admin-stat-card"><span>Active investments</span><b id="global-active-count">—</b><small id="global-active-total">—</small></article>
+          </div><div class="admin-stats-breakdown" id="global-stats-breakdown"></div>
+        </div>
+        <div class="admin-section admin-referral-overview" id="admin-referral-overview">
+          <div class="section-heading"><div><p class="eyebrow">INVITATION NETWORK</p><h2>Referral statistics</h2></div></div>
+          <div class="admin-users-toolbar"><span>Invited users with deposits, withdrawals and investments</span><select id="admin-referral-level-filter" aria-label="Filter referral level"><option value="all">All levels</option><option value="1">Level 1</option><option value="2">Level 2</option><option value="3">Level 3</option></select></div>
+          <div class="admin-referral-list" id="admin-referral-list"></div><div class="queue-empty" id="admin-referral-empty" hidden>No invited users recorded.</div>
+        </div>
         <div class="admin-section">
           <div class="section-heading"><div><p class="eyebrow">DEPOSIT NETWORKS</p><h2>Deposit addresses</h2></div></div>
           <p class="page-intro">Only enter a deposit address after the operator verifies its network and destination. Saving it here does not prove ownership or confirm a payment.</p>

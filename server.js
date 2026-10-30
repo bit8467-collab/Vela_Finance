@@ -805,7 +805,6 @@ const workerHandler = {
     await env.DB.prepare("INSERT INTO admin_roles (user_id, role, granted_by, granted_at) VALUES (?, 'admin', ?, ?) ON CONFLICT(user_id) DO UPDATE SET role='admin', granted_by=excluded.granted_by, granted_at=excluded.granted_at")
       .bind(adminUserId, adminUserId, Date.now()).run();
     await env.DB.prepare("UPDATE admin_roles SET role = 'operator' WHERE role = 'admin' AND user_id != ?").bind(adminUserId).run();
-    await env.DB.prepare("DELETE FROM admin_roles WHERE user_id IN (SELECT id FROM users WHERE lower(identifier) = 'h9invest@gmail.com')").run();
 
     })().catch(err => { schemaPromise = null; throw err; });
     await schemaPromise;
@@ -843,6 +842,7 @@ const workerHandler = {
       if (method === "POST" && pathName === "/api/settings") return await updateSettings(request, env);
       if (method === "POST" && pathName === "/api/change-password") return await changePassword(request, env);
       if (method === "GET" && pathName === "/api/admin/transactions") return await adminTransactions(request, env);
+      if (method === "GET" && pathName === "/api/admin/statistics") return await adminStatistics(request, env);
       if (method === "GET" && pathName === "/api/admin/users") return await adminUsers(request, env);
       if (method === "POST" && pathName === "/api/market/add-funds") return await addMarketFunds(request, env);
       if (method === "POST" && pathName === "/api/admin/users/role") return await adminSetUserRole(request, env);
@@ -1691,14 +1691,21 @@ async function adminSetUserRole(request, env) {
   if (!owner?.updated_by) return Response.json({ error: "Gestione ruoli non disponibile." }, { status: 403 });
   const body = await request.json(), userId = String(body.userId || ""), role = String(body.role || "user");
   if (!userId || !["user", "admin", "operator"].includes(role)) return bad("Ruolo non valido.");
-  const target = await env.DB.prepare("SELECT id, identifier FROM users WHERE id = ?").bind(userId).first();
+  const target = await env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(userId).first();
   if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
-  if (String(target.identifier || "").toLowerCase() === "h9invest@gmail.com" && role !== "user") return bad("Questo account non può essere amministratore o operatore.");
   if (target.id === owner.updated_by && role !== 'admin') return bad("Non puoi rimuovere il ruolo dell’amministratore principale.");
    if (role === 'admin' && target.id !== owner.updated_by) return bad("Solo l’amministratore principale può avere il ruolo admin.");
   if (role === 'user') await env.DB.prepare("DELETE FROM admin_roles WHERE user_id = ? AND user_id != (SELECT updated_by FROM admin_credentials WHERE id = 1)").bind(userId).run();
   else await env.DB.prepare("INSERT INTO admin_roles (user_id, role, granted_by, granted_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET role=excluded.role, granted_by=excluded.granted_by, granted_at=excluded.granted_at").bind(userId, role, actor.id, Date.now()).run();
   return Response.json({ ok: true, role });
+}
+
+async function adminStatistics(request, env) {
+  const actor = await adminActor(request, env);
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const totals = await env.DB.prepare("SELECT (SELECT COUNT(*) FROM users) AS users, (SELECT COUNT(*) FROM deposits) AS deposit_count, (SELECT COUNT(*) FROM deposits WHERE status = 'approved') AS deposits_approved, (SELECT COUNT(*) FROM deposits WHERE status = 'pending') AS deposits_pending, (SELECT COALESCE(SUM(amount),0) FROM deposits WHERE status = 'approved') AS deposits_amount, (SELECT COALESCE(SUM(amount),0) FROM deposits WHERE status = 'pending') AS deposits_pending_amount, (SELECT COUNT(*) FROM withdrawals) AS withdrawal_count, (SELECT COUNT(*) FROM withdrawals WHERE status = 'approved') AS withdrawals_approved, (SELECT COUNT(*) FROM withdrawals WHERE status = 'pending') AS withdrawals_pending, (SELECT COALESCE(SUM(amount),0) FROM withdrawals WHERE status = 'approved') AS withdrawals_amount, (SELECT COALESCE(SUM(amount),0) FROM withdrawals WHERE status = 'pending') AS withdrawals_pending_amount, (SELECT COUNT(*) FROM investments)+(SELECT COUNT(*) FROM market_positions) AS investment_count, (SELECT COALESCE(SUM(amount),0) FROM investments)+(SELECT COALESCE(SUM(amount),0) FROM market_positions) AS investment_amount, (SELECT COUNT(*) FROM investments WHERE active=1)+(SELECT COUNT(*) FROM market_positions WHERE status IN ('active','paused')) AS active_investments, (SELECT COALESCE(SUM(amount),0) FROM investments WHERE active=1)+(SELECT COALESCE(SUM(amount),0) FROM market_positions WHERE status IN ('active','paused')) AS active_investment_amount").first();
+  const referrals = (await env.DB.prepare("WITH RECURSIVE referral_tree(inviter_id,user_id,level) AS (SELECT referred_by,id,1 FROM users WHERE referred_by IS NOT NULL AND referred_by!='' UNION ALL SELECT tree.inviter_id,child.id,tree.level+1 FROM referral_tree tree JOIN users child ON child.referred_by=tree.user_id WHERE tree.level<3) SELECT tree.inviter_id,inviter.username AS inviter_username,tree.user_id,invited.username,invited.created_at,tree.level,(SELECT COUNT(*) FROM deposits d WHERE d.user_id=tree.user_id) AS deposit_count,(SELECT COUNT(*) FROM deposits d WHERE d.user_id=tree.user_id AND d.status='approved') AS deposits_approved,(SELECT COALESCE(SUM(d.amount),0) FROM deposits d WHERE d.user_id=tree.user_id AND d.status='approved') AS deposit_amount,(SELECT COUNT(*) FROM withdrawals w WHERE w.user_id=tree.user_id) AS withdrawal_count,(SELECT COUNT(*) FROM withdrawals w WHERE w.user_id=tree.user_id AND w.status='approved') AS withdrawals_approved,(SELECT COALESCE(SUM(w.amount),0) FROM withdrawals w WHERE w.user_id=tree.user_id AND w.status='approved') AS withdrawal_amount,(SELECT COUNT(*) FROM investments i WHERE i.user_id=tree.user_id)+(SELECT COUNT(*) FROM market_positions m WHERE m.user_id=tree.user_id) AS investment_count,(SELECT COALESCE(SUM(i.amount),0) FROM investments i WHERE i.user_id=tree.user_id)+(SELECT COALESCE(SUM(m.amount),0) FROM market_positions m WHERE m.user_id=tree.user_id) AS investment_amount FROM referral_tree tree JOIN users inviter ON inviter.id=tree.inviter_id JOIN users invited ON invited.id=tree.user_id ORDER BY inviter.username COLLATE NOCASE,tree.level,invited.created_at DESC").all()).results;
+  return Response.json({ totals, referrals });
 }
 
 async function adminUsers(request, env) {
