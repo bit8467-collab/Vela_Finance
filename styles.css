@@ -2015,3 +2015,14 @@ button[data-redeem-earnings]:disabled { opacity:.55; cursor:not-allowed; }
 .market-trend.up .market-trend-dot { background: #70c98a; box-shadow: 0 0 8px #70c98a55; }
 .market-trend.down .market-trend-dot { background: #e47770; box-shadow: 0 0 8px #e4777055; }
 .market-trend.flat .market-trend-dot, .market-trend.neutral .market-trend-dot { background: #d6b35d; }
+
+/* VELA_FINANCE visual guide dialog */
+.brand-story-card { width: min(920px, calc(100vw - 28px)); max-height: min(90vh, 920px); overflow: auto; }
+.brand-story-card > h2 { margin: 0 0 8px; }
+.brand-story-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin: 16px 0; }
+.brand-story-item { min-width: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); padding: 10px; }
+.brand-story-item img { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: cover; border-radius: 8px; }
+.brand-story-item h3, .brand-story-details h3 { margin: 12px 0 6px; font-size: 12px; }
+.brand-story-item p, .brand-story-details p { margin: 0 0 9px; color: var(--muted); font-size: 9px; line-height: 1.65; }
+.brand-story-details { border-top: 1px solid var(--line); padding-top: 8px; }
+@media (max-width: 620px) { .brand-story-grid { grid-template-columns: 1fr; gap: 10px; } .brand-story-card { width: calc(100vw - 20px); padding: 16px; } }
