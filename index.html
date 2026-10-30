@@ -58,7 +58,7 @@
         <a class="scroll-cue" href="#company-info"><span></span> COMPANY INFORMATION</a>
       </section>
 
-      <div class="landing-notice"><span>LIVE PLATFORM</span> Company identity, authorization, and external financial-service integrations have not been verified.</div>
+      <div class="landing-notice"><span>PROJECT IN DEVELOPMENT</span> Company identity, authorization, and external financial-service integrations have not been verified.</div>
 
       <details class="company-info" id="company-info">
         <summary class="company-info-summary">
@@ -73,7 +73,7 @@
       </details>
 
 
-      <footer class="landing-footer"><a class="brand footer-brand" href="#top"><span class="brand-mark">YI</span><span>YOU <b>INVEST</b></span></a><span>© 2026 You Invest · Live platform.</span><a href="#company-info">Legal information ↑</a></footer>
+      <footer class="landing-footer"><a class="brand footer-brand" href="#top"><span class="brand-mark">YI</span><span>YOU <b>INVEST</b></span></a><span>© 2026 You Invest · Project in development.</span><a href="#company-info">Legal information ↑</a></footer>
     </main>
 
     
@@ -277,31 +277,12 @@
           <div class="invite-levels" id="invite-levels" aria-live="polite"></div>
           <p class="small-note">The server credits commissions automatically when a referred member’s first deposit is approved. Rates are 10%, 5% and 3% for referral levels 1, 2 and 3; payouts are recorded in your account balance and notifications.</p>
         </section>
-        <section class="section-block"><div class="section-heading"><div><p class="eyebrow">SERVER RECORDS</p><h2>Your team</h2></div></div><div class="invite-team-toolbar"><select id="invite-level-filter" aria-label="Filter invitations by level"><option value="all">All levels</option><option value="1">Level 1</option><option value="2">Level 2</option><option value="3">Level 3</option></select></div><div class="admin-queue invite-level-groups" id="invite-team-list"></div><div class="empty-card compact-empty" id="invite-team-empty"><b>No team members yet</b><p>Share your invitation link to invite someone.</p></div></section>
+        <section class="section-block"><div class="section-heading"><div><p class="eyebrow">SERVER RECORDS</p><h2>Your team</h2></div></div><div class="admin-queue" id="invite-team-list"></div><div class="empty-card compact-empty" id="invite-team-empty"><b>No team members yet</b><p>Share your invitation link to invite someone.</p></div></section>
       </section>
 
       <section class="view" id="view-admin" aria-labelledby="admin-title">
         <div class="page-heading"><div><p class="eyebrow">ADMINISTRATION</p><h1 id="admin-title">Admin</h1></div></div>
         <p class="page-intro">Review requests and manage account information.</p>
-        <div class="admin-section admin-overview" id="admin-overview">
-          <div class="section-heading"><div><p class="eyebrow">PLATFORM OVERVIEW</p><h2>Global statistics</h2></div></div>
-          <div class="admin-stat-grid">
-            <article class="admin-stat-card"><span>Registered users</span><b id="global-users-count">—</b><small>All platform accounts</small></article>
-            <article class="admin-stat-card"><span>Approved deposits</span><b id="global-deposits-count">—</b><small id="global-deposits-total">—</small></article>
-            <article class="admin-stat-card"><span>Approved withdrawals</span><b id="global-withdrawals-count">—</b><small id="global-withdrawals-total">—</small></article>
-            <article class="admin-stat-card"><span>Investments</span><b id="global-investments-count">—</b><small id="global-investments-total">—</small></article>
-            <article class="admin-stat-card"><span>Active investments</span><b id="global-active-count">—</b><small id="global-active-total">—</small></article>
-          </div><div class="admin-stats-breakdown" id="global-stats-breakdown"></div>
-        </div>
-        <div class="admin-section admin-referral-overview" id="admin-referral-overview">
-          <details class="admin-referral-panel">
-            <summary class="section-heading"><div><p class="eyebrow">INVITATION NETWORK</p><h2>Referral statistics</h2></div><span class="admin-referral-toggle-label">Open</span></summary>
-            <div class="admin-referral-content">
-              <div class="admin-users-toolbar"><span>Invited users with deposits, withdrawals and investments</span><select id="admin-referral-level-filter" aria-label="Filter referral level"><option value="all">All levels</option><option value="1">Level 1</option><option value="2">Level 2</option><option value="3">Level 3</option></select></div>
-              <div class="admin-referral-list" id="admin-referral-list"></div><div class="queue-empty" id="admin-referral-empty" hidden>No invited users recorded.</div>
-            </div>
-          </details>
-        </div>
         <div class="admin-section">
           <div class="section-heading"><div><p class="eyebrow">DEPOSIT NETWORKS</p><h2>Deposit addresses</h2></div></div>
           <p class="page-intro">Only enter a deposit address after the operator verifies its network and destination. Saving it here does not prove ownership or confirm a payment.</p>
@@ -422,7 +403,7 @@
         <p class="plan-stop-note" id="plan-stop-note">Stop handling</p>
         <p class="form-error" id="plan-error" role="alert"></p>
         <button class="primary-button" id="confirm-plan-button" type="submit">Confirm plan</button>
-        <p class="modal-footnote">Plans are market-tracking records based on public quotes; no market orders or external payments are executed. Conservative and balanced plans pause at their stop and resume after recovery; aggressive plans close at the stop. Early closure has a 65% fee on the current reference value.</p>
+        <p class="modal-footnote">Simulated market tracking only. Conservative and balanced plans pause at their fixed stop and resume after recovery; aggressive plans close at the stop. Early closure has a 65% fee on current reference value. No market orders or external payouts are executed.</p>
       </form>
     </dialog>
 
@@ -450,7 +431,7 @@
         <div class="allocation-heading"><b>Illustrative allocation</b><span>percentage</span></div>
         <p class="allocation-intro" id="allocation-intro">Live reference quotes and portfolio allocation.</p>
         <div class="allocation-list" id="details-allocation"></div>
-        <p class="modal-footnote">Market quotes update the tracked portfolio value; the platform does not buy, hold, or trade these assets.</p>
+        <p class="modal-footnote">Market quotes drive the simulated portfolio value; the platform does not buy or hold these assets.</p>
         <button class="primary-button" id="details-invest-button" type="button">Invest in this plan</button>
       </div>
     </dialog>
