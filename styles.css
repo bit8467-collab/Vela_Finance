@@ -1985,3 +1985,18 @@ button[data-redeem-earnings]:disabled { opacity:.55; cursor:not-allowed; }
 .admin-referral-toggle-label { color:var(--muted); font-size:12px; margin-left:auto; }
 .admin-referral-panel[open] .admin-referral-toggle-label { display:none; }
 .admin-referral-content { padding-top:12px; }
+
+/* Brighter catalog disclosures and a responsive live refresh control */
+.standard-plan-disclosure { border-color: color-mix(in srgb, var(--accent) 62%, var(--line)); background:linear-gradient(120deg,color-mix(in srgb,var(--surface) 84%,var(--accent) 16%),var(--surface) 58%,color-mix(in srgb,var(--surface) 90%,#78e6c0 10%)); box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 24%,transparent),0 8px 24px color-mix(in srgb,var(--accent) 16%,transparent); }
+.custom-portfolio-disclosure { border-color:color-mix(in srgb,#9aa8ff 64%,var(--line)); background:linear-gradient(120deg,color-mix(in srgb,var(--surface) 84%,#9aa8ff 16%),var(--surface) 58%,color-mix(in srgb,var(--surface) 90%,#75d9ff 10%)); box-shadow:0 0 0 1px #9aa8ff35,0 8px 24px #788bff26; }
+.standard-plan-disclosure > summary > span,.custom-portfolio-disclosure > summary > span { font-size:12px; text-shadow:0 0 12px currentColor; }
+.standard-plan-disclosure > summary > small { color:#a8f1cf; }
+.custom-portfolio-disclosure > summary > small { color:#c4caff; }
+.standard-plan-disclosure:hover,.standard-plan-disclosure:focus-within { box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 40%,transparent),0 0 30px color-mix(in srgb,var(--accent) 24%,transparent); }
+.custom-portfolio-disclosure:hover,.custom-portfolio-disclosure:focus-within { box-shadow:0 0 0 1px #9aa8ff66,0 0 30px #788bff45; }
+#refresh-account { transition:transform .2s ease,box-shadow .2s ease,color .2s ease; }
+#refresh-account:hover,#refresh-account:focus-visible { color:#fff; box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 55%,transparent),0 0 18px color-mix(in srgb,var(--accent) 35%,transparent); }
+#refresh-account:disabled { opacity:.72; cursor:wait; }
+#refresh-account.is-refreshing svg { animation:account-refresh-spin .75s linear infinite; }
+@keyframes account-refresh-spin { to { transform:rotate(360deg); } }
+@media (prefers-reduced-motion:reduce) { #refresh-account.is-refreshing svg { animation-duration:2.4s; } }
