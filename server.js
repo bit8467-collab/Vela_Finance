@@ -86,7 +86,7 @@ let historyInFlight = null;
 
 async function fetchJson(url, yahooRequest = false) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8000);
+  const timeout = setTimeout(() => controller.abort(), 3000);
   try {
     const response = await fetch(url, {
       headers: yahooRequest
@@ -320,7 +320,7 @@ const marketApi = {
     const url = new URL(request.url);
     if (request.method !== "GET") return new Response("Not found", { status: 404 });
     if (url.pathname === "/api/asset-history") {
-      if (cachedHistory && Date.now() - historyAt < 20_000) {
+      if (cachedHistory && Date.now() - historyAt < 10_000) {
         return Response.json(cachedHistory, { headers: { "Cache-Control": "no-store" } });
       }
       if (!historyInFlight) {
@@ -333,7 +333,7 @@ const marketApi = {
       return Response.json(await historyInFlight, { headers: { "Cache-Control": "no-store" } });
     }
     if (url.pathname !== "/api/asset-prices") return new Response("Not found", { status: 404 });
-    if (cachedQuotes && Date.now() - cachedAt < 60_000) {
+    if (cachedQuotes && Date.now() - cachedAt < 15_000) {
       return Response.json(cachedQuotes, { headers: { "Cache-Control": "no-store" } });
     }
     if (!refreshInFlight) {
@@ -1215,7 +1215,7 @@ const MARKET_PLAN_ALLOCATIONS = {
 };
 
 async function currentMarketQuotes() {
-  if (cachedQuotes && Date.now() - cachedAt < 60_000) return cachedQuotes.quotes;
+  if (cachedQuotes && Date.now() - cachedAt < 15_000) return cachedQuotes.quotes;
   const data = await loadQuotes();
   if (Object.keys(data.quotes || {}).length) {
     cachedQuotes = { quotes: { ...(cachedQuotes?.quotes || {}), ...data.quotes }, fetchedAt: data.fetchedAt };
