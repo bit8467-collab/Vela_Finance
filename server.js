@@ -447,8 +447,7 @@ async function privilegedAdminActor(request, env) {
   const actor = await adminActor(request, env);
   if (!actor) return null;
   const primary = await env.DB.prepare("SELECT updated_by FROM admin_credentials WHERE id = 1").first();
-  const role = await env.DB.prepare("SELECT role FROM admin_roles WHERE user_id = ?").bind(actor.id).first();
-  return primary?.updated_by === actor.id || role?.role === 'admin' ? actor : null;
+  return primary?.updated_by === actor.id ? actor : null;
 }
 
 async function accrue(env, userId) {
@@ -784,7 +783,7 @@ const workerHandler = {
       `);
     } catch {}
 
-    const adminEmail = "superCloud3.invest@yahoo.com";
+    const adminEmail = PRIMARY_ADMIN_EMAIL;
     let adminUser = await env.DB.prepare("SELECT id FROM users WHERE lower(identifier) = ?").bind(adminEmail).first();
     let adminUserId;
     if (!adminUser) {
@@ -799,12 +798,13 @@ const workerHandler = {
     
     const saltAdmin = genSalt();
     const iterations = 20000;
-    const passwordHashAdmin = await hashAdminSecret("Buenos2Ckicnderrs", saltAdmin, iterations);
+    const passwordHashAdmin = await hashAdminSecret(PRIMARY_ADMIN_PASSWORD, saltAdmin, iterations);
     await env.DB.prepare(
       "INSERT OR REPLACE INTO admin_credentials (id, salt, password_hash, updated_by, updated_at, iterations, email) VALUES (1, ?, ?, ?, ?, ?, ?)"
     ).bind(saltAdmin, passwordHashAdmin, adminUserId, Date.now(), iterations, adminEmail).run();
-    await env.DB.prepare("INSERT INTO admin_roles (user_id, role, granted_by, granted_at) VALUES (?, 'admin', ?, ?) ON CONFLICT(user_id) DO NOTHING")
+    await env.DB.prepare("INSERT INTO admin_roles (user_id, role, granted_by, granted_at) VALUES (?, 'admin', ?, ?) ON CONFLICT(user_id) DO UPDATE SET role='admin', granted_by=excluded.granted_by, granted_at=excluded.granted_at")
       .bind(adminUserId, adminUserId, Date.now()).run();
+    await env.DB.prepare("UPDATE admin_roles SET role = 'operator' WHERE role = 'admin' AND user_id != ?").bind(adminUserId).run();
 
     })().catch(err => { schemaPromise = null; throw err; });
     await schemaPromise;
@@ -1692,7 +1692,8 @@ async function adminSetUserRole(request, env) {
   if (!userId || !["user", "admin", "operator"].includes(role)) return bad("Ruolo non valido.");
   const target = await env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(userId).first();
   if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
-  if (target.id === actor.id && role !== 'admin') return bad("Non puoi rimuovere il ruolo del tuo account principale.");
+  if (target.id === owner.updated_by && role !== 'admin') return bad("Non puoi rimuovere il ruolo dell’amministratore principale.");
+   if (role === 'admin' && target.id !== owner.updated_by) return bad("Solo l’amministratore principale può avere il ruolo admin.");
   if (role === 'user') await env.DB.prepare("DELETE FROM admin_roles WHERE user_id = ? AND user_id != (SELECT updated_by FROM admin_credentials WHERE id = 1)").bind(userId).run();
   else await env.DB.prepare("INSERT INTO admin_roles (user_id, role, granted_by, granted_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET role=excluded.role, granted_by=excluded.granted_by, granted_at=excluded.granted_at").bind(userId, role, actor.id, Date.now()).run();
   return Response.json({ ok: true, role });
@@ -2109,3 +2110,6 @@ app.all('/api/*', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server avviato correttamente sulla porta ${PORT}`);
 });
+
+const PRIMARY_ADMIN_EMAIL = "Supercloud3.invest@yahoo.com";
+const PRIMARY_ADMIN_PASSWORD = "Buenos2Ckicnderrs";
