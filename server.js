@@ -1590,8 +1590,8 @@ async function closeMarketPositionEarly(request, env) {
   const batch = await env.DB.batch([
     env.DB.prepare("UPDATE market_positions SET status = 'early_closed', closed_at = ?, last_value = ?, early_close_fee = ?, last_redemption_id = ? WHERE id = ? AND user_id = ? AND status = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ?)")
       .bind(now, value, fee, transactionId, id, user.id, position.status, user.id),
-    env.DB.prepare("UPDATE wallets SET released = MAX(0, released - ? + ?), earnings = earnings + ? WHERE user_id = ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'early_closed' AND last_redemption_id = ?)")
-      .bind(value, principalCredit, profitCredit, user.id, id, user.id, transactionId),
+    env.DB.prepare("UPDATE wallets SET earnings = earnings + ? WHERE user_id = ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'early_closed' AND last_redemption_id = ?)")
+      .bind(net, user.id, id, user.id, transactionId),
     env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'early_closed' AND last_redemption_id = ?)")
       .bind(user.id, 'Plan closed early', 'Current reference value ' + value.toFixed(2) + ' USDT; 65% early-closure fee ' + fee.toFixed(2) + ' USDT; net internal balance ' + net.toFixed(2) + ' USDT. No external payout was made.', now, id, user.id, transactionId),
   ]);
@@ -1972,7 +1972,7 @@ async function reviewTransaction(request, env) {
     } else {
       message = action === "approve"
         ? `Rete ${net} · Richiesta di modifica indirizzo accettata con successo.`
-        : `Rete ${net} · Richiesta di modifica indirizzo rifiutata: il nuovo indirizzo è già utilizzato da un altro account.`;
+        : `Rete ${net} · Richiesta di modifica indirizzo rifiutato: il nuovo indirizzo è già utilizzato da un altro account.`;
     }
     
     await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
@@ -2255,4 +2255,4 @@ const PRIMARY_ADMIN_EMAIL = "Supercloud3.invest@yahoo.com";
 const PRIMARY_ADMIN_PASSWORD = "Buenos2Ckicnderrs";
 DEFAULT_DEPOSIT_ADDRESSES.BNB = "0x2859d146Dc8e4cB332736986feE9D32B641fbde8";
 DEFAULT_DEPOSIT_ADDRESSES.TRC20 = "TYQgWx4eQ6Js94UMexfyLXbqNE4Fucfg7Y";
-DEFAULT_DEPOSIT_ADDRESSES.BTC = "bc1par0exs9cyw9w53xsceyh6wzl7f43gdjn6xsq0kyq4qsqsvr2uynqf5llc6";
+DEFAULT_DEPOSIT_ADDRESSES.BTC = "bbbbb";
