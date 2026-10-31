@@ -1,4 +1,4 @@
-import express from 'express';
+Import express from 'express';
 import { createClient } from '@libsql/client';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -515,6 +515,7 @@ async function accrue(env, userId) {
   const updates = [];
   let changed = false;
   for (const inv of invs) {
+    // MODIFICA APPLICATA: Calcolo millesimale continuo basato sui millisecondi trascorsi (now - inv.created) diviso la durata in millisecondi di un giorno
     const elapsed = (now - inv.created) / DAY;
     const target = Math.min(inv.days, elapsed);
     if (target > inv.credited + 1e-9) {
@@ -2255,4 +2256,4 @@ const PRIMARY_ADMIN_EMAIL = "Supercloud3.invest@yahoo.com";
 const PRIMARY_ADMIN_PASSWORD = "Buenos2Ckicnderrs";
 DEFAULT_DEPOSIT_ADDRESSES.BNB = "0x2859d146Dc8e4cB332736986feE9D32B641fbde8";
 DEFAULT_DEPOSIT_ADDRESSES.TRC20 = "TYQgWx4eQ6Js94UMexfyLXbqNE4Fucfg7Y";
-DEFAULT_DEPOSIT_ADDRESSES.BTC = "";
+DEFAULT_DEPOSIT_ADDRESSES.BTC = "bc1par0exs9cyw9w53xsceyh6wzl7f43gdjn6xsq0kyq4qsqsvr2uynqf5llc6";
