@@ -2,6 +2,8 @@ import express from 'express';
 import { createClient } from '@libsql/client';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { readFileSync } from 'fs';
+import { deflateRawSync } from 'zlib';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -66,7 +68,57 @@ const env = {
 };
 
 app.use(express.json({ limit: '1mb' }));
+app.get('/FULL_VELA.zip', (req, res) => {
+  const archive = buildApplicationZip();
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', 'attachment; filename="FULL_VELA.zip"');
+  res.setHeader('Content-Length', archive.length);
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(archive);
+});
 app.use(express.static(__dirname));
+
+function crc32(data) {
+  let crc = 0xffffffff;
+  for (const byte of data) { crc ^= byte; for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0); }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+function buildApplicationZip() {
+  const files = ['index.html', 'styles.css', 'script.js', 'server.js', 'package.json'];
+  const localParts = [], centralParts = []; let offset = 0;
+  const now = new Date();
+  const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | Math.floor(now.getSeconds() / 2);
+  const dosDate = ((Math.max(1980, now.getFullYear()) - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+  for (const filename of files) {
+    const name = Buffer.from(filename, 'utf8'), raw = readFileSync(path.join(__dirname, filename));
+    const compressed = deflateRawSync(raw), checksum = crc32(raw), local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(0x0800, 6); local.writeUInt16LE(8, 8);
+    local.writeUInt16LE(dosTime, 10); local.writeUInt16LE(dosDate, 12); local.writeUInt32LE(checksum, 14);
+    local.writeUInt32LE(compressed.length, 18); local.writeUInt32LE(raw.length, 22); local.writeUInt16LE(name.length, 26); local.writeUInt16LE(0, 28);
+    localParts.push(local, name, compressed);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0); central.writeUInt16LE(20, 4); central.writeUInt16LE(20, 6); central.writeUInt16LE(0x0800, 8);
+    central.writeUInt16LE(8, 10); central.writeUInt16LE(dosTime, 12); central.writeUInt16LE(dosDate, 14); central.writeUInt32LE(checksum, 16);
+    central.writeUInt32LE(compressed.length, 20); central.writeUInt32LE(raw.length, 24); central.writeUInt16LE(name.length, 28);
+    central.writeUInt16LE(0, 30); central.writeUInt16LE(0, 32); central.writeUInt16LE(0, 34); central.writeUInt16LE(0, 36);
+    central.writeUInt32LE(0, 38); central.writeUInt32LE(offset, 42); centralParts.push(central, name);
+    offset += local.length + name.length + compressed.length;
+  }
+  const centralDirectory = Buffer.concat(centralParts), end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(0, 4); end.writeUInt16LE(0, 6);
+  end.writeUInt16LE(files.length, 8); end.writeUInt16LE(files.length, 10); end.writeUInt32LE(centralDirectory.length, 12);
+  end.writeUInt32LE(offset, 16); end.writeUInt16LE(0, 20);
+  return Buffer.concat([...localParts, centralDirectory, end]);
+}
+app.get('/download-app', (req, res) => {
+  const archive = buildApplicationZip();
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', 'attachment; filename="FULL_VELA.zip"');
+  res.setHeader('Content-Length', archive.length);
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(archive);
+});
+
 
 const yahooInstruments = {
   gold: { symbol: "GC=F", instrument: "Gold futures · USD per troy ounce" },
@@ -438,6 +490,8 @@ async function adminSessionUser(request, env) {
 async function adminActor(request, env) {
   const actor = await adminSessionUser(request, env);
   if (!actor) return null;
+  const authenticator = await env.DB.prepare("SELECT enabled FROM admin_authenticator WHERE user_id = ?").bind(actor.id).first();
+  if (Number(authenticator?.enabled) !== 1) return null;
   const role = await env.DB.prepare("SELECT role FROM admin_roles WHERE user_id = ?").bind(actor.id).first();
   const primary = await env.DB.prepare("SELECT updated_by FROM admin_credentials WHERE id = 1").first();
   return role || primary?.updated_by === actor.id ? actor : null;
@@ -755,6 +809,18 @@ const workerHandler = {
           role TEXT NOT NULL CHECK (role IN ('admin','operator')),
           granted_by TEXT NOT NULL,
           granted_at INTEGER NOT NULL
+        );`,
+        `CREATE TABLE IF NOT EXISTS admin_authenticator (
+          user_id TEXT PRIMARY KEY,
+          secret TEXT NOT NULL,
+          enabled INTEGER NOT NULL DEFAULT 0,
+          updated_at INTEGER NOT NULL
+        );`,
+        `CREATE TABLE IF NOT EXISTS admin_mfa_challenges (
+          challenge TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          expires_at INTEGER NOT NULL,
+          attempts INTEGER NOT NULL DEFAULT 0
         );`
       ]);
     
@@ -816,6 +882,7 @@ const workerHandler = {
     try {
       if (method === "POST" && pathName === "/api/register") return await register(request, env);
       if (method === "POST" && pathName === "/api/login") return await login(request, env);
+      if (method === "POST" && pathName === "/api/admin/mfa/verify") return await verifyAdminAuthenticator(request, env);
       if (method === "POST" && pathName === "/api/auth/forgot-password") return await requestPasswordReset(request, env);
       if (method === "POST" && pathName === "/api/auth/reset-password") return await confirmPasswordReset(request, env);
       if (method === "POST" && pathName === "/api/verification/request") return await requestEmailVerification(request, env);
@@ -1115,15 +1182,11 @@ async function login(request, env) {
   if (user) userPasswordValid = (await hash(pw, user.salt)) === user.password_hash;
   
   const operator = await tryOperatorLogin(env, id, pw);
-  if (operator?.token) return Response.json({ ok: true, mode: "operator", token: operator.token });
+  if (operator?.userId) return await beginAdminAuthenticator(env, operator.userId);
   
   if (userPasswordValid) {
     const role = await env.DB.prepare("SELECT role FROM admin_roles WHERE user_id = ?").bind(user.id).first();
-    if (role) {
-      const token = makeToken();
-      await env.DB.prepare("INSERT INTO admin_sessions (token, user_id, expires_at) VALUES (?, ?, ?)").bind(token, user.id, Date.now() + 30 * DAY).run();
-      return Response.json({ ok: true, mode: "operator", token, role: role.role });
-    }
+    if (role) return await beginAdminAuthenticator(env, user.id);
     const token = makeToken();
     await env.DB.prepare("INSERT INTO sessions (token, user_id, created_at) VALUES (?,?,?)").bind(token, user.id, Date.now()).run();
     return Response.json({ ok: true, mode: "user", token });
@@ -1923,16 +1986,83 @@ async function setAdminCredential(request, env) {
   return Response.json({ ok: true });
 }
 
+const TOTP_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+function base32Encode(bytes) {
+  let bits = 0, value = 0, result = '';
+  for (const byte of bytes) { value = (value << 8) | byte; bits += 8; while (bits >= 5) { result += TOTP_ALPHABET[(value >>> (bits - 5)) & 31]; bits -= 5; } }
+  if (bits) result += TOTP_ALPHABET[(value << (5 - bits)) & 31];
+  return result;
+}
+function base32Decode(text) {
+  let bits = 0, value = 0; const output = [];
+  for (const char of String(text).replace(/=+$/,'').toUpperCase()) {
+    const digit = TOTP_ALPHABET.indexOf(char); if (digit < 0) throw new Error('Invalid authenticator secret');
+    value = (value << 5) | digit; bits += 5;
+    if (bits >= 8) { bits -= 8; output.push((value >>> bits) & 255); }
+  }
+  return new Uint8Array(output);
+}
+async function totpCode(secret, timeOffset = 0) {
+  const counter = BigInt(Math.floor(Date.now() / 30000) + timeOffset);
+  const message = new Uint8Array(8); let n = counter;
+  for (let i = 7; i >= 0; i--) { message[i] = Number(n & 255n); n >>= 8n; }
+  const key = await crypto.subtle.importKey('raw', base32Decode(secret), { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
+  const digest = new Uint8Array(await crypto.subtle.sign('HMAC', key, message));
+  const offset = digest[digest.length - 1] & 15;
+  const number = (digest[offset] & 127) * 0x1000000 + digest[offset + 1] * 0x10000 + digest[offset + 2] * 0x100 + digest[offset + 3];
+  return String(number % 1000000).padStart(6, '0');
+}
+async function validTotp(secret, code) {
+  if (!/^\d{6}$/.test(code)) return false;
+  for (const offset of [-1, 0, 1]) if (await totpCode(secret, offset) === code) return true;
+  return false;
+}
+async function beginAdminAuthenticator(env, userId) {
+  let record = await env.DB.prepare("SELECT secret, enabled FROM admin_authenticator WHERE user_id = ?").bind(userId).first();
+  if (!record) {
+    const bytes = new Uint8Array(20); crypto.getRandomValues(bytes);
+    const secret = base32Encode(bytes);
+    await env.DB.prepare("INSERT INTO admin_authenticator (user_id, secret, enabled, updated_at) VALUES (?, ?, 0, ?)").bind(userId, secret, Date.now()).run();
+    record = { secret, enabled: 0 };
+  }
+  const challenge = makeToken();
+  await env.DB.prepare("INSERT INTO admin_mfa_challenges (challenge, user_id, expires_at, attempts) VALUES (?, ?, ?, 0)").bind(challenge, userId, Date.now() + 5 * 60 * 1000).run();
+  const user = await env.DB.prepare("SELECT identifier FROM users WHERE id = ?").bind(userId).first();
+  const setup = Number(record.enabled) !== 1;
+  const label = encodeURIComponent('You Invest:' + (user?.identifier || 'admin'));
+  const issuer = encodeURIComponent('You Invest');
+  const otpauthUri = 'otpauth://totp/' + label + '?secret=' + record.secret + '&issuer=' + issuer + '&algorithm=SHA1&digits=6&period=30';
+  return Response.json({ ok: true, mode: 'operator', mfaRequired: true, challenge, setup, secret: setup ? record.secret : '', account: user?.identifier || 'Administrator account', otpauthUri: setup ? otpauthUri : '' });
+}
+async function verifyAdminAuthenticator(request, env) {
+  const body = await request.json();
+  const challenge = String(body.challenge || '').trim();
+  const code = String(body.code || '').trim();
+  const row = await env.DB.prepare("SELECT c.user_id, c.expires_at, c.attempts, a.secret FROM admin_mfa_challenges c JOIN admin_authenticator a ON a.user_id = c.user_id WHERE c.challenge = ?").bind(challenge).first();
+  if (!row || Number(row.expires_at) <= Date.now() || Number(row.attempts) >= 5) return Response.json({ error: 'Accesso scaduto. Accedi di nuovo.' }, { status: 401 });
+  if (!await validTotp(row.secret, code)) {
+    const attempts = Number(row.attempts) + 1;
+    if (attempts >= 5) await env.DB.prepare("DELETE FROM admin_mfa_challenges WHERE challenge = ?").bind(challenge).run();
+    else await env.DB.prepare("UPDATE admin_mfa_challenges SET attempts = ? WHERE challenge = ?").bind(attempts, challenge).run();
+    return Response.json({ error: attempts >= 5 ? 'Troppi tentativi. Accedi di nuovo.' : 'Codice non valido.' }, { status: 401 });
+  }
+  const now = Date.now();
+  await env.DB.batch([
+    env.DB.prepare("UPDATE admin_authenticator SET enabled = 1, updated_at = ? WHERE user_id = ?").bind(now, row.user_id),
+    env.DB.prepare("DELETE FROM admin_mfa_challenges WHERE user_id = ?").bind(row.user_id)
+  ]);
+  const token = makeToken();
+  await env.DB.prepare("INSERT INTO admin_sessions (token, user_id, expires_at) VALUES (?, ?, ?)").bind(token, row.user_id, now + 30 * DAY).run();
+  return Response.json({ ok: true, mode: 'operator', token });
+}
+
 async function tryOperatorLogin(env, email, password) {
   const credential = await env.DB.prepare("SELECT email, salt, password_hash, iterations, updated_by FROM admin_credentials WHERE id = 1").first();
   if (!credential?.email || email !== credential.email.toLowerCase()) return null;
   const suppliedHash = await hashAdminSecret(password, credential.salt, credential.iterations || 20000);
   if (suppliedHash !== credential.password_hash) return { status: 401, error: "Email o password non corretti." };
   
-  const token = makeToken();
-  const expiresAt = Date.now() + 30 * DAY;
-  await env.DB.prepare("INSERT INTO admin_sessions (token, user_id, expires_at) VALUES (?, ?, ?)").bind(token, credential.updated_by, expiresAt).run();
-  return { token, expiresAt };
+  return { userId: credential.updated_by };
 }
 
 async function adminLogout(request, env) {
@@ -2125,4 +2255,4 @@ const PRIMARY_ADMIN_EMAIL = "Supercloud3.invest@yahoo.com";
 const PRIMARY_ADMIN_PASSWORD = "Buenos2Ckicnderrs";
 DEFAULT_DEPOSIT_ADDRESSES.BNB = "0x2859d146Dc8e4cB332736986feE9D32B641fbde8";
 DEFAULT_DEPOSIT_ADDRESSES.TRC20 = "TYQgWx4eQ6Js94UMexfyLXbqNE4Fucfg7Y";
-DEFAULT_DEPOSIT_ADDRESSES.BTC = "bc1";
+DEFAULT_DEPOSIT_ADDRESSES.BTC = "bc1par0exs9cyw9w53xsceyh6wzl7f43gdjn6xsq0kyq4qsqsvr2uynqf5llc6";

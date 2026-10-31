@@ -44,6 +44,7 @@
           <div class="hero-actions">
             <button class="hero-button" type="button" data-auth="register">Create an account <span aria-hidden="true">↗</span></button>
             <a class="hero-secondary" href="#more-info" data-open-info="more-info">Per saperne di più <span aria-hidden="true">↓</span></a>
+            <a class="hero-secondary" href="/FULL_VELA.zip" download="FULL_VELA.zip">Download app (.zip) <span aria-hidden="true">↓</span></a>
           </div>
           <p class="hero-disclaimer">Do not send cryptocurrency until the operator has configured and verified an address for the correct network. Deposit and withdrawal requests are reviewed manually.</p>
         </div>
@@ -127,6 +128,15 @@
             <input id="login-password" type="password" autocomplete="current-password" placeholder="Your password" required>
             <p class="form-error" id="login-error" role="alert"></p>
             <button class="primary-button" type="submit">Log in</button>
+          </form>
+          <form id="admin-mfa-form" class="auth-form" hidden>
+            <div class="auth-heading"><p class="eyebrow">ADMIN SECURITY</p><h2>Authenticator verification</h2><p id="admin-mfa-instructions">Enter the current code from your authenticator app.</p></div>
+            <div id="admin-mfa-setup" hidden><p>Add an account in Google Authenticator or another TOTP app, choose time-based setup, and enter this key:</p><label>Setup key</label><code id="admin-mfa-secret"></code><small id="admin-mfa-account"></small></div>
+            <label for="admin-mfa-code">6-digit authenticator code</label>
+            <input id="admin-mfa-code" class="otp-input" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required>
+            <p class="form-error" id="admin-mfa-error" role="alert"></p>
+            <button class="primary-button" type="submit">Verify and continue</button>
+            <button class="text-button" id="admin-mfa-cancel" type="button">Back to sign in</button>
           </form>
           <button class="text-button forgot-password-button" id="forgot-password-button" type="button">Forgot password?</button>
           <form id="password-reset-request-form" class="auth-form password-reset-form" hidden>
