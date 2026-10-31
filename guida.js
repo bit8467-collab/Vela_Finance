@@ -1,0 +1,1 @@
+document.querySelectorAll('.contents a').forEach(link=>{link.addEventListener('click',()=>{document.querySelectorAll('.contents a').forEach(item=>item.removeAttribute('aria-current'));link.setAttribute('aria-current','location')})});
