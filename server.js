@@ -68,9 +68,13 @@ const env = {
 };
 
 app.use(express.json({ limit: '1mb' }));
-// Download zip disabilitato permanentemente dalla home / pagina principale su richiesta esplicita
 app.get('/FULL_VELA.zip', (req, res) => {
-  res.status(403).send("Download zip disabilitato permanentemente.");
+  const archive = buildApplicationZip();
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', 'attachment; filename="FULL_VELA.zip"');
+  res.setHeader('Content-Length', archive.length);
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(archive);
 });
 app.use(express.static(__dirname));
 
@@ -107,7 +111,12 @@ function buildApplicationZip() {
   return Buffer.concat([...localParts, centralDirectory, end]);
 }
 app.get('/download-app', (req, res) => {
-  res.status(403).send("Download zip disabilitato permanentemente.");
+  const archive = buildApplicationZip();
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', 'attachment; filename="FULL_VELA.zip"');
+  res.setHeader('Content-Length', archive.length);
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(archive);
 });
 
 
@@ -812,20 +821,6 @@ const workerHandler = {
           user_id TEXT NOT NULL,
           expires_at INTEGER NOT NULL,
           attempts INTEGER NOT NULL DEFAULT 0
-        );`,
-        `CREATE TABLE IF NOT EXISTS user_authenticator (
-          user_id TEXT PRIMARY KEY,
-          secret TEXT NOT NULL,
-          enabled INTEGER NOT NULL DEFAULT 0,
-          updated_at INTEGER NOT NULL
-        );`,
-        `CREATE TABLE IF NOT EXISTS user_mfa_challenges (
-          challenge TEXT PRIMARY KEY,
-          user_id TEXT NOT NULL,
-          action TEXT NOT NULL,
-          payload_json TEXT NOT NULL,
-          expires_at INTEGER NOT NULL,
-          attempts INTEGER NOT NULL DEFAULT 0
         );`
       ]);
     
@@ -888,8 +883,6 @@ const workerHandler = {
       if (method === "POST" && pathName === "/api/register") return await register(request, env);
       if (method === "POST" && pathName === "/api/login") return await login(request, env);
       if (method === "POST" && pathName === "/api/admin/mfa/verify") return await verifyAdminAuthenticator(request, env);
-      if (method === "POST" && pathName === "/api/user/mfa/setup") return await setupUserAuthenticator(request, env);
-      if (method === "POST" && pathName === "/api/user/mfa/verify") return await verifyUserAuthenticatorAction(request, env);
       if (method === "POST" && pathName === "/api/auth/forgot-password") return await requestPasswordReset(request, env);
       if (method === "POST" && pathName === "/api/auth/reset-password") return await confirmPasswordReset(request, env);
       if (method === "POST" && pathName === "/api/verification/request") return await requestEmailVerification(request, env);
@@ -984,35 +977,92 @@ async function requestPasswordReset(request, env) {
   if (!email) return bad("Inserisci un indirizzo email valido.");
 
   const user = await env.DB.prepare("SELECT id, username, identifier FROM users WHERE lower(identifier) = ?").bind(email).first();
-  if (!user) return bad("Utente non trovato.");
-
-  let record = await env.DB.prepare("SELECT secret, enabled FROM user_authenticator WHERE user_id = ?").bind(user.id).first();
-  if (!record || Number(record.enabled) !== 1) {
-    const bytes = new Uint8Array(20); crypto.getRandomValues(bytes);
-    const secret = base32Encode(bytes);
-    await env.DB.prepare("INSERT INTO user_authenticator (user_id, secret, enabled, updated_at) VALUES (?, ?, 0, ?) ON CONFLICT(user_id) DO UPDATE SET secret=excluded.secret").bind(user.id, secret, Date.now()).run();
-    record = { secret };
+  const now = Date.now();
+  if (user) {
+    await env.DB.prepare(
+      "INSERT INTO password_reset_requests (user_id, requested_at, otp_attempts) VALUES (?, ?, 0) " +
+      "ON CONFLICT(user_id) DO UPDATE SET requested_at = excluded.requested_at, otp_hash = NULL, otp_salt = NULL, otp_expires_at = NULL, otp_attempts = 0, issued_at = NULL, issued_by = NULL"
+    ).bind(user.id, now).run();
   }
 
-  const challenge = makeToken();
-  const expiresAt = Date.now() + 15 * 60 * 1000;
-  const newPassword = typeof body.newPassword === "string" ? body.newPassword : "";
-  await env.DB.prepare("INSERT INTO user_mfa_challenges (challenge, user_id, action, payload_json, expires_at, attempts) VALUES (?, ?, 'reset-password', ?, ?, 0)")
-    .bind(challenge, user.id, JSON.stringify({ newPassword }), expiresAt).run();
-
-  const label = encodeURIComponent('You Invest:' + user.identifier);
-  const issuer = encodeURIComponent('You Invest');
-  const otpauthUri = 'otpauth://totp/' + label + '?secret=' + record.secret + '&issuer=' + issuer + '&algorithm=SHA1&digits=6&period=30';
-
-  return Response.json({ ok: true, mfaRequired: true, challenge, otpauthUri, secret: record.secret });
+  return Response.json({ 
+    ok: true, 
+    email: user ? user.identifier : email, 
+    username: user ? user.username : 'Utente', 
+    userId: user ? user.id : 'unknown', 
+    requestedAt: now 
+  });
 }
 
 async function confirmPasswordReset(request, env) {
-  return verifyUserAuthenticatorAction(request, env);
+  const body = await request.json();
+  const email = normalizeEmail(body.email);
+  const otp = typeof body.otp === "string" ? body.otp.trim() : "";
+  const newPassword = typeof body.newPassword === "string" ? body.newPassword : "";
+
+  if (!email || !/^\d{6}$/.test(otp) || !newPassword) {
+    return bad("Inserisci email, codice OTP valido di 6 cifre e la nuova password.");
+  }
+  if (newPassword.length < 6) {
+    return bad("La nuova password deve essere di almeno 6 caratteri.");
+  }
+
+  const user = await env.DB.prepare("SELECT * FROM users WHERE lower(identifier) = ?").bind(email).first();
+  if (!user) return bad("Utente non trovato.");
+
+  const requestRow = await env.DB.prepare("SELECT * FROM password_reset_requests WHERE user_id = ?").bind(user.id).first();
+  if (!requestRow?.otp_hash || !requestRow.otp_salt || !requestRow.otp_expires_at || requestRow.otp_expires_at < Date.now()) {
+    return bad("Codice OTP non valido o scaduto. Chiedi un nuovo codice all'operatore.");
+  }
+  if (requestRow.otp_attempts >= 5) return bad("Troppi tentativi falliti.");
+
+  if (await hash(otp, requestRow.otp_salt) !== requestRow.otp_hash) {
+    await env.DB.prepare("UPDATE password_reset_requests SET otp_attempts = otp_attempts + 1 WHERE user_id = ?").bind(user.id).run();
+    return bad("Codice OTP errato.");
+  }
+
+  const newSalt = genSalt();
+  const newPasswordHash = await hash(newPassword, newSalt);
+  const now = Date.now();
+
+  await env.DB.batch([
+    env.DB.prepare("UPDATE users SET password_hash = ?, salt = ? WHERE id = ?").bind(newPasswordHash, newSalt, user.id),
+    env.DB.prepare("DELETE FROM password_reset_requests WHERE user_id = ?").bind(user.id),
+    env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(user.id),
+    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)").bind(user.id, "Password modificata", "La password del tuo account è stata reimpostata con successo.", now),
+  ]);
+
+  return Response.json({ ok: true, message: "Password aggiornata con successo. Ora puoi effettuare il login." });
 }
 
 async function setPasswordResetOtp(request, env, userId) {
-  return Response.json({ ok: true });
+  const actor = await adminActor(request, env);
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const body = await request.json();
+  const otp = typeof body.otp === "string" ? body.otp.trim() : "";
+  if (!/^\d{6}$/.test(otp)) return bad("L’OTP deve contenere esattamente 6 cifre.");
+  const user = await env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(userId).first();
+  if (!user) return Response.json({ error: "Utente non trovato." }, { status: 404 });
+  const expiresAt = Date.now() + 15 * 60 * 1000;
+  const salt = genSalt();
+  const otpHash = await hash(otp, salt);
+  const now = Date.now();
+
+  const row = await env.DB.prepare("SELECT user_id FROM password_reset_requests WHERE user_id = ?").bind(userId).first();
+  if (!row) {
+    await env.DB.prepare("INSERT INTO password_reset_requests (user_id, requested_at, otp_hash, otp_salt, otp_expires_at, otp_attempts, issued_at, issued_by) VALUES (?, ?, ?, ?, ?, 0, ?, ?)")
+      .bind(userId, now, otpHash, salt, expiresAt, now, actor.id).run();
+  } else {
+    await env.DB.prepare("UPDATE password_reset_requests SET otp_hash = ?, otp_salt = ?, otp_expires_at = ?, otp_attempts = 0, issued_at = ?, issued_by = ? WHERE user_id = ?")
+      .bind(otpHash, salt, expiresAt, now, actor.id, userId).run();
+  }
+
+  if (body.notify === true) {
+    await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at, expires_at) VALUES (?, 'otp', ?, ?, ?, ?)")
+      .bind(userId, "Codice OTP recupero password", `Il tuo codice OTP per il reset della password è: ${otp}. Scade tra 15 minuti.`, now, expiresAt).run();
+  }
+
+  return Response.json({ ok: true, expiresAt });
 }
 
 async function requestEmailVerification(request, env) {
@@ -1031,36 +1081,92 @@ async function requestEmailVerification(request, env) {
 
   if (targetUser.email_verified) return bad("Questo indirizzo email è già verificato.");
 
-  let record = await env.DB.prepare("SELECT secret, enabled FROM user_authenticator WHERE user_id = ?").bind(targetUser.id).first();
-  if (!record || Number(record.enabled) !== 1) {
-    const bytes = new Uint8Array(20); crypto.getRandomValues(bytes);
-    const secret = base32Encode(bytes);
-    await env.DB.prepare("INSERT INTO user_authenticator (user_id, secret, enabled, updated_at) VALUES (?, ?, 0, ?) ON CONFLICT(user_id) DO UPDATE SET secret=excluded.secret").bind(targetUser.id, secret, Date.now()).run();
-    record = { secret };
-  }
-
-  const challenge = makeToken();
-  const expiresAt = Date.now() + 15 * 60 * 1000;
-  await env.DB.prepare("INSERT INTO user_mfa_challenges (challenge, user_id, action, payload_json, expires_at, attempts) VALUES (?, ?, 'verify-email', '{}', ?, 0)")
-    .bind(challenge, targetUser.id, expiresAt).run();
-
-  const label = encodeURIComponent('You Invest:' + targetUser.identifier);
-  const issuer = encodeURIComponent('You Invest');
-  const otpauthUri = 'otpauth://totp/' + label + '?secret=' + record.secret + '&issuer=' + issuer + '&algorithm=SHA1&digits=6&period=30';
-
-  return Response.json({ ok: true, mfaRequired: true, challenge, otpauthUri, secret: record.secret });
+  const now = Date.now();
+  await env.DB.prepare("INSERT INTO email_verification_requests (user_id, requested_at, otp_attempts, verified_at) VALUES (?, ?, 0, NULL) ON CONFLICT(user_id) DO UPDATE SET requested_at = excluded.requested_at, verified_at = NULL").bind(targetUser.id, now).run();
+  return Response.json({ ok: true, email: targetUser.identifier, username: targetUser.username, userId: targetUser.id, requestedAt: now });
 }
 
 async function verifyAccountOtpDirect(request, env) {
-  return verifyUserAuthenticatorAction(request, env);
+  const user = await authed(request, env);
+  const body = await request.json();
+  const otp = typeof body.otp === "string" ? body.otp.trim() : "";
+  if (!/^\d{6}$/.test(otp)) return bad("Inserisci un codice OTP valido di 6 cifre.");
+  if (user.email_verified) return bad("L'account è già verificato.");
+
+  const requestRow = await env.DB.prepare("SELECT * FROM email_verification_requests WHERE user_id = ? AND verified_at IS NULL").bind(user.id).first();
+  if (!requestRow?.otp_hash || !requestRow.otp_salt || !requestRow.otp_expires_at || requestRow.otp_expires_at < Date.now()) {
+    return bad("OTP non generato o scaduto. Attendi il codice inviato dall'amministratore.");
+  }
+  if (requestRow.otp_attempts >= 5) return bad("Troppi tentativi falliti.");
+
+  if (await hash(otp, requestRow.otp_salt) !== requestRow.otp_hash) {
+    await env.DB.prepare("UPDATE email_verification_requests SET otp_attempts = otp_attempts + 1 WHERE user_id = ?").bind(user.id).run();
+    return bad("Codice OTP non corretto.");
+  }
+
+  const now = Date.now();
+  await env.DB.batch([
+    env.DB.prepare("UPDATE users SET email_verified = 1 WHERE id = ?").bind(user.id),
+    env.DB.prepare("UPDATE email_verification_requests SET verified_at = ?, otp_hash = NULL, otp_salt = NULL WHERE user_id = ?").bind(now, user.id),
+    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)").bind(user.id, "Account verificato", "La verifica dell'email è stata completata con successo.", now),
+  ]);
+
+  return Response.json({ ok: true, message: "Account verificato con successo." });
 }
 
 async function confirmEmailVerification(request, env) {
-  return verifyUserAuthenticatorAction(request, env);
+  const body = await request.json();
+  const email = normalizeEmail(body.email);
+  const password = typeof body.password === "string" ? body.password : "";
+  const otp = typeof body.otp === "string" ? body.otp.trim() : "";
+  if (!email || !password || !/^\d{6}$/.test(otp)) return bad("Inserisci email, password e OTP di 6 cifre.");
+  const user = await env.DB.prepare("SELECT * FROM users WHERE lower(identifier) = ?").bind(email).first();
+  if (!user || (await hash(password, user.salt)) !== user.password_hash) return bad("Email o password non corrette.");
+  if (user.email_verified) return bad("Questo indirizzo email è già verificato.");
+  
+  const requestRow = await env.DB.prepare("SELECT * FROM email_verification_requests WHERE user_id = ?").bind(user.id).first();
+  if (!requestRow?.otp_hash || !requestRow.otp_salt || !requestRow.otp_expires_at || requestRow.otp_expires_at < Date.now()) return bad("OTP assente o scaduto. Chiedi il codice all'amministratore.");
+  if (requestRow.otp_attempts >= 5) return bad("Troppi tentativi.");
+  
+  if (await hash(otp, requestRow.otp_salt) !== requestRow.otp_hash) {
+    await env.DB.prepare("UPDATE email_verification_requests SET otp_attempts = otp_attempts + 1 WHERE user_id = ?").bind(user.id).run();
+    return bad("OTP non corretto.");
+  }
+  
+  const now = Date.now();
+  const token = makeToken();
+  await env.DB.batch([
+    env.DB.prepare("UPDATE users SET email_verified = 1 WHERE id = ?").bind(user.id),
+    env.DB.prepare("UPDATE email_verification_requests SET verified_at = ?, otp_hash = NULL, otp_salt = NULL WHERE user_id = ?").bind(now, user.id),
+    env.DB.prepare("INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)").bind(token, user.id, now),
+    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)").bind(user.id, "Email verificata", "La verifica del tuo account è stata completata con successo.", now),
+  ]);
+  return Response.json({ ok: true, mode: "user", token });
 }
 
 async function setUserVerificationOtp(request, env, userId) {
-  return Response.json({ ok: true });
+  const actor = await adminActor(request, env);
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const body = await request.json();
+  const otp = typeof body.otp === "string" ? body.otp.trim() : "";
+  if (!/^\d{6}$/.test(otp)) return bad("L’OTP deve contenere esattamente 6 cifre.");
+  const user = await env.DB.prepare("SELECT id, email_verified FROM users WHERE id = ?").bind(userId).first();
+  if (!user) return Response.json({ error: "Utente non trovato." }, { status: 404 });
+  const expiresAt = Date.now() + 15 * 60 * 1000;
+  const salt = genSalt();
+  const otpHash = await hash(otp, salt);
+  const now = Date.now();
+
+  const row = await env.DB.prepare("SELECT user_id FROM email_verification_requests WHERE user_id = ?").bind(userId).first();
+  if (!row) {
+    await env.DB.prepare("INSERT INTO email_verification_requests (user_id, requested_at, otp_hash, otp_salt, otp_expires_at, otp_attempts, issued_at, issued_by) VALUES (?, ?, ?, ?, ?, 0, ?, ?)")
+      .bind(userId, now, otpHash, salt, expiresAt, now, actor.id).run();
+  } else {
+    await env.DB.prepare("UPDATE email_verification_requests SET otp_hash = ?, otp_salt = ?, otp_expires_at = ?, otp_attempts = 0, issued_at = ?, issued_by = ? WHERE user_id = ?")
+      .bind(otpHash, salt, expiresAt, now, actor.id, userId).run();
+  }
+
+  return Response.json({ ok: true, expiresAt });
 }
 
 async function login(request, env) {
@@ -1615,9 +1721,9 @@ async function adminTransactions(request, env) {
     };
   });
   
-  const emailVerifications = [];
-  const sensitiveActionVerifications = [];
-  const passwordResets = [];
+  const emailVerifications = (await env.DB.prepare("SELECT r.user_id, r.requested_at, r.otp_expires_at, u.username, u.identifier FROM email_verification_requests r JOIN users u ON u.id = r.user_id WHERE r.verified_at IS NULL").all()).results;
+  const sensitiveActionVerifications = (await env.DB.prepare("SELECT r.user_id, r.action, r.requested_at, r.otp_expires_at, u.username, u.identifier FROM sensitive_action_verifications r JOIN users u ON u.id = r.user_id WHERE r.consumed_at IS NULL").all()).results;
+  const passwordResets = (await env.DB.prepare("SELECT r.user_id, r.requested_at, r.otp_expires_at, r.issued_at, u.username, u.identifier FROM password_reset_requests r JOIN users u ON u.id = r.user_id").all()).results;
 
   return Response.json({ deposits, withdrawals, walletChanges, emailVerifications, sensitiveActionVerifications, passwordResets, operator: user.username });
 }
@@ -1682,10 +1788,13 @@ async function adminUserDetails(request, env, userId) {
   const marketPositions = await syncMarketPositions(env, target.id);
   const deposits = (await env.DB.prepare("SELECT id, amount, net, date, status, tx_reference FROM deposits WHERE user_id = ? ORDER BY date DESC LIMIT 100").bind(target.id).all()).results;
   const withdrawals = (await env.DB.prepare("SELECT id, amount, net, date, status, wallet_address, source FROM withdrawals WHERE user_id = ? ORDER BY date DESC LIMIT 100").bind(target.id).all()).results;
+  const verificationRequest = await env.DB.prepare("SELECT requested_at, otp_expires_at, verified_at FROM email_verification_requests WHERE user_id = ?").bind(target.id).first();
+  const actionVerification = await env.DB.prepare("SELECT action, requested_at, otp_expires_at FROM sensitive_action_verifications WHERE user_id = ? AND consumed_at IS NULL").bind(target.id).first();
+  const passwordResetRequest = await env.DB.prepare("SELECT requested_at, otp_expires_at, issued_at FROM password_reset_requests WHERE user_id = ?").bind(target.id).first();
   const settings = await env.DB.prepare("SELECT withdraw_wallets FROM settings WHERE user_id = ?").bind(target.id).first();
   const operator = await env.DB.prepare("SELECT role FROM admin_roles WHERE user_id = ?").bind(actor.id).first();
   const invitedCount = await env.DB.prepare("SELECT COUNT(*) AS count FROM users WHERE referred_by = ?").bind(target.id).first();
-  return Response.json({ user: target, wallet, investments, marketPositions, deposits, withdrawals, settings, verificationRequest: null, actionVerification: null, passwordResetRequest: null, invitedCount: Number(invitedCount?.count || 0), actorRole: operator?.role || 'operator' });
+  return Response.json({ user: target, wallet, investments, marketPositions, deposits, withdrawals, settings, verificationRequest, actionVerification, passwordResetRequest, invitedCount: Number(invitedCount?.count || 0), actorRole: operator?.role || 'operator' });
 }
 
 async function adminUpdateUserBalance(request, env, userId) {
@@ -1947,90 +2056,6 @@ async function verifyAdminAuthenticator(request, env) {
   return Response.json({ ok: true, mode: 'operator', token });
 }
 
-async function setupUserAuthenticator(request, env) {
-  const user = await authed(request, env);
-  let record = await env.DB.prepare("SELECT secret, enabled FROM user_authenticator WHERE user_id = ?").bind(user.id).first();
-  if (!record) {
-    const bytes = new Uint8Array(20); crypto.getRandomValues(bytes);
-    const secret = base32Encode(bytes);
-    await env.DB.prepare("INSERT INTO user_authenticator (user_id, secret, enabled, updated_at) VALUES (?, ?, 0, ?)").bind(user.id, secret, Date.now()).run();
-    record = { secret, enabled: 0 };
-  }
-  const label = encodeURIComponent('You Invest:' + user.identifier);
-  const issuer = encodeURIComponent('You Invest');
-  const otpauthUri = 'otpauth://totp/' + label + '?secret=' + record.secret + '&issuer=' + issuer + '&algorithm=SHA1&digits=6&period=30';
-  return Response.json({ ok: true, secret: record.secret, otpauthUri, enabled: Number(record.enabled) === 1 });
-}
-
-async function verifyUserAuthenticatorAction(request, env) {
-  const body = await request.json();
-  const challenge = String(body.challenge || '').trim();
-  const code = String(body.code || '').trim();
-  const row = await env.DB.prepare("SELECT c.user_id, c.action, c.payload_json, c.expires_at, c.attempts, a.secret FROM user_mfa_challenges c JOIN user_authenticator a ON a.user_id = c.user_id WHERE c.challenge = ?").bind(challenge).first();
-  if (!row || Number(row.expires_at) <= Date.now() || Number(row.attempts) >= 5) return Response.json({ error: 'Sessione di verifica scaduta. Riprova.' }, { status: 401 });
-  if (!await validTotp(row.secret, code)) {
-    const attempts = Number(row.attempts) + 1;
-    if (attempts >= 5) await env.DB.prepare("DELETE FROM user_mfa_challenges WHERE challenge = ?").bind(challenge).run();
-    else await env.DB.prepare("UPDATE user_mfa_challenges SET attempts = ? WHERE challenge = ?").bind(attempts, challenge).run();
-    return Response.json({ error: attempts >= 5 ? 'Troppi tentativi falliti.' : 'Codice Authenticator errato.' }, { status: 401 });
-  }
-
-  await env.DB.batch([
-    env.DB.prepare("UPDATE user_authenticator SET enabled = 1, updated_at = ? WHERE user_id = ?").bind(Date.now(), row.user_id),
-    env.DB.prepare("DELETE FROM user_mfa_challenges WHERE challenge = ?").bind(challenge)
-  ]);
-
-  const now = Date.now();
-  let payload = {};
-  try { payload = JSON.parse(row.payload_json || '{}'); } catch {}
-
-  if (row.action === 'verify-email') {
-    await env.DB.batch([
-      env.DB.prepare("UPDATE users SET email_verified = 1 WHERE id = ?").bind(row.user_id),
-      env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)").bind(row.user_id, "Email verificata", "La verifica dell'email tramite Google Authenticator è stata completata.", now),
-    ]);
-    return Response.json({ ok: true, message: "Email verificata con successo." });
-  } else if (row.action === 'reset-password') {
-    const newPassword = payload.newPassword;
-    if (!newPassword || newPassword.length < 6) return bad("Password non valida.");
-    const newSalt = genSalt();
-    const newPasswordHash = await hash(newPassword, newSalt);
-    await env.DB.batch([
-      env.DB.prepare("UPDATE users SET password_hash = ?, salt = ? WHERE id = ?").bind(newPasswordHash, newSalt, row.user_id),
-      env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(row.user_id),
-      env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)").bind(row.user_id, "Password modificata", "La password è stata reimpostata con successo.", now),
-    ]);
-    return Response.json({ ok: true, message: "Password aggiornata con successo." });
-  } else if (row.action === 'change-password') {
-    const newPassword = payload.newPassword;
-    if (!newPassword || newPassword.length < 6) return bad("Password non valida.");
-    const newSalt = genSalt();
-    const newPasswordHash = await hash(newPassword, newSalt);
-    await env.DB.batch([
-      env.DB.prepare("UPDATE users SET password_hash = ?, salt = ? WHERE id = ?").bind(newPasswordHash, newSalt, row.user_id),
-      env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)").bind(row.user_id, "Password aggiornata", "La password è stata modificata con successo.", now),
-    ]);
-    return Response.json({ ok: true, message: "Password modificata con successo." });
-  } else if (row.action === 'save-wallet') {
-    const net = payload.net;
-    const address = payload.address;
-    const currentSettings = await env.DB.prepare("SELECT withdraw_wallets FROM settings WHERE user_id = ?").bind(row.user_id).first();
-    let currentWallets = {};
-    try { currentWallets = JSON.parse(currentSettings?.withdraw_wallets || "{}"); } catch {}
-    currentWallets[net] = address;
-    await env.DB.batch([
-      env.DB.prepare("INSERT INTO settings (user_id, withdraw_wallets, notifications) VALUES (?, ?, 1) ON CONFLICT(user_id) DO UPDATE SET withdraw_wallets = excluded.withdraw_wallets")
-        .bind(row.user_id, JSON.stringify(currentWallets)),
-      env.DB.prepare("INSERT INTO user_withdrawal_addresses (user_id, net, address, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, net, address) DO NOTHING")
-        .bind(row.user_id, net, address, now),
-      env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(row.user_id, "Wallet collegato", `Indirizzo salvato per la rete ${net} con Google Authenticator.`, now),
-    ]);
-    return Response.json({ ok: true, message: "Indirizzo wallet salvato con successo.", acc: { withdraw_wallets: currentWallets, notifications: true } });
-  }
-
-  return Response.json({ ok: true });
-}
-
 async function tryOperatorLogin(env, email, password) {
   const credential = await env.DB.prepare("SELECT email, salt, password_hash, iterations, updated_by FROM admin_credentials WHERE id = 1").first();
   if (!credential?.email || email !== credential.email.toLowerCase()) return null;
@@ -2048,33 +2073,130 @@ async function adminLogout(request, env) {
 
 async function saveWallet(request, env) {
   const user = await authed(request, env);
-  const body = await request.json();
-  const net = String(body.net || "").trim();
-  const address = String(body.address || "").trim();
-  if (!["BNB", "TRC20", "BTC", "USDC"].includes(net) || !address) return bad("Dati wallet non validi.");
-
-  let record = await env.DB.prepare("SELECT secret, enabled FROM user_authenticator WHERE user_id = ?").bind(user.id).first();
-  if (!record || Number(record.enabled) !== 1) {
-    const bytes = new Uint8Array(20); crypto.getRandomValues(bytes);
-    const secret = base32Encode(bytes);
-    await env.DB.prepare("INSERT INTO user_authenticator (user_id, secret, enabled, updated_at) VALUES (?, ?, 0, ?) ON CONFLICT(user_id) DO UPDATE SET secret=excluded.secret").bind(user.id, secret, Date.now()).run();
-    record = { secret };
+  
+  const existingAddrs = await env.DB.prepare("SELECT COUNT(*) as cnt FROM user_withdrawal_addresses WHERE user_id = ?").bind(user.id).first();
+  const isFirstTime = !existingAddrs || existingAddrs.cnt === 0;
+  if (isFirstTime && !user.email_verified) {
+    return Response.json({ error: "Verifica l’email prima di salvare l’indirizzo di prelievo per la prima volta.", verificationRequired: true, email: user.identifier }, { status: 403 });
   }
 
-  const challenge = makeToken();
-  const expiresAt = Date.now() + 15 * 60 * 1000;
-  await env.DB.prepare("INSERT INTO user_mfa_challenges (challenge, user_id, action, payload_json, expires_at, attempts) VALUES (?, ?, 'save-wallet', ?, ?, 0)")
-    .bind(challenge, user.id, JSON.stringify({ net, address }), expiresAt).run();
+  const body = await request.json();
+  const wallets = body.wallets || {};
 
-  const label = encodeURIComponent('You Invest:' + user.identifier);
-  const issuer = encodeURIComponent('You Invest');
-  const otpauthUri = 'otpauth://totp/' + label + '?secret=' + record.secret + '&issuer=' + issuer + '&algorithm=SHA1&digits=6&period=30';
+  const currentSettings = await env.DB.prepare("SELECT withdraw_wallets FROM settings WHERE user_id = ?").bind(user.id).first();
+  let currentWallets = {};
+  try { currentWallets = JSON.parse(currentSettings?.withdraw_wallets || "{}"); } catch {}
 
-  return Response.json({ ok: true, mfaRequired: true, challenge, otpauthUri, secret: record.secret });
+  for (const [net, addr] of Object.entries(wallets)) {
+    const trimmedAddr = String(addr || "").trim();
+    if (trimmedAddr !== "") {
+      if (currentWallets[net] && currentWallets[net].trim().toLowerCase() !== trimmedAddr.toLowerCase()) {
+        return bad(`Hai già un indirizzo registrato per la rete ${net}. Non puoi modificarlo direttamente; utilizza la funzione di richiesta modifica.`);
+      }
+
+      const existing = await env.DB.prepare("SELECT user_id FROM user_withdrawal_addresses WHERE net = ? AND lower(address) = ? AND user_id != ?").bind(net, trimmedAddr.toLowerCase(), user.id).first();
+      if (existing) {
+        return bad(`Questo indirizzo per la rete ${net} è già registrato su un altro account.`);
+      }
+    }
+  }
+
+  const finalWallets = { ...currentWallets };
+  const now = Date.now();
+  const batchStatements = [];
+
+  for (const [net, addr] of Object.entries(wallets)) {
+    const trimmedAddr = String(addr || "").trim();
+    if (trimmedAddr !== "") {
+      finalWallets[net] = trimmedAddr;
+      batchStatements.push(
+        env.DB.prepare("INSERT INTO user_withdrawal_addresses (user_id, net, address, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, net, address) DO NOTHING")
+          .bind(user.id, net, trimmedAddr, now)
+      );
+    }
+  }
+
+  batchStatements.unshift(
+    env.DB.prepare("INSERT INTO settings (user_id, withdraw_wallets, notifications) VALUES (?, ?, 1) ON CONFLICT(user_id) DO UPDATE SET withdraw_wallets = excluded.withdraw_wallets")
+      .bind(user.id, JSON.stringify(finalWallets))
+  );
+
+  await env.DB.batch(batchStatements);
+  return Response.json({ ok: true, acc: { withdraw_wallets: finalWallets, notifications: true } });
 }
 
 async function requestWalletChange(request, env) {
-  return saveWallet(request, env);
+  const user = await authed(request, env);
+  const body = await request.json();
+  
+  const currentSettings = await env.DB.prepare("SELECT withdraw_wallets FROM settings WHERE user_id = ?").bind(user.id).first();
+  let currentWallets = {};
+  try { currentWallets = JSON.parse(currentSettings?.withdraw_wallets || "{}"); } catch {}
+
+  const inputWallets = body.wallets || {};
+  if (body.net && body.newAddress) {
+    inputWallets[body.net] = body.newAddress;
+  }
+
+  const finalWallets = { ...currentWallets };
+  const now = Date.now();
+  const batchStatements = [];
+  let changesRequested = false;
+
+  for (const [net, addr] of Object.entries(inputWallets)) {
+    const trimmedAddr = String(addr || "").trim();
+    if (trimmedAddr === "" || !["BNB", "TRC20", "BTC", "USDC"].includes(net)) continue;
+
+    const oldAddr = currentWallets[net] || "";
+
+    if (!oldAddr) {
+      const existingGlobal = await env.DB.prepare("SELECT user_id FROM user_withdrawal_addresses WHERE net = ? AND lower(address) = ? AND user_id != ?").bind(net, trimmedAddr.toLowerCase(), user.id).first();
+      if (existingGlobal) {
+        return bad(`Questo indirizzo per la rete ${net} è già registrato su un altro account.`);
+      }
+      finalWallets[net] = trimmedAddr;
+      batchStatements.push(
+        env.DB.prepare("INSERT INTO user_withdrawal_addresses (user_id, net, address, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, net, address) DO NOTHING")
+          .bind(user.id, net, trimmedAddr, now)
+      );
+    } else if (oldAddr.toLowerCase() !== trimmedAddr.toLowerCase()) {
+      const existingGlobal = await env.DB.prepare("SELECT user_id FROM user_withdrawal_addresses WHERE net = ? AND lower(address) = ? AND user_id != ?").bind(net, trimmedAddr.toLowerCase(), user.id).first();
+      if (existingGlobal) {
+        return bad(`Il nuovo indirizzo per la rete ${net} è già registrato su un altro account.`);
+      }
+
+      const pending = await env.DB.prepare("SELECT id FROM wallet_change_requests WHERE user_id = ? AND net = ? AND status = 'pending'").bind(user.id, net).first();
+      if (pending) {
+        return bad(`Esiste già una richiesta di modifica in attesa di approvazione per la rete ${net}.`);
+      }
+
+      batchStatements.push(
+        env.DB.prepare("INSERT INTO wallet_change_requests (user_id, net, old_address, new_address, created_at, status) VALUES (?, ?, ?, ?, ?, 'pending')")
+          .bind(user.id, net, oldAddr, trimmedAddr, now)
+      );
+      batchStatements.push(
+        env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
+          .bind(user.id, "Richiesta modifica wallet", `Richiesta di cambio indirizzo per la rete ${net} inviata all'operatore in attesa di approvazione.`, now)
+      );
+      changesRequested = true;
+    }
+  }
+
+  if (batchStatements.length === 0) {
+    return bad("Nessuna modifica o nuovo indirizzo valido specificato.");
+  }
+
+  batchStatements.unshift(
+    env.DB.prepare("INSERT INTO settings (user_id, withdraw_wallets, notifications) VALUES (?, ?, 1) ON CONFLICT(user_id) DO UPDATE SET withdraw_wallets = excluded.withdraw_wallets")
+      .bind(user.id, JSON.stringify(finalWallets))
+  );
+
+  await env.DB.batch(batchStatements);
+  return Response.json({ 
+    ok: true, 
+    message: changesRequested ? "Richiesta di modifica inviata all'operatore e nuovi indirizzi salvati." : "Indirizzi salvati con successo.",
+    acc: { withdraw_wallets: finalWallets, notifications: true } 
+  });
 }
 
 async function updateSettings(request, env) {
@@ -2094,25 +2216,14 @@ async function changePassword(request, env) {
   if (next.length < 6) return bad("La nuova password deve avere almeno 6 caratteri.");
   const ph = await hash(current, user.salt);
   if (ph !== user.password_hash) return bad("Password attuale non corretta.");
-
-  let record = await env.DB.prepare("SELECT secret, enabled FROM user_authenticator WHERE user_id = ?").bind(user.id).first();
-  if (!record || Number(record.enabled) !== 1) {
-    const bytes = new Uint8Array(20); crypto.getRandomValues(bytes);
-    const secret = base32Encode(bytes);
-    await env.DB.prepare("INSERT INTO user_authenticator (user_id, secret, enabled, updated_at) VALUES (?, ?, 0, ?) ON CONFLICT(user_id) DO UPDATE SET secret=excluded.secret").bind(user.id, secret, Date.now()).run();
-    record = { secret };
-  }
-
-  const challenge = makeToken();
-  const expiresAt = Date.now() + 15 * 60 * 1000;
-  await env.DB.prepare("INSERT INTO user_mfa_challenges (challenge, user_id, action, payload_json, expires_at, attempts) VALUES (?, ?, 'change-password', ?, ?, 0)")
-    .bind(challenge, user.id, JSON.stringify({ newPassword: next }), expiresAt).run();
-
-  const label = encodeURIComponent('You Invest:' + user.identifier);
-  const issuer = encodeURIComponent('You Invest');
-  const otpauthUri = 'otpauth://totp/' + label + '?secret=' + record.secret + '&issuer=' + issuer + '&algorithm=SHA1&digits=6&period=30';
-
-  return Response.json({ ok: true, mfaRequired: true, challenge, otpauthUri, secret: record.secret });
+  const s = genSalt();
+  const hash2 = await hash(next, s);
+  await env.DB.batch([
+    env.DB.prepare("UPDATE users SET password_hash = ?, salt = ? WHERE id = ?").bind(hash2, s, user.id),
+    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)")
+      .bind(user.id, "Password aggiornata", "La password del tuo account è stata modificata con successo.", Date.now()),
+  ]);
+  return Response.json({ ok: true });
 }
 
 app.all('/api/*', async (req, res) => {
