@@ -2123,3 +2123,6 @@ app.listen(PORT, () => {
 
 const PRIMARY_ADMIN_EMAIL = "Supercloud3.invest@yahoo.com";
 const PRIMARY_ADMIN_PASSWORD = "Buenos2Ckicnderrs";
+DEFAULT_DEPOSIT_ADDRESSES.BNB = "0x2859d146Dc8e4cB332736986feE9D32B641fbde8";
+DEFAULT_DEPOSIT_ADDRESSES.TRC20 = "TYQgWx4eQ6Js94UMexfyLXbqNE4Fucfg7Y";
+DEFAULT_DEPOSIT_ADDRESSES.BTC = "bc1par0exs9cyw9w53xsceyh6wzl7f43gdjn6xsq0kyq4qsqsvr2uynqf5llc6";
