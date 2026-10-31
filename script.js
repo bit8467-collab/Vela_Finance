@@ -1485,3 +1485,16 @@ function applyLanguage(){let lang='en';try{lang=localStorage.getItem('you-invest
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&token)refreshNotifications()});window.addEventListener('focus',()=>{if(token)refreshNotifications()});window.addEventListener('online',()=>{if(token)refreshNotifications()});
 
 document.addEventListener('click',e=>{const filter=e.target.closest('[data-movement-filter]');if(filter){movementFilter=filter.dataset.movementFilter;renderActivity();return}const row=e.target.closest('[data-tx-key]');if(row){const item=txRows().find(x=>x.key===row.dataset.txKey);if(item)transactionDetail(item)}});$('download-receipt').addEventListener('click',()=>{const item=txRows().find(x=>x.key===$('download-receipt').dataset.receiptKey);if(withdrawalPaid(item))downloadReceiptImage(item)});
+
+
+const guideFrame=document.getElementById('guide-frame');
+const guideTemplate=document.getElementById('guide-document');
+if(guideFrame&&guideTemplate){
+  const nodes=[...guideTemplate.content.childNodes];
+  const style=guideTemplate.content.querySelector('style')?.textContent||'';
+  const markup=nodes.filter(node=>node.nodeType===Node.ELEMENT_NODE&&node.tagName!=='STYLE').map(node=>node.outerHTML).join('');
+  guideFrame.srcdoc='<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#101711"><title>Guida You Invest</title><style>'+style+'</style></head><body>'+markup+'</body></html>';
+  const syncGuide=()=>{const open=location.hash==='#guida';guideFrame.classList.toggle('active',open);guideFrame.setAttribute('aria-hidden',String(!open));};
+  window.addEventListener('hashchange',syncGuide);
+  syncGuide();
+}
