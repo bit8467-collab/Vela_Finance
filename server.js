@@ -10,6 +10,18 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const notificationStreams = new Map();
+
+function publishNotification(userId, notificationId) {
+  const clients = notificationStreams.get(String(userId));
+  if (!clients?.size) return;
+  const event = `event: notification\ndata: ${JSON.stringify({ id: Number(notificationId) })}\n\n`;
+  for (const response of clients) {
+    if (response.writableEnded || response.destroyed) clients.delete(response);
+    else response.write(event);
+  }
+  if (!clients.size) notificationStreams.delete(String(userId));
+}
 
 const db = createClient({
   url: process.env.TURSO_DATABASE_URL,
@@ -33,6 +45,13 @@ const env = {
             },
             async run() {
               const rs = await db.execute({ sql, args: params });
+              if (rs.rowsAffected > 0 && /INSERT\s+INTO\s+notifications\b/i.test(sql) && rs.lastInsertRowid != null) {
+                try {
+                  const inserted = await db.execute({ sql: "SELECT user_id FROM notifications WHERE id = ?", args: [Number(rs.lastInsertRowid)] });
+                  const notification = inserted.rows[0];
+                  if (notification) publishNotification(notification.user_id, rs.lastInsertRowid);
+                } catch (error) { console.warn('Realtime notification dispatch failed', error); }
+              }
               return { meta: { changes: rs.rowsAffected, last_row_id: Number(rs.lastInsertRowid) } };
             }
           };
@@ -2210,6 +2229,32 @@ async function changePassword(request, env) {
   ]);
   return Response.json({ ok: true });
 }
+
+app.get('/api/notifications/stream', async (req, res) => {
+  try {
+    const authRequest = new Request(`http://${req.get('host') || 'localhost'}${req.originalUrl}`, { headers: new Headers(req.headers) });
+    const user = await sessionUser(authRequest, env);
+    if (!user) return res.status(401).json({ error: 'Non autenticato.' });
+    res.status(200);
+    res.set({ 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+    res.flushHeaders();
+    const userId = String(user.id);
+    let clients = notificationStreams.get(userId);
+    if (!clients) notificationStreams.set(userId, clients = new Set());
+    clients.add(res);
+    res.write('event: ready\ndata: {}\n\n');
+    const heartbeat = setInterval(() => { if (!res.writableEnded) res.write(': keep-alive\n\n'); }, 20000);
+    res.on('close', () => {
+      clearInterval(heartbeat);
+      clients.delete(res);
+      if (!clients.size) notificationStreams.delete(userId);
+    });
+  } catch (error) {
+    console.error('Notification stream error:', error);
+    if (!res.headersSent) res.status(500).json({ error: 'Impossibile aprire il canale notifiche.' });
+    else res.end();
+  }
+});
 
 app.all('/api/*', async (req, res) => {
   try {
