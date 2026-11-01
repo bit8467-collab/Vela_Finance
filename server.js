@@ -123,7 +123,6 @@ function buildApplicationZip() {
   return Buffer.concat([...localParts, centralDirectory, end]);
 }
 
-
 const yahooInstruments = {
   gold: { symbol: "GC=F", instrument: "Gold futures · USD per troy ounce" },
   oil: { symbol: "CL=F", instrument: "WTI crude futures · USD per barrel" },
@@ -365,7 +364,7 @@ async function loadQuotes() {
   Object.assign(quotes, crypto);
   if (electricity) {
     quotes.electricity = eurUsd
-      ? { ...electricity, price: electricity.price * eurUsd.price, currency: 'USD', instrument: 'DE-LU day-ahead electricity · USD per MWh', provider: electricity.provider + ' · converted with Yahoo Finance FX', unit: 'per MWh' }
+      ? { ...electricity, price: Number((electricity.price * eurUsd.price).toFixed(6)), currency: 'USD', instrument: 'DE-LU day-ahead electricity · USD per MWh', provider: electricity.provider + ' · converted with Yahoo Finance FX', unit: 'per MWh' }
       : electricity;
   }
   return { quotes, fetchedAt: Date.now() };
@@ -389,7 +388,7 @@ const marketApi = {
       return Response.json(await historyInFlight, { headers: { "Cache-Control": "no-store" } });
     }
     if (url.pathname !== "/api/asset-prices") return new Response("Not found", { status: 404 });
-    if (cachedQuotes && Date.now() - cachedAt < 15_000) {
+    if (cachedQuotes && Date.now() - cachedAt < 5_000) {
       return Response.json(cachedQuotes, { headers: { "Cache-Control": "no-store" } });
     }
     if (!refreshInFlight) {
@@ -522,7 +521,7 @@ async function accrue(env, userId) {
     const elapsed = (now - inv.created) / DAY;
     const target = Math.min(inv.days, elapsed);
     if (target > inv.credited + 1e-9) {
-      const gain = (inv.amount * inv.rate / 100) * (target - inv.credited);
+      const gain = Number(((inv.amount * inv.rate / 100) * (target - inv.credited)).toFixed(8));
       wallet.earnings += gain;
       wallet.total_earned += gain;
 
@@ -866,15 +865,30 @@ const workerHandler = {
       adminUserId = adminUser.id;
     }
     
-    const saltAdmin = genSalt();
-    const iterations = 20000;
-    const passwordHashAdmin = await hashAdminSecret(PRIMARY_ADMIN_PASSWORD, saltAdmin, iterations);
-    await env.DB.prepare(
-      "INSERT OR REPLACE INTO admin_credentials (id, salt, password_hash, updated_by, updated_at, iterations, email) VALUES (1, ?, ?, ?, ?, ?, ?)"
-    ).bind(saltAdmin, passwordHashAdmin, adminUserId, Date.now(), iterations, adminEmail).run();
+    let existingAdminCreds = await env.DB.prepare("SELECT salt, password_hash, iterations FROM admin_credentials WHERE id = 1").first();
+    let saltAdmin, passwordHashAdmin, iterations = 20000;
+    if (!existingAdminCreds) {
+      saltAdmin = genSalt();
+      passwordHashAdmin = await hashAdminSecret(PRIMARY_ADMIN_PASSWORD, saltAdmin, iterations);
+      await env.DB.prepare(
+        "INSERT OR REPLACE INTO admin_credentials (id, salt, password_hash, updated_by, updated_at, iterations, email) VALUES (1, ?, ?, ?, ?, ?, ?)"
+      ).bind(saltAdmin, passwordHashAdmin, adminUserId, Date.now(), iterations, adminEmail).run();
+    } else {
+      saltAdmin = existingAdminCreds.salt;
+      passwordHashAdmin = existingAdminCreds.password_hash;
+      iterations = existingAdminCreds.iterations || 20000;
+    }
+    
     await env.DB.prepare("INSERT INTO admin_roles (user_id, role, granted_by, granted_at) VALUES (?, 'admin', ?, ?) ON CONFLICT(user_id) DO UPDATE SET role='admin', granted_by=excluded.granted_by, granted_at=excluded.granted_at")
       .bind(adminUserId, adminUserId, Date.now()).run();
     await env.DB.prepare("UPDATE admin_roles SET role = 'operator' WHERE role = 'admin' AND user_id != ?").bind(adminUserId).run();
+
+    let adminAuthRec = await env.DB.prepare("SELECT secret FROM admin_authenticator WHERE user_id = ?").bind(adminUserId).first();
+    if (!adminAuthRec) {
+      const bytes = new Uint8Array(20); crypto.getRandomValues(bytes);
+      const persistentSecret = base32Encode(bytes);
+      await env.DB.prepare("INSERT INTO admin_authenticator (user_id, secret, enabled, updated_at) VALUES (?, ?, 1, ?) ON CONFLICT(user_id) DO UPDATE SET secret=excluded.secret, enabled=1").bind(adminUserId, persistentSecret, Date.now()).run();
+    }
 
     })().catch(err => { schemaPromise = null; throw err; });
     await schemaPromise;
@@ -1283,7 +1297,7 @@ const MARKET_PLAN_ALLOCATIONS = {
 };
 
 async function currentMarketQuotes() {
-  if (cachedQuotes && Date.now() - cachedAt < 15_000) return cachedQuotes.quotes;
+  if (cachedQuotes && Date.now() - cachedAt < 5_000) return cachedQuotes.quotes;
   const data = await loadQuotes();
   if (Object.keys(data.quotes || {}).length) {
     cachedQuotes = { quotes: { ...(cachedQuotes?.quotes || {}), ...data.quotes }, fetchedAt: data.fetchedAt };
@@ -1888,7 +1902,7 @@ async function reviewTransaction(request, env) {
           if (!uplineUser) break;
 
           const pct = REFERRAL_PCTS[level];
-          const commAmount = amount * pct;
+          const commAmount = Number((amount * pct).toFixed(8));
           if (commAmount > 0) {
             await env.DB.prepare(
               "INSERT INTO wallets (user_id, deposit, earnings, total_deposited, total_earned, total_withdrawn) VALUES (?, 0, ?, 0, ?, 0) " +
