@@ -1214,9 +1214,47 @@ for (const [source, translations] of Object.entries(rows)) {
   });
 }
 
+function translateNotificationItalian(text) {
+  const titles = {
+    'Plan closed early': 'Piano chiuso in anticipo',
+    'Plan gains redeemed': 'Guadagni del piano riscattati',
+    'Deposit accepted': 'Deposito accettato', 'Deposit approved': 'Deposito approvato',
+    'Deposit rejected': 'Deposito rifiutato', 'Deposit request submitted': 'Richiesta di deposito inviata',
+    'Withdrawal request submitted': 'Richiesta di prelievo inviata',
+    'Withdrawal approved': 'Prelievo approvato', 'Withdrawal rejected': 'Prelievo rifiutato',
+    'Referral commission': 'Commissione referral', 'Wallet balance updated': 'Saldo del wallet aggiornato',
+    'Password reset': 'Password reimpostata', 'Password modificata': 'Password modificata',
+    'Account verificato': 'Account verificato', 'Email verificata': 'Email verificata'
+  };
+  if (Object.prototype.hasOwnProperty.call(titles, text)) return titles[text];
+  let m = text.match(/^Current reference value ([\d.]+) USDT; 65% early-closure fee ([\d.]+) USDT; net credited to earnings balance and available for withdrawal request ([\d.]+) USDT\. No external payout was made\.$/);
+  if (m) return 'Valore di riferimento attuale ' + m[1] + ' USDT; commissione del 65% per la chiusura anticipata ' + m[2] + ' USDT; netto accreditato al saldo dei guadagni e disponibile per la richiesta di prelievo ' + m[3] + ' USDT. Non è stato effettuato alcun pagamento esterno.';
+  m = text.match(/^([\d.]+) USDT moved to your internal redeemable balance\. The invested principal remains in the plan\.$/);
+  if (m) return m[1] + ' USDT trasferiti al saldo interno disponibile. Il capitale investito rimane nel piano.';
+  m = text.match(/^([\d.]+) USDT moved to the redeemable balance after reaching the ([\d.]+)% gain threshold\. The plan remains active\.$/);
+  if (m) return m[1] + ' USDT trasferiti al saldo disponibile dopo aver raggiunto la soglia di guadagno del ' + m[2] + '%. Il piano rimane attivo.';
+  m = text.match(/^([\d.]+) USDT · (.+) · Pending review\.$/);
+  if (m) return m[1] + ' USDT · ' + m[2] + ' · In attesa di verifica.';
+  m = text.match(/^([\d.]+) USDT · (.+) · Request approved\. Amount successfully credited to wallet\.$/);
+  if (m) return m[1] + ' USDT · ' + m[2] + ' · Richiesta approvata. Importo accreditato correttamente sul wallet.';
+  m = text.match(/^([\d.]+) USDT · (.+) · Request rejected\. Amount was not credited\.$/);
+  if (m) return m[1] + ' USDT · ' + m[2] + ' · Richiesta rifiutata. L’importo non è stato accreditato.';
+  m = text.match(/^([\d.]+) USDT · (.+) · Request approved\. Operation completed\. TX: (.+)$/);
+  if (m) return m[1] + ' USDT · ' + m[2] + ' · Operazione completata. TX: ' + m[3];
+  m = text.match(/^([\d.]+) USDT · (.+) · Request rejected\. Amount refunded to wallet successfully\.$/);
+  if (m) return m[1] + ' USDT · ' + m[2] + ' · Richiesta rifiutata. Importo rimborsato correttamente sul wallet.';
+  m = text.match(/^Credited ([\d.]+) USDT referral commission \(Level (\d+)\) on user's first deposit\.$/);
+  if (m) return 'Accreditati ' + m[1] + ' USDT di commissione referral (livello ' + m[2] + ') sul primo deposito dell’utente.';
+  if (text === 'Your available balance has been updated by the administrator.') return 'Il tuo saldo disponibile è stato aggiornato dall’amministratore.';
+  return null;
+}
+
 function translateText(text, language = 'en') {
   const exact = String(text ?? '').trim();
   const index = languages.indexOf(language);
+  if (language === 'it') {
+    try { const notificationTranslation = translateNotificationItalian(exact); if (notificationTranslation !== null) return notificationTranslation; } catch {}
+  }
   const translated = index < 0 ? null : (phraseRows.get(exact)?.[index] ?? normalizedPhraseRows.get(normalizePhrase(exact))?.[index]);
   return translated ?? dictionary.get(`${language}:${exact}`) ?? text;
 }
