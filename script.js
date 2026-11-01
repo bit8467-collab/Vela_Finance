@@ -1214,6 +1214,49 @@ for (const [source, translations] of Object.entries(rows)) {
   });
 }
 
+function translateNotificationText(value, language = 'en') {
+  const text = String(value ?? '');
+  if (language !== 'it') return translateText(text, language);
+  const titles = {
+    'Plan closed early': 'Piano chiuso in anticipo',
+    'Plan gains redeemed': 'Guadagni del piano riscattati',
+    'Deposit accepted': 'Deposito accettato',
+    'Deposit approved': 'Deposito approvato',
+    'Deposit rejected': 'Deposito rifiutato',
+    'Deposit request submitted': 'Richiesta di deposito inviata',
+    'Withdrawal request submitted': 'Richiesta di prelievo inviata',
+    'Withdrawal approved': 'Prelievo approvato',
+    'Withdrawal rejected': 'Prelievo rifiutato',
+    'Referral commission': 'Commissione referral',
+    'Wallet balance updated': 'Saldo del wallet aggiornato',
+    'Password reset': 'Password reimpostata',
+    'Password modificata': 'Password modificata',
+    'Account verificato': 'Account verificato',
+    'Email verificata': 'Email verificata'
+  };
+  if (titles[text]) return titles[text];
+  let match = text.match(/^Current reference value ([\d.]+) USDT; 65% early-closure fee ([\d.]+) USDT; net credited to earnings balance and available for withdrawal request ([\d.]+) USDT\. No external payout was made\.$/);
+  if (match) return 'Valore di riferimento attuale ' + match[1] + ' USDT; commissione del 65% per la chiusura anticipata ' + match[2] + ' USDT; netto accreditato al saldo dei guadagni e disponibile per la richiesta di prelievo ' + match[3] + ' USDT. Non è stato effettuato alcun pagamento esterno.';
+  match = text.match(/^([\d.]+) USDT moved to your internal redeemable balance\. The invested principal remains in the plan\.$/);
+  if (match) return match[1] + ' USDT trasferiti al saldo interno disponibile. Il capitale investito rimane nel piano.';
+  match = text.match(/^([\d.]+) USDT moved to the redeemable balance after reaching the ([\d.]+)% gain threshold\. The plan remains active\.$/);
+  if (match) return match[1] + ' USDT trasferiti al saldo disponibile dopo aver raggiunto la soglia di guadagno del ' + match[2] + '%. Il piano rimane attivo.';
+  match = text.match(/^([\d.]+) USDT · (.+) · Pending review\.$/);
+  if (match) return match[1] + ' USDT · ' + match[2] + ' · In attesa di verifica.';
+  match = text.match(/^([\d.]+) USDT · (.+) · Request approved\. Amount successfully credited to wallet\.$/);
+  if (match) return match[1] + ' USDT · ' + match[2] + ' · Richiesta approvata. Importo accreditato correttamente sul wallet.';
+  match = text.match(/^([\d.]+) USDT · (.+) · Request rejected\. Amount was not credited\.$/);
+  if (match) return match[1] + ' USDT · ' + match[2] + ' · Richiesta rifiutata. L’importo non è stato accreditato.';
+  match = text.match(/^([\d.]+) USDT · (.+) · Request approved\. Operation completed\. TX: (.+)$/);
+  if (match) return match[1] + ' USDT · ' + match[2] + ' · Operazione completata. TX: ' + match[3];
+  match = text.match(/^([\d.]+) USDT · (.+) · Request rejected\. Amount refunded to wallet successfully\.$/);
+  if (match) return match[1] + ' USDT · ' + match[2] + ' · Richiesta rifiutata. Importo rimborsato correttamente sul wallet.';
+  match = text.match(/^Credited ([\d.]+) USDT referral commission \(Level (\d+)\) on user's first deposit\.$/);
+  if (match) return 'Accreditati ' + match[1] + ' USDT di commissione referral (livello ' + match[2] + ') sul primo deposito dell’utente.';
+  if (text === 'Your available balance has been updated by the administrator.') return 'Il tuo saldo disponibile è stato aggiornato dall’amministratore.';
+  return translateText(text, language);
+}
+
 function translateText(text, language = 'en') {
   const exact = String(text ?? '').trim();
   const index = languages.indexOf(language);
@@ -1476,7 +1519,7 @@ $('change-password-button').addEventListener('click',()=>open('password-dialog')
 $('password-form').addEventListener('submit',async e=>{e.preventDefault();const err=$('password-error');err.textContent='';if($('new-password').value!==$('confirm-new-password').value){err.textContent='Passwords do not match.';return}try{await post('/api/change-password',{current:$('current-password').value,next:$('new-password').value});$('password-dialog').close();$('password-form').reset();notice('Password updated.')}catch(x){err.textContent=x.message}});
 $('copy-invite-link').addEventListener('click',async()=>{try{await navigator.clipboard.writeText($('invite-link').value);notice('Invite link copied.')}catch{ $('invite-link').select();document.execCommand('copy');notice('Invite link copied.')}});
 $('mark-notifications-read').addEventListener('click',async()=>{try{await post('/api/notifications/read',{all:true});await refreshNotifications();$('notifications-dialog').close();notice('Notifications marked read.')}catch(e){notice(e.message,true)}});
-async function refreshNotifications(){if(!token)return;if(notificationsLoading){notificationRefreshQueued=true;return}notificationsLoading=true;try{const data=await api('/api/notifications');const lang=localStorage.getItem('you-invest-language')||'en',unread=Number(data.unread)||0,badge=$('notification-count');badge.textContent=unread>99?'99+':String(unread);badge.hidden=unread===0;$('notification-dot').hidden=unread===0;$('open-notifications').setAttribute('aria-label',translateText('Notifications',lang)+(unread?' · '+unread+' '+translateText('unread',lang):''));$('mark-notifications-read').hidden=unread===0;const rows=data.notifications||[],signature=rows.map(n=>[n.id,n.title,n.message,n.created_at,n.read_at].join('|')).join('::');if(signature!==notificationSignature){const oldIds=new Set(notificationIds);const newUnread=rows.filter(n=>!n.read_at&&!oldIds.has(String(n.id)));notificationSignature=signature;notificationIds=rows.map(n=>String(n.id));$('notification-list').innerHTML=rows.map(n=>'<article class="notification-row '+(n.read_at?'':'unread')+'"><b>'+esc(translateText(n.title,lang))+'</b><small>'+new Date(Number(n.created_at)).toLocaleString(getLocale())+'</small><p>'+esc(translateText(n.message,lang))+'</p></article>').join('');if(notificationInitialized&&newUnread.length){const n=newUnread[0];notice(translateText(n.title,lang)||translateText('New notification',lang))}}notificationInitialized=true;$('notifications-empty').hidden=rows.length>0;translatePage(lang)}catch(e){console.warn('Notifications unavailable',e)}finally{notificationsLoading=false;if(notificationRefreshQueued){notificationRefreshQueued=false;queueMicrotask(()=>refreshNotifications())}}}
+async function refreshNotifications(){if(!token)return;if(notificationsLoading){notificationRefreshQueued=true;return}notificationsLoading=true;try{const data=await api('/api/notifications');const lang=localStorage.getItem('you-invest-language')||'en',unread=Number(data.unread)||0,badge=$('notification-count');badge.textContent=unread>99?'99+':String(unread);badge.hidden=unread===0;$('notification-dot').hidden=unread===0;$('open-notifications').setAttribute('aria-label',translateText('Notifications',lang)+(unread?' · '+unread+' '+translateText('unread',lang):''));$('mark-notifications-read').hidden=unread===0;const rows=data.notifications||[],signature=rows.map(n=>[n.id,n.title,n.message,n.created_at,n.read_at].join('|')).join('::');if(signature!==notificationSignature){const oldIds=new Set(notificationIds);const newUnread=rows.filter(n=>!n.read_at&&!oldIds.has(String(n.id)));notificationSignature=signature;notificationIds=rows.map(n=>String(n.id));$('notification-list').innerHTML=rows.map(n=>'<article class="notification-row '+(n.read_at?'':'unread')+'"><b>'+esc(translateNotificationText(n.title,lang))+'</b><small>'+new Date(Number(n.created_at)).toLocaleString(getLocale())+'</small><p>'+esc(translateNotificationText(n.message,lang))+'</p></article>').join('');if(notificationInitialized&&newUnread.length){const n=newUnread[0];notice(translateNotificationText(n.title,lang)||translateText('New notification',lang))}}notificationInitialized=true;$('notifications-empty').hidden=rows.length>0;translatePage(lang)}catch(e){console.warn('Notifications unavailable',e)}finally{notificationsLoading=false;if(notificationRefreshQueued){notificationRefreshQueued=false;queueMicrotask(()=>refreshNotifications())}}}
 function stopNotificationStream(){const active=notificationStreamController;notificationStreamController=null;if(active)active.abort();if(notificationStreamRetry){clearTimeout(notificationStreamRetry);notificationStreamRetry=null}}
 function connectNotificationStream(){if(!token||notificationStreamController||typeof AbortController==='undefined')return;const controller=new AbortController();notificationStreamController=controller;(async()=>{try{const response=await fetch('/api/notifications/stream',{headers:{'x-session-token':token,'accept':'text/event-stream'},cache:'no-store',signal:controller.signal});if(!response.ok||!response.body)throw new Error('Realtime notification stream unavailable.');const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='';while(true){const part=await reader.read();if(part.done)break;buffer+=decoder.decode(part.value,{stream:true});let boundary;while((boundary=buffer.indexOf('\n\n'))!==-1){const event=buffer.slice(0,boundary);buffer=buffer.slice(boundary+2);if(event.includes('event: ready')||event.includes('event: notification'))refreshNotifications()}}}catch(error){if(error.name!=='AbortError')console.warn('Realtime notifications disconnected',error)}finally{if(notificationStreamController===controller)notificationStreamController=null;if(token&&!notificationStreamController&&!notificationStreamRetry){refreshNotifications();notificationStreamRetry=setTimeout(()=>{notificationStreamRetry=null;connectNotificationStream()},2000)}}})()}
 $('open-notifications').addEventListener('click',async()=>{await refreshNotifications();open('notifications-dialog')});
