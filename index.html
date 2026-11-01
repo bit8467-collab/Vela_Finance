@@ -44,7 +44,6 @@
           <div class="hero-actions">
             <button class="hero-button" type="button" data-auth="register">Create an account <span aria-hidden="true">↗</span></button>
             <a class="hero-secondary" href="#more-info" data-open-info="more-info">Per saperne di più <span aria-hidden="true">↓</span></a>
-            <a class="hero-secondary" href="/FULL_VELA.zip" download="FULL_VELA.zip">Download app (.zip) <span aria-hidden="true">↓</span></a>
           </div>
           <p class="hero-disclaimer">Do not send cryptocurrency until the operator has configured and verified an address for the correct network. Deposit and withdrawal requests are reviewed manually.</p>
         </div>
@@ -236,9 +235,9 @@
         <div class="page-heading"><div><p class="eyebrow">PLATFORM PLANS</p><h1 id="catalog-title">Plans</h1></div></div>
         <p class="page-intro">Reference portfolio values follow public market quotes during fixed 6-month, 1-, 2-, 3- or 5-year periods. These are not purchased or custodied assets. A stop threshold is checked when the platform refreshes; it is not an exchange order.</p>
         <section class="market-history-card" aria-labelledby="plan-history-title">
-          <div class="market-history-heading"><div><p class="eyebrow">HISTORICAL PERFORMANCE</p><h2 id="plan-history-title">Plan performance</h2></div><span>Value · USDT</span></div>
+          <div class="market-history-heading"><div><p class="eyebrow">HISTORICAL PERFORMANCE</p><h2 id="plan-history-title">Plan performance</h2></div><span>Weighted index · base 100</span></div>
           <div class="chart-selectors" id="plan-chart-selectors"></div>
-          <div id="plan-history-chart" class="asset-history-chart line-chart" aria-live="polite"><p>Historical market data is loading...</p></div><div id="market-trend-indicator" class="market-trend neutral" role="status" aria-live="polite"><span class="market-trend-dot" aria-hidden="true"></span><span class="market-trend-copy"><b id="market-trend-label">Trend in caricamento</b><small id="market-trend-value">Indicatore informativo · non indica il momento migliore per investire</small></span></div>
+          <div id="plan-history-chart" class="asset-history-chart line-chart" aria-live="polite"><p>Historical market data is loading...</p></div><div id="market-trend-indicator" class="market-trend neutral" role="status" aria-live="polite"><svg class="market-trend-gauge" viewBox="0 0 16 10" aria-hidden="true"><path d="M1 9a7 7 0 0 1 14 0"/><path class="gauge-needle" d="m8 8 3-4"/><circle cx="8" cy="8" r="1"/></svg><span class="market-trend-copy"><b id="market-trend-label">Trend in caricamento</b><small id="market-trend-value">Indicatore informativo · non indica il momento migliore per investire</small></span></div>
           <p class="asset-history-source">Market-weighted reference performance, derived from available live asset history.</p>
         </section>
         <section class="market-history-card" aria-labelledby="asset-market-title">
@@ -462,6 +461,7 @@
         <p class="available-line">Available: <b id="invest-available">0.00 USDT</b></p>
         <label for="invest-risk">Risk level</label><select id="invest-risk"><option value="conservative">Conservative · 8% stop</option><option value="balanced" selected>Balanced · 18% stop</option><option value="aggressive">Aggressive · 35% stop</option></select>
         <p class="plan-stop-note" id="plan-stop-note">Stop handling</p>
+        <label class="risk-acknowledgement"><input id="plan-risk-ack" type="checkbox" required><span>I understand that market values can fall, losses are possible, and displayed tracking values are not guaranteed returns or assets held by the platform.</span></label>
         <p class="form-error" id="plan-error" role="alert"></p>
         <button class="primary-button" id="confirm-plan-button" type="submit">Confirm plan</button>
         <p class="modal-footnote">Plans are market-tracking records based on public quotes; no market orders or external payments are executed. Conservative and balanced plans pause at their stop and resume after recovery; aggressive plans close at the stop. Early closure has a 65% fee on the current reference value.</p>
@@ -683,4 +683,4 @@
   </main><script>document.addEventListener("click",e=>{const exit=e.target.closest("[data-guide-exit]");if(exit){e.preventDefault();parent.location.hash="top"}});document.querySelectorAll('.contents a').forEach(link=>{link.addEventListener('click',()=>{document.querySelectorAll('.contents a').forEach(item=>item.removeAttribute('aria-current'));link.setAttribute('aria-current','location')})});</script></template>
     <iframe id="guide-frame" title="Guida You Invest" aria-hidden="true"></iframe>
     </body>
-                                              </html>
+</html>

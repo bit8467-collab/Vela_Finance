@@ -2008,13 +2008,17 @@ button[data-redeem-earnings]:disabled { opacity:.55; cursor:not-allowed; }
 .floating-note { color: inherit; text-decoration: none; transition: border-color .18s, transform .18s; }
 .floating-note:hover { border-color: #79e2d577; transform: translateY(-2px); }
 .market-trend { display: flex; align-items: center; gap: 9px; margin-top: 8px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); padding: 8px 10px; }
-.market-trend-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: #9aa59a; }
+.market-trend-gauge { width: 14px; height: 9px; flex: 0 0 14px; overflow: visible; fill: none; stroke: #9aa59a; stroke-width: 1.35; stroke-linecap: round; } .market-trend-gauge circle { fill: currentColor; stroke: none; } .market-trend-gauge .gauge-needle { stroke-width: 1.6; transform-origin: 8px 8px; transition: transform .25s ease; }
 .market-trend-copy { display: grid; gap: 2px; min-width: 0; }
+.risk-acknowledgement { display: grid; grid-template-columns: 18px 1fr; align-items: start; gap: 9px; margin: 12px 0; padding: 11px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); color: var(--muted); font-size: 10px; line-height: 1.5; }
+.risk-acknowledgement input { width: 16px; height: 16px; margin: 1px 0 0; accent-color: var(--accent); }
 .market-trend-copy b { color: var(--text); font-size: 9px; font-weight: 700; }
 .market-trend-copy small { color: var(--muted); font-size: 7px; line-height: 1.4; }
-.market-trend.up .market-trend-dot { background: #70c98a; box-shadow: 0 0 8px #70c98a55; }
-.market-trend.down .market-trend-dot { background: #e47770; box-shadow: 0 0 8px #e4777055; }
-.market-trend.flat .market-trend-dot, .market-trend.neutral .market-trend-dot { background: #d6b35d; }
+.market-trend.up .market-trend-gauge { color: #70c98a; stroke: #70c98a; filter: drop-shadow(0 0 3px #70c98a99); }
+.market-trend.up .market-trend-gauge .gauge-needle { transform: rotate(28deg); }
+.market-trend.down .market-trend-gauge { color: #e47770; stroke: #e47770; filter: drop-shadow(0 0 3px #e4777099); }
+.market-trend.down .market-trend-gauge .gauge-needle { transform: rotate(-32deg); }
+.market-trend.flat .market-trend-gauge, .market-trend.neutral .market-trend-gauge { color: #d6b35d; stroke: #d6b35d; filter: drop-shadow(0 0 3px #d6b35d88); }
 
 /* VELA_FINANCE visual guide dialog */
 .brand-story-card { width: min(920px, calc(100vw - 28px)); max-height: min(90vh, 920px); overflow: auto; }

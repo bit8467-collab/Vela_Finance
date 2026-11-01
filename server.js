@@ -68,14 +68,7 @@ const env = {
 };
 
 app.use(express.json({ limit: '1mb' }));
-app.get('/FULL_VELA.zip', (req, res) => {
-  const archive = buildApplicationZip();
-  res.setHeader('Content-Type', 'application/zip');
-  res.setHeader('Content-Disposition', 'attachment; filename="FULL_VELA.zip"');
-  res.setHeader('Content-Length', archive.length);
-  res.setHeader('Cache-Control', 'no-store');
-  res.send(archive);
-});
+app.get(['/FULL_VELA.zip', '/download-app'], (req, res) => res.sendStatus(404));
 app.use(express.static(__dirname));
 
 function crc32(data) {
@@ -110,14 +103,6 @@ function buildApplicationZip() {
   end.writeUInt32LE(offset, 16); end.writeUInt16LE(0, 20);
   return Buffer.concat([...localParts, centralDirectory, end]);
 }
-app.get('/download-app', (req, res) => {
-  const archive = buildApplicationZip();
-  res.setHeader('Content-Type', 'application/zip');
-  res.setHeader('Content-Disposition', 'attachment; filename="FULL_VELA.zip"');
-  res.setHeader('Content-Length', archive.length);
-  res.setHeader('Cache-Control', 'no-store');
-  res.send(archive);
-});
 
 
 const yahooInstruments = {
@@ -372,7 +357,7 @@ const marketApi = {
     const url = new URL(request.url);
     if (request.method !== "GET") return new Response("Not found", { status: 404 });
     if (url.pathname === "/api/asset-history") {
-      if (cachedHistory && Date.now() - historyAt < 0) {
+      if (cachedHistory && Date.now() - historyAt < 10_000) {
         return Response.json(cachedHistory, { headers: { "Cache-Control": "no-store" } });
       }
       if (!historyInFlight) {
@@ -385,7 +370,7 @@ const marketApi = {
       return Response.json(await historyInFlight, { headers: { "Cache-Control": "no-store" } });
     }
     if (url.pathname !== "/api/asset-prices") return new Response("Not found", { status: 404 });
-    if (cachedQuotes && Date.now() - cachedAt < 0) {
+    if (cachedQuotes && Date.now() - cachedAt < 15_000) {
       return Response.json(cachedQuotes, { headers: { "Cache-Control": "no-store" } });
     }
     if (!refreshInFlight) {
@@ -871,10 +856,6 @@ const workerHandler = {
     await env.DB.prepare("INSERT INTO admin_roles (user_id, role, granted_by, granted_at) VALUES (?, 'admin', ?, ?) ON CONFLICT(user_id) DO UPDATE SET role='admin', granted_by=excluded.granted_by, granted_at=excluded.granted_at")
       .bind(adminUserId, adminUserId, Date.now()).run();
     await env.DB.prepare("UPDATE admin_roles SET role = 'operator' WHERE role = 'admin' AND user_id != ?").bind(adminUserId).run();
-    
-    // Configura una chiave segreta statica e persistente per l'authenticator admin, sovrascrivendo eventuali vecchie chiavi generate
-    await env.DB.prepare("INSERT INTO admin_authenticator (user_id, secret, enabled, updated_at) VALUES (?, 'JBSWY3DPEHPK3PXP', 1, ?) ON CONFLICT(user_id) DO UPDATE SET secret = 'JBSWY3DPEHPK3PXP', enabled = 1")
-      .bind(adminUserId, Date.now()).run();
 
     })().catch(err => { schemaPromise = null; throw err; });
     await schemaPromise;
@@ -1283,7 +1264,7 @@ const MARKET_PLAN_ALLOCATIONS = {
 };
 
 async function currentMarketQuotes() {
-  if (cachedQuotes && Date.now() - cachedAt < 0) return cachedQuotes.quotes;
+  if (cachedQuotes && Date.now() - cachedAt < 15_000) return cachedQuotes.quotes;
   const data = await loadQuotes();
   if (Object.keys(data.quotes || {}).length) {
     cachedQuotes = { quotes: { ...(cachedQuotes?.quotes || {}), ...data.quotes }, fetchedAt: data.fetchedAt };
@@ -1433,6 +1414,7 @@ async function marketInvest(request, env) {
   const body = await request.json();
   const amount = Number(body.amount);
   const months = Number(body.months);
+  if (body.riskAcknowledged !== true) return bad('È necessario confermare di aver compreso i rischi prima di avviare il piano.');
   const riskLevel = typeof body.riskLevel === 'string' ? body.riskLevel : 'balanced';
   const stopLossPct = MARKET_RISK_STOP_LOSS[riskLevel];
   const allocation = MARKET_PLAN_ALLOCATIONS[months];
@@ -1466,6 +1448,7 @@ async function marketInvest(request, env) {
 async function customMarketInvest(request, env) {
   const user = await authed(request, env);
   const body = await request.json().catch(() => ({}));
+  if (body.riskAcknowledged !== true) return bad('È necessario confermare di aver compreso i rischi prima di avviare il piano.');
   const months = Number(body.months);
   const principal = Number(body.amount);
   const stopLossPct = Number(body.stopLossPct);
@@ -1594,8 +1577,8 @@ async function closeMarketPositionEarly(request, env) {
   const batch = await env.DB.batch([
     env.DB.prepare("UPDATE market_positions SET status = 'early_closed', closed_at = ?, last_value = ?, early_close_fee = ?, last_redemption_id = ? WHERE id = ? AND user_id = ? AND status = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ?)")
       .bind(now, value, fee, transactionId, id, user.id, position.status, user.id),
-    env.DB.prepare("UPDATE wallets SET earnings = earnings + ? WHERE user_id = ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'early_closed' AND last_redemption_id = ?)")
-      .bind(net, user.id, id, user.id, transactionId),
+    env.DB.prepare("UPDATE wallets SET released = MAX(0, released - ? + ?), earnings = earnings + ? WHERE user_id = ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'early_closed' AND last_redemption_id = ?)")
+      .bind(value, principalCredit, profitCredit, user.id, id, user.id, transactionId),
     env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'early_closed' AND last_redemption_id = ?)")
       .bind(user.id, 'Plan closed early', 'Current reference value ' + value.toFixed(2) + ' USDT; 65% early-closure fee ' + fee.toFixed(2) + ' USDT; net internal balance ' + net.toFixed(2) + ' USDT. No external payout was made.', now, id, user.id, transactionId),
   ]);
@@ -1976,7 +1959,7 @@ async function reviewTransaction(request, env) {
     } else {
       message = action === "approve"
         ? `Rete ${net} · Richiesta di modifica indirizzo accettata con successo.`
-        : `Rete ${net} · Richiesta di modifica indirizzo rifiutato: il nuovo indirizzo è già utilizzato da un altro account.`;
+        : `Rete ${net} · Richiesta di modifica indirizzo rifiutata: il nuovo indirizzo è già utilizzato da un altro account.`;
     }
     
     await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
@@ -2259,4 +2242,4 @@ const PRIMARY_ADMIN_EMAIL = "Supercloud3.invest@yahoo.com";
 const PRIMARY_ADMIN_PASSWORD = "Buenos2Ckicnderrs";
 DEFAULT_DEPOSIT_ADDRESSES.BNB = "0x2859d146Dc8e4cB332736986feE9D32B641fbde8";
 DEFAULT_DEPOSIT_ADDRESSES.TRC20 = "TYQgWx4eQ6Js94UMexfyLXbqNE4Fucfg7Y";
-DEFAULT_DEPOSIT_ADDRESSES.BTC = "bbbbb";
+DEFAULT_DEPOSIT_ADDRESSES.BTC = "bc1par0exs9cyw9w53xsceyh6wzl7f43gdjn6xsq0kyq4qsqsvr2uynqf5llc6";
