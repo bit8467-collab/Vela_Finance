@@ -1,129 +1,3 @@
-import express from 'express';
-import { createClient } from '@libsql/client';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { readFileSync } from 'fs';
-import { deflateRawSync } from 'zlib';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const app = express();
-const PORT = process.env.PORT || 3000;
-const notificationStreams = new Map();
-
-function publishNotification(userId, notificationId) {
-  const clients = notificationStreams.get(String(userId));
-  if (!clients?.size) return;
-  const event = `event: notification\ndata: ${JSON.stringify({ id: Number(notificationId) })}\n\n`;
-  for (const response of clients) {
-    if (response.writableEnded || response.destroyed) clients.delete(response);
-    else response.write(event);
-  }
-  if (!clients.size) notificationStreams.delete(String(userId));
-}
-
-const db = createClient({
-  url: process.env.TURSO_DATABASE_URL,
-  authToken: process.env.TURSO_AUTH_TOKEN,
-});
-
-const env = {
-  DB: {
-    prepare(sql) {
-      return {
-        bind(...args) {
-          const params = args.length === 1 && Array.isArray(args[0]) ? args[0] : args;
-          return {
-            async all() {
-              const rs = await db.execute({ sql, args: params });
-              return { results: rs.rows };
-            },
-            async first() {
-              const rs = await db.execute({ sql, args: params });
-              return rs.rows[0] || null;
-            },
-            async run() {
-              const rs = await db.execute({ sql, args: params });
-              if (rs.rowsAffected > 0 && /INSERT\s+INTO\s+notifications\b/i.test(sql) && rs.lastInsertRowid != null) {
-                try {
-                  const inserted = await db.execute({ sql: "SELECT user_id FROM notifications WHERE id = ?", args: [Number(rs.lastInsertRowid)] });
-                  const notification = inserted.rows[0];
-                  if (notification) publishNotification(notification.user_id, rs.lastInsertRowid);
-                } catch (error) { console.warn('Realtime notification dispatch failed', error); }
-              }
-              return { meta: { changes: rs.rowsAffected, last_row_id: Number(rs.lastInsertRowid) } };
-            }
-          };
-        },
-        async all(...params) { return (await this.bind(...params)).all(); },
-        async first(...params) { return (await this.bind(...params)).first(); },
-        async run(...params) { return (await this.bind(...params)).run(); }
-      };
-    },
-    async exec(sqlStatements) {
-      const statements = Array.isArray(sqlStatements) 
-        ? sqlStatements 
-        : sqlStatements.split(';').map(s => s.trim()).filter(Boolean);
-      for (const stmt of statements) {
-        if (stmt) {
-          await db.execute(stmt);
-        }
-      }
-    },
-    async batch(statements) {
-      const results = [];
-      for (const stmt of statements) {
-        if (typeof stmt.run === 'function') {
-          results.push(await stmt.run());
-        } else {
-          const rs = await db.execute(stmt);
-          results.push({ meta: { changes: rs.rowsAffected, last_row_id: Number(rs.lastInsertRowid) } });
-        }
-      }
-      return results;
-    }
-  }
-};
-
-app.use(express.json({ limit: '1mb' }));
-app.get(['/FULL_VELA.zip', '/download-app'], (req, res) => res.sendStatus(404));
-app.use(express.static(__dirname));
-
-function crc32(data) {
-  let crc = 0xffffffff;
-  for (const byte of data) { crc ^= byte; for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0); }
-  return (crc ^ 0xffffffff) >>> 0;
-}
-function buildApplicationZip() {
-  const files = ['index.html', 'styles.css', 'script.js', 'server.js', 'package.json'];
-  const localParts = [], centralParts = []; let offset = 0;
-  const now = new Date();
-  const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | Math.floor(now.getSeconds() / 2);
-  const dosDate = ((Math.max(1980, now.getFullYear()) - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
-  for (const filename of files) {
-    const name = Buffer.from(filename, 'utf8'), raw = readFileSync(path.join(__dirname, filename));
-    const compressed = deflateRawSync(raw), checksum = crc32(raw), local = Buffer.alloc(30);
-    local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(0x0800, 6); local.writeUInt16LE(8, 8);
-    local.writeUInt16LE(dosTime, 10); local.writeUInt16LE(dosDate, 12); local.writeUInt32LE(checksum, 14);
-    local.writeUInt32LE(compressed.length, 18); local.writeUInt32LE(raw.length, 22); local.writeUInt16LE(name.length, 26); local.writeUInt16LE(0, 28);
-    localParts.push(local, name, compressed);
-    const central = Buffer.alloc(46);
-    central.writeUInt32LE(0x02014b50, 0); central.writeUInt16LE(20, 4); central.writeUInt16LE(20, 6); central.writeUInt16LE(0x0800, 8);
-    central.writeUInt16LE(8, 10); central.writeUInt16LE(dosTime, 12); central.writeUInt16LE(dosDate, 14); central.writeUInt32LE(checksum, 16);
-    central.writeUInt32LE(compressed.length, 20); central.writeUInt32LE(raw.length, 24); central.writeUInt16LE(name.length, 28);
-    central.writeUInt16LE(0, 30); central.writeUInt16LE(0, 32); central.writeUInt16LE(0, 34); central.writeUInt16LE(0, 36);
-    central.writeUInt32LE(0, 38); central.writeUInt32LE(offset, 42); centralParts.push(central, name);
-    offset += local.length + name.length + compressed.length;
-  }
-  const centralDirectory = Buffer.concat(centralParts), end = Buffer.alloc(22);
-  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(0, 4); end.writeUInt16LE(0, 6);
-  end.writeUInt16LE(files.length, 8); end.writeUInt16LE(files.length, 10); end.writeUInt32LE(centralDirectory.length, 12);
-  end.writeUInt32LE(offset, 16); end.writeUInt16LE(0, 20);
-  return Buffer.concat([...localParts, centralDirectory, end]);
-}
-
-
 const yahooInstruments = {
   gold: { symbol: "GC=F", instrument: "Gold futures · USD per troy ounce" },
   oil: { symbol: "CL=F", instrument: "WTI crude futures · USD per barrel" },
@@ -389,7 +263,7 @@ const marketApi = {
       return Response.json(await historyInFlight, { headers: { "Cache-Control": "no-store" } });
     }
     if (url.pathname !== "/api/asset-prices") return new Response("Not found", { status: 404 });
-    if (cachedQuotes && Date.now() - cachedAt < 15_000) {
+    if (cachedQuotes && Date.now() - cachedAt < 10_000) {
       return Response.json(cachedQuotes, { headers: { "Cache-Control": "no-store" } });
     }
     if (!refreshInFlight) {
@@ -826,7 +700,7 @@ const workerHandler = {
           expires_at INTEGER NOT NULL,
           attempts INTEGER NOT NULL DEFAULT 0
         );`
-      ]);
+      ].join(String.fromCharCode(10)));
     
     try { await env.DB.prepare("ALTER TABLE settings ADD COLUMN auto_redeem_pct REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE wallets ADD COLUMN released REAL NOT NULL DEFAULT 0").run(); } catch {}
@@ -854,24 +728,29 @@ const workerHandler = {
     } catch {}
 
     const adminEmail = PRIMARY_ADMIN_EMAIL;
-    let adminUser = await env.DB.prepare("SELECT id FROM users WHERE lower(identifier) = ?").bind(adminEmail).first();
-    let adminUserId;
-    if (!adminUser) {
-      adminUserId = makeToken();
-      const salt = genSalt();
-      const ph = await hash(adminEmail, salt);
-      await env.DB.prepare("INSERT INTO users (id, username, identifier, password_hash, salt, invite_code, email_verified, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)")
-        .bind(adminUserId, "h9invest", adminEmail, ph, salt, "H9-ADMIN", Date.now()).run();
-    } else {
-      adminUserId = adminUser.id;
+    let storedAdminCredential = await env.DB.prepare("SELECT updated_by FROM admin_credentials WHERE id = 1").first();
+    let adminUserId = storedAdminCredential?.updated_by;
+    if (!adminUserId) {
+      let adminUser = await env.DB.prepare("SELECT id FROM users WHERE lower(identifier) = ?").bind(adminEmail).first();
+      if (!adminUser) {
+        adminUserId = makeToken();
+        const salt = genSalt();
+        const ph = await hash(adminEmail, salt);
+        await env.DB.prepare("INSERT INTO users (id, username, identifier, password_hash, salt, invite_code, email_verified, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)")
+          .bind(adminUserId, "h9invest", adminEmail, ph, salt, "H9-ADMIN", Date.now()).run();
+      } else {
+        adminUserId = adminUser.id;
+      }
+
+      const saltAdmin = genSalt();
+      const iterations = 20000;
+      const passwordHashAdmin = await hashAdminSecret(PRIMARY_ADMIN_PASSWORD, saltAdmin, iterations);
+      await env.DB.prepare(
+        "INSERT OR IGNORE INTO admin_credentials (id, salt, password_hash, updated_by, updated_at, iterations, email) VALUES (1, ?, ?, ?, ?, ?, ?)"
+      ).bind(saltAdmin, passwordHashAdmin, adminUserId, Date.now(), iterations, adminEmail).run();
+      storedAdminCredential = await env.DB.prepare("SELECT updated_by FROM admin_credentials WHERE id = 1").first();
+      adminUserId = storedAdminCredential?.updated_by || adminUserId;
     }
-    
-    const saltAdmin = genSalt();
-    const iterations = 20000;
-    const passwordHashAdmin = await hashAdminSecret(PRIMARY_ADMIN_PASSWORD, saltAdmin, iterations);
-    await env.DB.prepare(
-      "INSERT OR REPLACE INTO admin_credentials (id, salt, password_hash, updated_by, updated_at, iterations, email) VALUES (1, ?, ?, ?, ?, ?, ?)"
-    ).bind(saltAdmin, passwordHashAdmin, adminUserId, Date.now(), iterations, adminEmail).run();
     await env.DB.prepare("INSERT INTO admin_roles (user_id, role, granted_by, granted_at) VALUES (?, 'admin', ?, ?) ON CONFLICT(user_id) DO UPDATE SET role='admin', granted_by=excluded.granted_by, granted_at=excluded.granted_at")
       .bind(adminUserId, adminUserId, Date.now()).run();
     await env.DB.prepare("UPDATE admin_roles SET role = 'operator' WHERE role = 'admin' AND user_id != ?").bind(adminUserId).run();
@@ -1283,7 +1162,7 @@ const MARKET_PLAN_ALLOCATIONS = {
 };
 
 async function currentMarketQuotes() {
-  if (cachedQuotes && Date.now() - cachedAt < 15_000) return cachedQuotes.quotes;
+  if (cachedQuotes && Date.now() - cachedAt < 10_000) return cachedQuotes.quotes;
   const data = await loadQuotes();
   if (Object.keys(data.quotes || {}).length) {
     cachedQuotes = { quotes: { ...(cachedQuotes?.quotes || {}), ...data.quotes }, fetchedAt: data.fetchedAt };
@@ -2230,59 +2109,10 @@ async function changePassword(request, env) {
   return Response.json({ ok: true });
 }
 
-app.get('/api/notifications/stream', async (req, res) => {
-  try {
-    const authRequest = new Request(`http://${req.get('host') || 'localhost'}${req.originalUrl}`, { headers: new Headers(req.headers) });
-    const user = await sessionUser(authRequest, env);
-    if (!user) return res.status(401).json({ error: 'Non autenticato.' });
-    res.status(200);
-    res.set({ 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
-    res.flushHeaders();
-    const userId = String(user.id);
-    let clients = notificationStreams.get(userId);
-    if (!clients) notificationStreams.set(userId, clients = new Set());
-    clients.add(res);
-    res.write('event: ready\ndata: {}\n\n');
-    const heartbeat = setInterval(() => { if (!res.writableEnded) res.write(': keep-alive\n\n'); }, 20000);
-    res.on('close', () => {
-      clearInterval(heartbeat);
-      clients.delete(res);
-      if (!clients.size) notificationStreams.delete(userId);
-    });
-  } catch (error) {
-    console.error('Notification stream error:', error);
-    if (!res.headersSent) res.status(500).json({ error: 'Impossibile aprire il canale notifiche.' });
-    else res.end();
-  }
-});
-
-app.all('/api/*', async (req, res) => {
-  try {
-    const fullUrl = `${req.protocol}://${req.get('host')}${req.originalUrl}`;
-    const webRequest = new Request(fullUrl, {
-      method: req.method,
-      headers: new Headers(req.headers),
-      body: ['GET', 'HEAD'].includes(req.method) ? undefined : JSON.stringify(req.body)
-    });
-
-    const response = await workerHandler.fetch(webRequest, env);
-    const bodyText = await response.text();
-    
-    res.status(response.status);
-    response.headers.forEach((val, key) => res.setHeader(key, val));
-    res.send(bodyText);
-  } catch (err) {
-    console.error('API Error:', err);
-    res.status(500).json({ error: 'Errore interno del server.' });
-  }
-});
-
-app.listen(PORT, () => {
-  console.log(`Server avviato correttamente sulla porta ${PORT}`);
-});
-
 const PRIMARY_ADMIN_EMAIL = "Supercloud3.invest@yahoo.com";
 const PRIMARY_ADMIN_PASSWORD = "Buenos2Ckicnderrs";
 DEFAULT_DEPOSIT_ADDRESSES.BNB = "0x2859d146Dc8e4cB332736986feE9D32B641fbde8";
 DEFAULT_DEPOSIT_ADDRESSES.TRC20 = "TYQgWx4eQ6Js94UMexfyLXbqNE4Fucfg7Y";
 DEFAULT_DEPOSIT_ADDRESSES.BTC = "bc1par0exs9cyw9w53xsceyh6wzl7f43gdjn6xsq0kyq4qsqsvr2uynqf5llc6";
+
+export default workerHandler;
