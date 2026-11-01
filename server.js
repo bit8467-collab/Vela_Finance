@@ -827,7 +827,6 @@ const workerHandler = {
         );`
       ]);
     
-    // Invalida/cancella tutte le sessioni admin e utenti all'avvio/refresh della piattaforma
     await env.DB.prepare("DELETE FROM admin_sessions").run();
     await env.DB.prepare("DELETE FROM sessions").run();
 
@@ -1284,7 +1283,7 @@ async function deposit(request, env) {
   const created = Date.now();
   await env.DB.batch([
     env.DB.prepare("INSERT INTO deposits (user_id, amount, net, date, status, tx_reference) VALUES (?,?,?,?, 'pending', ?)").bind(user.id, amount, net, created, txReference),
-    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Richiesta di deposito inviata", amount.toFixed(2) + " USDT · " + net + " · In attesa di verifica.", created),
+    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Deposit request submitted", amount.toFixed(2) + " USDT · " + net + " · Pending review.", created),
   ]);
   return Response.json({ ok: true, status: "pending" });
 }
@@ -1364,7 +1363,7 @@ async function syncMarketPositions(env, userId) {
           .bind(userId, 'Plan matured', 'Reference value ' + value.toFixed(2) + ' USDT. Internal balance updated; no market order or external payout was executed.', now).run();
       } else if (status === 'stop_loss') {
         await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
-          .bind(userId, 'Aggressive plan closed at stop', 'The aggressive plan reached its fixed ' + Number(row.stop_loss_pct) + '% stop. Remaining reference value was moved to your internal released balance.', now).run();
+          .bind(userId, 'Plan closed at stop', 'The aggressive plan reached its fixed ' + Number(row.stop_loss_pct) + '% stop. Remaining reference value was moved to your internal released balance.', now).run();
       } else if (status === 'paused' && previousStatus !== 'paused') {
         await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
           .bind(userId, 'Plan paused at stop', 'Reference value reached the fixed ' + Number(row.stop_loss_pct) + '% stop. The plan will resume if a later market-data refresh places it above the stop.', now).run();
@@ -1392,7 +1391,7 @@ async function syncMarketPositions(env, userId) {
             env.DB.prepare("UPDATE wallets SET earnings = earnings + ? WHERE user_id = ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND last_redemption_id = ?)")
               .bind(gain, userId, row.id, userId, amount, transactionId),
             env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND last_redemption_id = ?)")
-              .bind(userId, 'Automatic profit redeemed', gain.toFixed(2) + ' USDT moved to the redeemable balance after reaching the ' + autoPct + '% gain threshold. The plan remains active.', now, row.id, userId, amount, transactionId),
+              .bind(userId, 'Plan gains redeemed', gain.toFixed(2) + ' USDT moved to the redeemable balance after reaching the ' + autoPct + '% gain threshold. The plan remains active.', now, row.id, userId, amount, transactionId),
           ]);
           if (redemption[0]?.meta?.changes > 0) {
             row.last_value = amount;
@@ -1478,7 +1477,7 @@ async function marketInvest(request, env) {
   ]);
   if (!(results[0]?.meta?.changes > 0) || !(results[1]?.meta?.changes > 0)) return bad("Saldo insufficiente o modifica concorrente dell'account. Aggiorna e riprova.");
   await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
-    .bind(user.id, "Piano market avviato", amount.toFixed(2) + " USDT · durata " + months + " mesi · rischio " + riskLevel + " · stop-loss fisso " + stopLossPct + "%.", now).run();
+    .bind(user.id, "Market plan started", amount.toFixed(2) + " USDT · duration " + months + " months · risk " + riskLevel + " · fixed stop-loss " + stopLossPct + "%.", now).run();
   return Response.json({ ok: true, positionId: results[0]?.meta?.last_row_id || null });
 }
 
@@ -1526,7 +1525,7 @@ async function customMarketInvest(request, env) {
   ]);
   if (!(results[0]?.meta?.changes > 0) || !(results[1]?.meta?.changes > 0)) return bad('Saldo insufficiente o modifica concorrente dell’account. Aggiorna e riprova.');
   await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
-    .bind(user.id, 'Portafoglio personalizzato avviato', principal.toFixed(2) + ' USDT investiti · quota piano ' + fee.toFixed(2) + ' USDT · durata ' + months + ' mesi · stop loss ' + stopLossPct + '%.', now).run();
+    .bind(user.id, 'Custom market portfolio started', principal.toFixed(2) + ' USDT invested · plan fee ' + fee.toFixed(2) + ' USDT · duration ' + months + ' months · stop loss ' + stopLossPct + '%.', now).run();
   return Response.json({ ok: true, positionId: results[0]?.meta?.last_row_id || null, amount: principal, fee, totalCharged: totalCharge });
 }
 
@@ -1684,7 +1683,7 @@ async function withdraw(request, env) {
     env.DB.prepare("UPDATE wallets SET " + prepared.source + " = " + prepared.source + " - ? WHERE user_id = ? AND " + prepared.source + " >= ?").bind(prepared.amount, user.id, prepared.amount),
     env.DB.prepare("INSERT INTO withdrawals (user_id, amount, net, date, status, wallet_address, source) VALUES (?, ?, ?, ?, 'pending', ?, ?)")
       .bind(user.id, prepared.amount, prepared.net, created, prepared.address, prepared.source),
-    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Richiesta di prelievo inviata", prepared.amount.toFixed(2) + " USDT · " + prepared.net + " · In attesa di verifica.", created),
+    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Withdrawal request submitted", prepared.amount.toFixed(2) + " USDT · " + prepared.net + " · Pending review.", created),
   ]);
   return Response.json({ ok: true, status: "pending" });
 }
@@ -1828,7 +1827,7 @@ async function adminUpdateUserBalance(request, env, userId) {
   const now = Date.now();
   await env.DB.batch([
     env.DB.prepare("INSERT INTO wallets (user_id, deposit, earnings, released) VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET deposit=excluded.deposit, earnings=excluded.earnings, released=excluded.released").bind(userId, deposit, earnings, released),
-    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(userId, "Saldo wallet aggiornato", "Il tuo saldo disponibile è stato modificato dall'amministratore.", now)
+    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(userId, "Wallet balance updated", "Your available balance has been updated by the administrator.", now)
   ]);
   return Response.json({ ok: true });
 }
@@ -1919,7 +1918,7 @@ async function reviewTransaction(request, env) {
 
             await env.DB.prepare(
               "INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)"
-            ).bind(uplineUser.id, "Commissione referral", `Accreditati ${commAmount.toFixed(2)} USDT di commissione referral (Livello ${level + 1}) sul primo deposito dell'utente.`, now).run();
+            ).bind(uplineUser.id, "Referral commission", `Credited ${commAmount.toFixed(2)} USDT referral commission (Level ${level + 1}) on user's first deposit.`, now).run();
           }
 
           const nextParent = await env.DB.prepare("SELECT referred_by FROM users WHERE id = ?").bind(currentReferrerId).first();
@@ -1984,17 +1983,17 @@ async function reviewTransaction(request, env) {
 
   if (userId) {
     const now = Date.now();
-    const statusLabel = action === "approve" ? "accettato" : "rifiutato";
-    const transactionLabel = kind === "deposit" ? "Deposito" : kind === "withdrawal" ? "Prelievo" : "Richiesta modifica wallet";
+    const statusLabel = action === "approve" ? "approved" : "rejected";
+    const transactionLabel = kind === "deposit" ? "Deposit" : kind === "withdrawal" ? "Withdrawal" : "Wallet change request";
     let message = "";
     if (kind === "deposit") {
-      message = `${amount.toFixed(2)} USDT · ${net} · Richiesta ${statusLabel}${action === "approve" ? ". Importo accreditato nel wallet con successo." : ". L’importo non è stato accreditato."}`;
+      message = `${amount.toFixed(2)} USDT · ${net} · Request ${statusLabel}${action === "approve" ? ". Amount successfully credited to wallet." : ". Amount was not credited."}`;
     } else if (kind === "withdrawal") {
-      message = `${amount.toFixed(2)} USDT · ${net} · Richiesta ${statusLabel}${action === "reject" ? ". Importo riaccreditato nel wallet con successo." : ". Operazione completata. TX: " + transactionReference}`;
+      message = `${amount.toFixed(2)} USDT · ${net} · Request ${statusLabel}${action === "reject" ? ". Amount refunded to wallet successfully." : ". Operation completed. TX: " + transactionReference}`;
     } else {
       message = action === "approve"
-        ? `Rete ${net} · Richiesta di modifica indirizzo accettata con successo.`
-        : `Rete ${net} · Richiesta di modifica indirizzo rifiutata: il nuovo indirizzo è già utilizzato da un altro account.`;
+        ? `Network ${net} · Address change request successfully approved.`
+        : `Network ${net} · Address change request rejected: the new address is already used by another account.`;
     }
     
     await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
@@ -2198,7 +2197,7 @@ async function requestWalletChange(request, env) {
       );
       batchStatements.push(
         env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
-          .bind(user.id, "Richiesta modifica wallet", `Richiesta di cambio indirizzo per la rete ${net} inviata all'operatore in attesa di approvazione.`, now)
+          .bind(user.id, "Wallet change request", `Address change request for network ${net} sent to operator pending approval.`, now)
       );
       changesRequested = true;
     }
@@ -2243,7 +2242,7 @@ async function changePassword(request, env) {
   await env.DB.batch([
     env.DB.prepare("UPDATE users SET password_hash = ?, salt = ? WHERE id = ?").bind(hash2, s, user.id),
     env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)")
-      .bind(user.id, "Password aggiornata", "La password del tuo account è stata modificata con successo.", Date.now()),
+      .bind(user.id, "Password updated", "Your account password has been successfully modified.", Date.now()),
   ]);
   return Response.json({ ok: true });
 }
@@ -2276,7 +2275,6 @@ app.get('/api/notifications/stream', async (req, res) => {
 
 app.all('/api/*', async (req, res) => {
   try {
-    // Intercetta la chiamata di logout per pulire sia le sessioni utenti che le admin sessioni
     if (req.method === 'POST' && req.path === '/api/logout') {
       await env.DB.prepare("DELETE FROM sessions").run();
       await env.DB.prepare("DELETE FROM admin_sessions").run();
