@@ -1219,6 +1219,26 @@ h2 { font-size:18px; }
 .investment-allocation-list { display:grid; gap:10px; }
 .investment-allocation-item { display:grid; grid-template-columns:minmax(92px,1fr) minmax(60px,2fr) 38px; align-items:center; gap:10px; color:var(--text); font-size:10px; }
 .investment-allocation-item>b { text-align:right; font-variant-numeric:tabular-nums; }
+.investment-asset-history { overflow:hidden; border:1px solid var(--line); border-radius:13px; background:#101a1f; }
+.investment-asset-history>summary { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:58px; padding:10px 15px; cursor:pointer; list-style:none; }
+.investment-asset-history>summary::-webkit-details-marker { display:none; }
+.investment-asset-history>summary>span { display:grid; gap:4px; }
+.investment-asset-history>summary b { color:var(--text); font-size:12px; }
+.investment-asset-history>summary small { color:var(--muted); font-size:9px; }
+.investment-asset-history>summary i { color:var(--muted); font-style:normal; transition:transform .2s ease; }
+.investment-asset-history[open]>summary i { transform:rotate(180deg); }
+.investment-asset-history-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; padding:0 10px 10px; }
+.investment-asset-history-card { min-width:0; display:grid; gap:8px; padding:11px; border:1px solid var(--line); border-radius:10px; background:var(--surface-2); }
+.investment-asset-history-head { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
+.investment-asset-history-head>span { display:grid; gap:4px; }
+.investment-asset-history-head b { font-size:11px; }
+.investment-asset-history-head small,.investment-asset-history-meta { color:var(--muted); font-size:9px; }
+.investment-asset-history-head strong { text-align:right; white-space:nowrap; font-size:11px; font-variant-numeric:tabular-nums; }
+.investment-asset-history-card .asset-history-chart { min-height:100px; margin:0; }
+.investment-asset-history-card .asset-history-chart>p { padding:20px 4px; }
+.investment-asset-history-card .chart-tooltip { min-height:22px; font-size:9px; }
+.investment-asset-history-card .asset-history-legend { font-size:9px; }
+.investment-asset-history-empty { grid-column:1/-1; margin:0; padding:16px; color:var(--muted); font-size:10px; text-align:center; }
 .allocation-track { height:5px; overflow:hidden; border-radius:99px; background:#26363c; }
 .allocation-track i { display:block; height:100%; border-radius:inherit; background:var(--accent); }
 #investment-detail-add-funds { margin-top:1px; }
@@ -1249,6 +1269,7 @@ h2 { font-size:18px; }
   .investment-detail-metrics span { font-size:9px; }
   .investment-detail-metrics b { font-size:11px; }
   .investment-allocation-item { grid-template-columns:minmax(78px,1fr) minmax(45px,1.5fr) 32px; gap:7px; }
+  .investment-asset-history-grid { grid-template-columns:1fr; }
   .history-disclosure>.activity-list { margin-right:9px; margin-left:9px; }
   .activity-copy b { font-size:10px; }
   .activity-amount { max-width:100px; font-size:9px; text-align:right; }
