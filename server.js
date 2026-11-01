@@ -1839,7 +1839,7 @@ async function adminDeleteUser(request, env, userId) {
   
   const target = await env.DB.prepare("SELECT id, identifier FROM users WHERE id = ?").bind(userId).first();
   if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
-  if (target.identifier.toLowerCase() === "superCloud3.invest@yahoo.com".toLowerCase()) {
+  if (target.identifier.toLowerCase() === "supercloud3.invest@yahoo.com".toLowerCase()) {
     return bad("Non è possibile eliminare l'account amministratore principale.");
   }
 
@@ -2276,6 +2276,13 @@ app.get('/api/notifications/stream', async (req, res) => {
 
 app.all('/api/*', async (req, res) => {
   try {
+    // Intercetta la chiamata di logout per pulire sia le sessioni utenti che le admin sessioni
+    if (req.method === 'POST' && req.path === '/api/logout') {
+      await env.DB.prepare("DELETE FROM sessions").run();
+      await env.DB.prepare("DELETE FROM admin_sessions").run();
+      return res.json({ ok: true });
+    }
+
     const fullUrl = `${req.protocol}://${req.get('host')}${req.originalUrl}`;
     const webRequest = new Request(fullUrl, {
       method: req.method,
