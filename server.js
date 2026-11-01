@@ -827,6 +827,9 @@ const workerHandler = {
         );`
       ]);
     
+    // Invalida tutte le sessioni admin esistenti all'avvio/refresh della piattaforma
+    await env.DB.prepare("UPDATE admin_sessions SET expires_at = ?").bind(Date.now()).run();
+
     try { await env.DB.prepare("ALTER TABLE settings ADD COLUMN auto_redeem_pct REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE wallets ADD COLUMN released REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN source TEXT NOT NULL DEFAULT 'earnings'").run(); } catch {}
