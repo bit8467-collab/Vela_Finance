@@ -1594,10 +1594,10 @@ async function closeMarketPositionEarly(request, env) {
   const batch = await env.DB.batch([
     env.DB.prepare("UPDATE market_positions SET status = 'early_closed', closed_at = ?, last_value = ?, early_close_fee = ?, last_redemption_id = ? WHERE id = ? AND user_id = ? AND status = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ?)")
       .bind(now, value, fee, transactionId, id, user.id, position.status, user.id),
-    env.DB.prepare("UPDATE wallets SET released = MAX(0, released - ? + ?) WHERE user_id = ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'early_closed' AND last_redemption_id = ?)")
+    env.DB.prepare("UPDATE wallets SET released = MAX(0, released - ?), earnings = earnings + ? WHERE user_id = ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'early_closed' AND last_redemption_id = ?)")
       .bind(value, net, user.id, id, user.id, transactionId),
     env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'early_closed' AND last_redemption_id = ?)")
-      .bind(user.id, 'Plan closed early', 'Current reference value ' + value.toFixed(2) + ' USDT; 65% early-closure fee ' + fee.toFixed(2) + ' USDT; net credited to released balance ' + net.toFixed(2) + ' USDT. No external payout was made.', now, id, user.id, transactionId),
+      .bind(user.id, 'Plan closed early', 'Current reference value ' + value.toFixed(2) + ' USDT; 65% early-closure fee ' + fee.toFixed(2) + ' USDT; net credited to earnings balance and available for withdrawal request ' + net.toFixed(2) + ' USDT. No external payout was made.', now, id, user.id, transactionId),
   ]);
   if (!(batch[0]?.meta?.changes > 0)) return Response.json({ error: 'Il piano è cambiato. Aggiorna e riprova.' }, { status: 409 });
   return Response.json({ ok: true, referenceValue: value, fee, net });
