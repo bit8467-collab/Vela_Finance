@@ -1027,7 +1027,7 @@ async function supportMessage(request, env) {
   if (thread.status === 'bot') {
     reply = typeof body.botReply === "string" ? body.botReply.trim().slice(0, 4000) : "";
     if (!reply) reply = "Mi dispiace, non ho trovato una risposta precisa. Puoi riformulare la domanda o chiedermi informazioni su account, depositi, prelievi e portafogli.";
-    if (Number(thread.question_count || 0) === 4) reply += String.fromCharCode(10) + String.fromCharCode(10) + "Vuoi parlare con un operatore?";
+    if (Number(thread.question_count || 0) >= 4 && (Number(thread.question_count || 0) - 4) % 3 === 0) reply += String.fromCharCode(10) + String.fromCharCode(10) + "Vuoi parlare con un operatore?";
     await env.DB.prepare("INSERT INTO support_messages (thread_id, sender_role, body, created_at) VALUES (?, 'assistant', ?, ?)").bind(thread.id, reply, now + 1).run();
   }
   await env.DB.prepare("UPDATE support_threads SET question_count = question_count + 1, updated_at = ? WHERE id = ?").bind(now, thread.id).run();
