@@ -515,8 +515,7 @@ async function readAdminPermissions(actor, env) {
   if (role?.role === "admin") return { fullPanel: true, requests: true, walletChanges: true, otp: true, support: true, users: true };
   let stored = {};
   try { stored = JSON.parse(role?.permissions_json || "{}"); } catch {}
-  const isLegacy = !role?.permissions_json || role.permissions_json === "{}";
-  const permissions = Object.fromEntries(ADMIN_PERMISSION_KEYS.map(key => [key, key === "fullPanel" ? !!stored[key] : (stored[key] === undefined ? isLegacy : stored[key] === true)]));
+  const permissions = Object.fromEntries(ADMIN_PERMISSION_KEYS.map(key => [key, stored[key] === true]));
   if (permissions.fullPanel) for (const key of ADMIN_PERMISSION_KEYS) permissions[key] = true;
   return permissions;
 }
