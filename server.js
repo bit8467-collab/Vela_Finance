@@ -490,29 +490,28 @@ async function adminSessionUser(request, env) {
   return env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(session.user_id).first();
 }
 
+function isPrimaryAdmin(actor) {
+  return String(actor?.identifier || "").trim().toLowerCase() === PRIMARY_ADMIN_EMAIL.toLowerCase();
+}
+
 async function adminActor(request, env) {
   const actor = await adminSessionUser(request, env);
   if (!actor) return null;
   const authenticator = await env.DB.prepare("SELECT enabled FROM admin_authenticator WHERE user_id = ?").bind(actor.id).first();
   if (Number(authenticator?.enabled) !== 1) return null;
   const role = await env.DB.prepare("SELECT role FROM admin_roles WHERE user_id = ?").bind(actor.id).first();
-  const primary = await env.DB.prepare("SELECT updated_by FROM admin_credentials WHERE id = 1").first();
-  return role || primary?.updated_by === actor.id ? actor : null;
+  return role || isPrimaryAdmin(actor) ? actor : null;
 }
 
 async function privilegedAdminActor(request, env) {
   const actor = await adminActor(request, env);
-  if (!actor) return null;
-  const primary = await env.DB.prepare("SELECT updated_by FROM admin_credentials WHERE id = 1").first();
-  return primary?.updated_by === actor.id ? actor : null;
+  return actor && isPrimaryAdmin(actor) ? actor : null;
 }
 
 const ADMIN_PERMISSION_KEYS = ["fullPanel", "requests", "walletChanges", "otp", "support", "users"];
 async function readAdminPermissions(actor, env) {
-  const primary = await env.DB.prepare("SELECT updated_by FROM admin_credentials WHERE id = 1").first();
-  if (primary?.updated_by === actor.id) return { fullPanel: true, requests: true, walletChanges: true, otp: true, support: true, users: true };
+  if (isPrimaryAdmin(actor)) return { fullPanel: true, requests: true, walletChanges: true, otp: true, support: true, users: true };
   const role = await env.DB.prepare("SELECT role, permissions_json FROM admin_roles WHERE user_id = ?").bind(actor.id).first();
-  if (role?.role === "admin") return { fullPanel: true, requests: true, walletChanges: true, otp: true, support: true, users: true };
   let stored = {};
   try { stored = JSON.parse(role?.permissions_json || "{}"); } catch {}
   const permissions = Object.fromEntries(ADMIN_PERMISSION_KEYS.map(key => [key, stored[key] === true]));
@@ -864,9 +863,6 @@ const workerHandler = {
         );`
       ]);
     
-    await env.DB.prepare("DELETE FROM admin_sessions").run();
-    await env.DB.prepare("DELETE FROM sessions").run();
-
     try { await env.DB.prepare("ALTER TABLE admin_roles ADD COLUMN permissions_json TEXT NOT NULL DEFAULT '{}'").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE settings ADD COLUMN auto_redeem_pct REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE support_threads ADD COLUMN final_message_id INTEGER").run(); } catch {}
@@ -923,7 +919,6 @@ const workerHandler = {
     
     await env.DB.prepare("INSERT INTO admin_roles (user_id, role, granted_by, granted_at) VALUES (?, 'admin', ?, ?) ON CONFLICT(user_id) DO UPDATE SET role='admin', granted_by=excluded.granted_by, granted_at=excluded.granted_at")
       .bind(adminUserId, adminUserId, Date.now()).run();
-    await env.DB.prepare("UPDATE admin_roles SET role = 'operator' WHERE role = 'admin' AND user_id != ?").bind(adminUserId).run();
 
     let adminAuthRec = await env.DB.prepare("SELECT secret FROM admin_authenticator WHERE user_id = ?").bind(adminUserId).first();
     if (!adminAuthRec) {
@@ -1952,8 +1947,8 @@ async function adminUpdateUserProfile(request, env, userId) {
 async function adminSetUserRole(request, env) {
   const actor = await privilegedAdminActor(request, env);
   if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
-  const owner = await env.DB.prepare("SELECT updated_by FROM admin_credentials WHERE id = 1").first();
-  if (!owner?.updated_by) return Response.json({ error: "Gestione ruoli non disponibile." }, { status: 403 });
+  const owner = await env.DB.prepare("SELECT id FROM users WHERE lower(identifier) = ?").bind(PRIMARY_ADMIN_EMAIL.toLowerCase()).first();
+  if (!owner?.id) return Response.json({ error: "Gestione ruoli non disponibile." }, { status: 403 });
   const body = await request.json(), userId = String(body.userId || ""), role = String(body.role || "user");
   if (!userId || !["user", "admin", "operator"].includes(role)) return bad("Ruolo non valido.");
   const requestedPermissions = {};
@@ -1961,9 +1956,9 @@ async function adminSetUserRole(request, env) {
   if (requestedPermissions.fullPanel) for (const key of ADMIN_PERMISSION_KEYS) requestedPermissions[key] = true;
   const target = await env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(userId).first();
   if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
-  if (target.id === owner.updated_by && role !== 'admin') return bad("Non puoi rimuovere il ruolo dell’amministratore principale.");
-   if (role === 'admin' && target.id !== owner.updated_by) return bad("Solo l’amministratore principale può avere il ruolo admin.");
-  if (role === 'user') await env.DB.prepare("DELETE FROM admin_roles WHERE user_id = ? AND user_id != (SELECT updated_by FROM admin_credentials WHERE id = 1)").bind(userId).run();
+  if (target.id === owner.id && role !== 'admin') return bad("Non puoi rimuovere il ruolo dell’amministratore principale.");
+   if (role === 'admin' && target.id !== owner.id) return bad("Solo l’amministratore principale può avere il ruolo admin.");
+  if (role === 'user') await env.DB.prepare("DELETE FROM admin_roles WHERE user_id = ? AND user_id != (SELECT id FROM users WHERE lower(identifier) = ?)").bind(userId, PRIMARY_ADMIN_EMAIL.toLowerCase()).run();
   else await env.DB.prepare("INSERT INTO admin_roles (user_id, role, permissions_json, granted_by, granted_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET role=excluded.role, permissions_json=excluded.permissions_json, granted_by=excluded.granted_by, granted_at=excluded.granted_at").bind(userId, role, JSON.stringify(requestedPermissions), actor.id, Date.now()).run();
   return Response.json({ ok: true, role, permissions: requestedPermissions });
 }
@@ -2266,7 +2261,7 @@ async function verifyAdminAuthenticator(request, env) {
 
 async function tryOperatorLogin(env, email, password) {
   const credential = await env.DB.prepare("SELECT email, salt, password_hash, iterations, updated_by FROM admin_credentials WHERE id = 1").first();
-  if (!credential?.email || email !== credential.email.toLowerCase()) return null;
+  if (!credential?.email || email !== PRIMARY_ADMIN_EMAIL.toLowerCase()) return null;
   const suppliedHash = await hashAdminSecret(password, credential.salt, credential.iterations || 20000);
   if (suppliedHash !== credential.password_hash) return { status: 401, error: "Email o password non corretti." };
   
@@ -2463,8 +2458,10 @@ app.get('/api/notifications/stream', async (req, res) => {
 app.all('/api/*', async (req, res) => {
   try {
     if (req.method === 'POST' && req.path === '/api/logout') {
-      await env.DB.prepare("DELETE FROM sessions").run();
-      await env.DB.prepare("DELETE FROM admin_sessions").run();
+      const sessionToken = String(req.get('x-session-token') || req.body?.sessionToken || '').trim();
+      const adminToken = String(req.get('x-admin-token') || req.body?.adminToken || '').trim();
+      if (sessionToken) await env.DB.prepare("DELETE FROM sessions WHERE token = ?").bind(sessionToken).run();
+      if (adminToken) await env.DB.prepare("DELETE FROM admin_sessions WHERE token = ?").bind(adminToken).run();
       return res.json({ ok: true });
     }
 
