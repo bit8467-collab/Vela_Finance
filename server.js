@@ -490,39 +490,39 @@ async function adminSessionUser(request, env) {
   return env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(session.user_id).first();
 }
 
-function isPrimaryAdmin(actor) {
-  return String(actor?.identifier || "").trim().toLowerCase() === PRIMARY_ADMIN_EMAIL.toLowerCase();
-}
-
 async function adminActor(request, env) {
   const actor = await adminSessionUser(request, env);
   if (!actor) return null;
-  if (isPrimaryAdmin(actor)) return actor;
   const authenticator = await env.DB.prepare("SELECT enabled FROM admin_authenticator WHERE user_id = ?").bind(actor.id).first();
   if (Number(authenticator?.enabled) !== 1) return null;
   const role = await env.DB.prepare("SELECT role FROM admin_roles WHERE user_id = ?").bind(actor.id).first();
-  return role || isPrimaryAdmin(actor) ? actor : null;
+  const primary = await env.DB.prepare("SELECT updated_by FROM admin_credentials WHERE id = 1").first();
+  return role || primary?.updated_by === actor.id ? actor : null;
 }
 
 async function privilegedAdminActor(request, env) {
   const actor = await adminActor(request, env);
-  return actor && isPrimaryAdmin(actor) ? actor : null;
+  if (!actor) return null;
+  const primary = await env.DB.prepare("SELECT updated_by FROM admin_credentials WHERE id = 1").first();
+  return primary?.updated_by === actor.id ? actor : null;
 }
 
 const ADMIN_PERMISSION_KEYS = ["fullPanel", "requests", "walletChanges", "otp", "support", "users"];
 async function readAdminPermissions(actor, env) {
-  if (isPrimaryAdmin(actor)) return { fullPanel: true, requests: true, walletChanges: true, otp: true, support: true, users: true };
+  const primary = await env.DB.prepare("SELECT updated_by FROM admin_credentials WHERE id = 1").first();
+  if (primary?.updated_by === actor.id) return { fullPanel: true, requests: true, walletChanges: true, otp: true, support: true, users: true };
   const role = await env.DB.prepare("SELECT role, permissions_json FROM admin_roles WHERE user_id = ?").bind(actor.id).first();
+  if (role?.role === "admin") return { fullPanel: true, requests: true, walletChanges: true, otp: true, support: true, users: true };
   let stored = {};
   try { stored = JSON.parse(role?.permissions_json || "{}"); } catch {}
-  const permissions = Object.fromEntries(ADMIN_PERMISSION_KEYS.map(key => [key, stored[key] === true]));
+  const isLegacy = !role?.permissions_json || role.permissions_json === "{}";
+  const permissions = Object.fromEntries(ADMIN_PERMISSION_KEYS.map(key => [key, key === "fullPanel" ? !!stored[key] : (stored[key] === undefined ? isLegacy : stored[key] === true)]));
   if (permissions.fullPanel) for (const key of ADMIN_PERMISSION_KEYS) permissions[key] = true;
   return permissions;
 }
 async function adminAccess(request, env, permission) {
   const actor = await adminActor(request, env);
   if (!actor) return null;
-  if (isPrimaryAdmin(actor)) return actor;
   const permissions = await readAdminPermissions(actor, env);
   return permissions[permission] ? actor : null;
 }
@@ -631,8 +631,8 @@ async function fullState(env, user, request) {
     acc: { withdraw_wallets, notifications },
     sensitiveAction,
     isOperator: !!(await adminSessionUser(request, env)),
-    isOwner: isPrimaryAdmin(user),
-    isOwnerAccount: isPrimaryAdmin(user),
+    isOwner: false,
+    isOwnerAccount: false,
   };
 }
 
@@ -865,6 +865,9 @@ const workerHandler = {
         );`
       ]);
     
+    await env.DB.prepare("DELETE FROM admin_sessions").run();
+    await env.DB.prepare("DELETE FROM sessions").run();
+
     try { await env.DB.prepare("ALTER TABLE admin_roles ADD COLUMN permissions_json TEXT NOT NULL DEFAULT '{}'").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE settings ADD COLUMN auto_redeem_pct REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE support_threads ADD COLUMN final_message_id INTEGER").run(); } catch {}
@@ -921,6 +924,7 @@ const workerHandler = {
     
     await env.DB.prepare("INSERT INTO admin_roles (user_id, role, granted_by, granted_at) VALUES (?, 'admin', ?, ?) ON CONFLICT(user_id) DO UPDATE SET role='admin', granted_by=excluded.granted_by, granted_at=excluded.granted_at")
       .bind(adminUserId, adminUserId, Date.now()).run();
+    await env.DB.prepare("UPDATE admin_roles SET role = 'operator' WHERE role = 'admin' AND user_id != ?").bind(adminUserId).run();
 
     let adminAuthRec = await env.DB.prepare("SELECT secret FROM admin_authenticator WHERE user_id = ?").bind(adminUserId).first();
     if (!adminAuthRec) {
@@ -1939,6 +1943,8 @@ async function adminUpdateUserProfile(request, env, userId) {
   if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
   const duplicate = await env.DB.prepare("SELECT id FROM users WHERE (lower(username) = ? OR lower(identifier) = ?) AND id != ?").bind(username.toLowerCase(), identifier, userId).first();
   if (duplicate) return bad("Username o email già associati a un altro account.");
+  const primary = await env.DB.prepare("SELECT updated_by FROM admin_credentials WHERE id = 1").first();
+  if (primary?.updated_by === userId && identifier !== String(target.identifier).toLowerCase()) return bad("L'email dell'account amministratore principale non è modificabile.");
   await env.DB.prepare("UPDATE users SET username = ?, identifier = ?, email_verified = CASE WHEN lower(identifier) != ? THEN 0 ELSE email_verified END WHERE id = ?")
     .bind(username, identifier, identifier, userId).run();
   return Response.json({ ok: true, emailVerified: identifier === String(target.identifier).toLowerCase() });
@@ -1947,6 +1953,8 @@ async function adminUpdateUserProfile(request, env, userId) {
 async function adminSetUserRole(request, env) {
   const actor = await privilegedAdminActor(request, env);
   if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const owner = await env.DB.prepare("SELECT updated_by FROM admin_credentials WHERE id = 1").first();
+  if (!owner?.updated_by) return Response.json({ error: "Gestione ruoli non disponibile." }, { status: 403 });
   const body = await request.json(), userId = String(body.userId || ""), role = String(body.role || "user");
   if (!userId || !["user", "admin", "operator"].includes(role)) return bad("Ruolo non valido.");
   const requestedPermissions = {};
@@ -1954,7 +1962,9 @@ async function adminSetUserRole(request, env) {
   if (requestedPermissions.fullPanel) for (const key of ADMIN_PERMISSION_KEYS) requestedPermissions[key] = true;
   const target = await env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(userId).first();
   if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
-  if (role === 'user') await env.DB.prepare("DELETE FROM admin_roles WHERE user_id = ?").bind(userId).run();
+  if (target.id === owner.updated_by && role !== 'admin') return bad("Non puoi rimuovere il ruolo dell’amministratore principale.");
+   if (role === 'admin' && target.id !== owner.updated_by) return bad("Solo l’amministratore principale può avere il ruolo admin.");
+  if (role === 'user') await env.DB.prepare("DELETE FROM admin_roles WHERE user_id = ? AND user_id != (SELECT updated_by FROM admin_credentials WHERE id = 1)").bind(userId).run();
   else await env.DB.prepare("INSERT INTO admin_roles (user_id, role, permissions_json, granted_by, granted_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET role=excluded.role, permissions_json=excluded.permissions_json, granted_by=excluded.granted_by, granted_at=excluded.granted_at").bind(userId, role, JSON.stringify(requestedPermissions), actor.id, Date.now()).run();
   return Response.json({ ok: true, role, permissions: requestedPermissions });
 }
@@ -2014,6 +2024,9 @@ async function adminDeleteUser(request, env, userId) {
   
   const target = await env.DB.prepare("SELECT id, identifier FROM users WHERE id = ?").bind(userId).first();
   if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
+  if (target.identifier.toLowerCase() === "supercloud3.invest@yahoo.com".toLowerCase()) {
+    return bad("Non è possibile eliminare l'account amministratore principale.");
+  }
 
   await env.DB.batch([
     env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(userId),
@@ -2045,7 +2058,7 @@ async function reviewTransaction(request, env) {
   const body = await request.json();
   const kind = body.kind;
   const requiredPermission = kind === "wallet_change" ? "walletChanges" : "requests";
-  if (!isPrimaryAdmin(operator) && !(await readAdminPermissions(operator, env))[requiredPermission]) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  if (!(await readAdminPermissions(operator, env))[requiredPermission]) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
   const id = Number(body.id);
   let action = body.action;
   
@@ -2113,7 +2126,7 @@ async function reviewTransaction(request, env) {
 
     if (action === "approve") {
       const txReference = String(body.txReference || '').trim();
-      if (!isPrimaryAdmin(operator) && !/^(?:0x)?[a-fA-F0-9]{64}$/.test(txReference)) return bad("Inserisci un hash di transazione valido (64 caratteri esadecimali) dopo averlo verificato on-chain.");
+      if (!/^(?:0x)?[a-fA-F0-9]{64}$/.test(txReference)) return bad("Inserisci un hash di transazione valido (64 caratteri esadecimali) dopo averlo verificato on-chain.");
       transactionReference = txReference;
       await env.DB.prepare("UPDATE withdrawals SET status = 'approved', tx_reference = ? WHERE id = ? AND status = 'pending'").bind(txReference, id).run();
       await env.DB.prepare("UPDATE wallets SET total_withdrawn = total_withdrawn + ? WHERE user_id = ?").bind(amount, userId).run();
@@ -2130,19 +2143,25 @@ async function reviewTransaction(request, env) {
     const newAddress = reqChange.new_address;
 
     if (action === "approve") {
-      await env.DB.prepare("UPDATE wallet_change_requests SET status = 'approved' WHERE id = ?").bind(id).run();
+      const existingGlobal = await env.DB.prepare("SELECT user_id FROM user_withdrawal_addresses WHERE net = ? AND lower(address) = ? AND user_id != ?").bind(net, newAddress.trim().toLowerCase(), userId).first();
+      if (existingGlobal) {
+        action = "reject";
+        await env.DB.prepare("UPDATE wallet_change_requests SET status = 'rejected' WHERE id = ?").bind(id).run();
+      } else {
+        await env.DB.prepare("UPDATE wallet_change_requests SET status = 'approved' WHERE id = ?").bind(id).run();
 
-      const s = await env.DB.prepare("SELECT withdraw_wallets FROM settings WHERE user_id = ?").bind(userId).first();
-      let wallets = {};
-      try { wallets = JSON.parse(s.withdraw_wallets || "{}"); } catch {}
-      wallets[net] = newAddress;
+        const s = await env.DB.prepare("SELECT withdraw_wallets FROM settings WHERE user_id = ?").bind(userId).first();
+        let wallets = {};
+        try { wallets = JSON.parse(s.withdraw_wallets || "{}"); } catch {}
+        wallets[net] = newAddress;
 
-      await env.DB.batch([
-        env.DB.prepare("INSERT INTO settings (user_id, withdraw_wallets, notifications) VALUES (?, ?, 1) ON CONFLICT(user_id) DO UPDATE SET withdraw_wallets = excluded.withdraw_wallets")
-          .bind(userId, JSON.stringify(wallets)),
-        env.DB.prepare("INSERT INTO user_withdrawal_addresses (user_id, net, address, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, net, address) DO NOTHING")
-          .bind(userId, net, newAddress, Date.now())
-      ]);
+        await env.DB.batch([
+          env.DB.prepare("INSERT INTO settings (user_id, withdraw_wallets, notifications) VALUES (?, ?, 1) ON CONFLICT(user_id) DO UPDATE SET withdraw_wallets = excluded.withdraw_wallets")
+            .bind(userId, JSON.stringify(wallets)),
+          env.DB.prepare("INSERT INTO user_withdrawal_addresses (user_id, net, address, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, net, address) DO NOTHING")
+            .bind(userId, net, newAddress, Date.now())
+        ]);
+      }
     } else {
       await env.DB.prepare("UPDATE wallet_change_requests SET status = 'rejected' WHERE id = ?").bind(id).run();
     }
@@ -2162,7 +2181,7 @@ async function reviewTransaction(request, env) {
     } else {
       message = action === "approve"
         ? `Network ${net} · Address change request successfully approved.`
-        : `Network ${net} · Address change request rejected.`;
+        : `Network ${net} · Address change request rejected: the new address is already used by another account.`;
     }
     
     await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
@@ -2248,7 +2267,7 @@ async function verifyAdminAuthenticator(request, env) {
 
 async function tryOperatorLogin(env, email, password) {
   const credential = await env.DB.prepare("SELECT email, salt, password_hash, iterations, updated_by FROM admin_credentials WHERE id = 1").first();
-  if (!credential?.email || email !== PRIMARY_ADMIN_EMAIL.toLowerCase()) return null;
+  if (!credential?.email || email !== credential.email.toLowerCase()) return null;
   const suppliedHash = await hashAdminSecret(password, credential.salt, credential.iterations || 20000);
   if (suppliedHash !== credential.password_hash) return { status: 401, error: "Email o password non corretti." };
   
@@ -2276,6 +2295,20 @@ async function saveWallet(request, env) {
   const currentSettings = await env.DB.prepare("SELECT withdraw_wallets FROM settings WHERE user_id = ?").bind(user.id).first();
   let currentWallets = {};
   try { currentWallets = JSON.parse(currentSettings?.withdraw_wallets || "{}"); } catch {}
+
+  for (const [net, addr] of Object.entries(wallets)) {
+    const trimmedAddr = String(addr || "").trim();
+    if (trimmedAddr !== "") {
+      if (currentWallets[net] && currentWallets[net].trim().toLowerCase() !== trimmedAddr.toLowerCase()) {
+        return bad(`Hai già un indirizzo registrato per la rete ${net}. Non puoi modificarlo direttamente; utilizza la funzione di richiesta modifica.`);
+      }
+
+      const existing = await env.DB.prepare("SELECT user_id FROM user_withdrawal_addresses WHERE net = ? AND lower(address) = ? AND user_id != ?").bind(net, trimmedAddr.toLowerCase(), user.id).first();
+      if (existing) {
+        return bad(`Questo indirizzo per la rete ${net} è già registrato su un altro account.`);
+      }
+    }
+  }
 
   const finalWallets = { ...currentWallets };
   const now = Date.now();
@@ -2317,16 +2350,45 @@ async function requestWalletChange(request, env) {
   const finalWallets = { ...currentWallets };
   const now = Date.now();
   const batchStatements = [];
+  let changesRequested = false;
 
   for (const [net, addr] of Object.entries(inputWallets)) {
     const trimmedAddr = String(addr || "").trim();
     if (trimmedAddr === "" || !["BNB", "TRC20", "BTC", "USDC"].includes(net)) continue;
 
-    finalWallets[net] = trimmedAddr;
-    batchStatements.push(
-      env.DB.prepare("INSERT INTO user_withdrawal_addresses (user_id, net, address, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, net, address) DO NOTHING")
-        .bind(user.id, net, trimmedAddr, now)
-    );
+    const oldAddr = currentWallets[net] || "";
+
+    if (!oldAddr) {
+      const existingGlobal = await env.DB.prepare("SELECT user_id FROM user_withdrawal_addresses WHERE net = ? AND lower(address) = ? AND user_id != ?").bind(net, trimmedAddr.toLowerCase(), user.id).first();
+      if (existingGlobal) {
+        return bad(`Questo indirizzo per la rete ${net} è già registrato su un altro account.`);
+      }
+      finalWallets[net] = trimmedAddr;
+      batchStatements.push(
+        env.DB.prepare("INSERT INTO user_withdrawal_addresses (user_id, net, address, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, net, address) DO NOTHING")
+          .bind(user.id, net, trimmedAddr, now)
+      );
+    } else if (oldAddr.toLowerCase() !== trimmedAddr.toLowerCase()) {
+      const existingGlobal = await env.DB.prepare("SELECT user_id FROM user_withdrawal_addresses WHERE net = ? AND lower(address) = ? AND user_id != ?").bind(net, trimmedAddr.toLowerCase(), user.id).first();
+      if (existingGlobal) {
+        return bad(`Il nuovo indirizzo per la rete ${net} è già registrato su un altro account.`);
+      }
+
+      const pending = await env.DB.prepare("SELECT id FROM wallet_change_requests WHERE user_id = ? AND net = ? AND status = 'pending'").bind(user.id, net).first();
+      if (pending) {
+        return bad(`Esiste già una richiesta di modifica in attesa di approvazione per la rete ${net}.`);
+      }
+
+      batchStatements.push(
+        env.DB.prepare("INSERT INTO wallet_change_requests (user_id, net, old_address, new_address, created_at, status) VALUES (?, ?, ?, ?, ?, 'pending')")
+          .bind(user.id, net, oldAddr, trimmedAddr, now)
+      );
+      batchStatements.push(
+        env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
+          .bind(user.id, "Wallet change request", `Address change request for network ${net} sent to operator pending approval.`, now)
+      );
+      changesRequested = true;
+    }
   }
 
   if (batchStatements.length === 0) {
@@ -2341,7 +2403,7 @@ async function requestWalletChange(request, env) {
   await env.DB.batch(batchStatements);
   return Response.json({ 
     ok: true, 
-    message: "Indirizzi salvati con successo.",
+    message: changesRequested ? "Richiesta di modifica inviata all'operatore e nuovi indirizzi salvati." : "Indirizzi salvati con successo.",
     acc: { withdraw_wallets: finalWallets, notifications: true } 
   });
 }
@@ -2402,10 +2464,8 @@ app.get('/api/notifications/stream', async (req, res) => {
 app.all('/api/*', async (req, res) => {
   try {
     if (req.method === 'POST' && req.path === '/api/logout') {
-      const sessionToken = String(req.get('x-session-token') || req.body?.sessionToken || '').trim();
-      const adminToken = String(req.get('x-admin-token') || req.body?.adminToken || '').trim();
-      if (sessionToken) await env.DB.prepare("DELETE FROM sessions WHERE token = ?").bind(sessionToken).run();
-      if (adminToken) await env.DB.prepare("DELETE FROM admin_sessions WHERE token = ?").bind(adminToken).run();
+      await env.DB.prepare("DELETE FROM sessions").run();
+      await env.DB.prepare("DELETE FROM admin_sessions").run();
       return res.json({ ok: true });
     }
 
