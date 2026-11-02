@@ -1876,7 +1876,7 @@ async function adminPermissions(request, env) {
   const actor = await adminActor(request, env);
   if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
   const permissions = await readAdminPermissions(actor, env);
-  return Response.json({ permissions });
+  return Response.json({ permissions, isAdmin: isPrimaryAdmin(actor) });
 }
 
 async function adminTransactions(request, env) {
