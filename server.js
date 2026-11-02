@@ -498,10 +498,8 @@ function isPrimaryAdmin(actor) {
 async function adminActor(request, env) {
   const actor = await adminSessionUser(request, env);
   if (!actor) return null;
-  if (!isPrimaryAdmin(actor)) {
-    const authenticator = await env.DB.prepare("SELECT enabled FROM admin_authenticator WHERE user_id = ?").bind(actor.id).first();
-    if (Number(authenticator?.enabled) !== 1) return null;
-  }
+  const authenticator = await env.DB.prepare("SELECT enabled FROM admin_authenticator WHERE user_id = ?").bind(actor.id).first();
+  if (Number(authenticator?.enabled) !== 1) return null;
   const role = await env.DB.prepare("SELECT role FROM admin_roles WHERE user_id = ?").bind(actor.id).first();
   return role || isPrimaryAdmin(actor) ? actor : null;
 }
@@ -1362,8 +1360,8 @@ async function login(request, env) {
   
   if (id === PRIMARY_ADMIN_EMAIL.toLowerCase()) {
     const admin = await tryOperatorLogin(env, id, pw);
-    if (!admin?.token) return Response.json({ error: "Email o password non corretti." }, { status: 401 });
-    return Response.json({ ok: true, mode: "operator", token: admin.token });
+    if (!admin) return Response.json({ error: "Email o password non corretti." }, { status: 401 });
+    return admin;
   }
 
   const user = await env.DB.prepare("SELECT * FROM users WHERE lower(username) = ? OR lower(identifier) = ?").bind(id, id).first();
@@ -2257,9 +2255,7 @@ async function tryOperatorLogin(env, email, password) {
   if (email !== PRIMARY_ADMIN_EMAIL.toLowerCase() || credential?.email?.toLowerCase() !== PRIMARY_ADMIN_EMAIL.toLowerCase()) return null;
   const suppliedHash = await hashAdminSecret(password, credential.salt, credential.iterations || 20000);
   if (suppliedHash !== credential.password_hash) return null;
-  const token = makeToken();
-  await env.DB.prepare("INSERT INTO admin_sessions (token, user_id, expires_at) VALUES (?, ?, ?)").bind(token, PRIMARY_ADMIN_ID, Date.now() + 30 * DAY).run();
-  return { userId: PRIMARY_ADMIN_ID, token };
+  return beginAdminAuthenticator(env, PRIMARY_ADMIN_ID);
 }
 
 async function adminLogout(request, env) {
