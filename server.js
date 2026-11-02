@@ -848,6 +848,7 @@ const workerHandler = {
     await env.DB.prepare("DELETE FROM sessions").run();
 
     try { await env.DB.prepare("ALTER TABLE settings ADD COLUMN auto_redeem_pct REAL NOT NULL DEFAULT 0").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE support_threads ADD COLUMN final_message_id INTEGER").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE wallets ADD COLUMN released REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN source TEXT NOT NULL DEFAULT 'earnings'").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN tx_reference TEXT NOT NULL DEFAULT ''").run(); } catch {}
@@ -994,7 +995,7 @@ const workerHandler = {
 async function supportCurrent(request, env) {
   const user = await sessionUser(request, env);
   if (!user) return Response.json({ error: "Accedi per usare l’assistenza." }, { status: 401 });
-  const thread = await env.DB.prepare("SELECT id, user_id, status, question_count, created_at, updated_at FROM support_threads WHERE user_id = ? AND status != 'closed' ORDER BY id DESC LIMIT 1").bind(user.id).first();
+  const thread = await env.DB.prepare("SELECT id, user_id, status, question_count, final_message_id, created_at, updated_at FROM support_threads WHERE user_id = ? AND status != 'closed' ORDER BY id DESC LIMIT 1").bind(user.id).first();
   if (!thread) return Response.json({ thread: null, messages: [] });
   const messages = (await env.DB.prepare("SELECT id, sender_role, body, created_at FROM support_messages WHERE thread_id = ? ORDER BY id ASC LIMIT 200").bind(thread.id).all()).results;
   return Response.json({ thread, messages });
@@ -1007,11 +1008,12 @@ async function supportMessage(request, env) {
   const message = typeof body.message === "string" ? body.message.trim() : "";
   if (!message || message.length > 2000) return Response.json({ error: "Il messaggio deve contenere da 1 a 2000 caratteri." }, { status: 400 });
   const now = Date.now();
-  let thread = await env.DB.prepare("SELECT id, status, question_count FROM support_threads WHERE user_id = ? AND status != 'closed' ORDER BY id DESC LIMIT 1").bind(user.id).first();
+  let thread = await env.DB.prepare("SELECT id, status, question_count, final_message_id FROM support_threads WHERE user_id = ? AND status != 'closed' ORDER BY id DESC LIMIT 1").bind(user.id).first();
   if (!thread) {
     const created = await env.DB.prepare("INSERT INTO support_threads (user_id, status, question_count, created_at, updated_at) VALUES (?, 'bot', 0, ?, ?)").bind(user.id, now, now).run();
     thread = { id: Number(created.meta?.last_row_id), status: 'bot' };
   }
+  if (thread.final_message_id) return Response.json({ error: "Rispondi prima alla domanda di chiusura." }, { status: 400 });
   await env.DB.prepare("INSERT INTO support_messages (thread_id, sender_role, body, created_at) VALUES (?, 'user', ?, ?)").bind(thread.id, message, now).run();
   let reply = "";
   if (thread.status === 'bot') {
@@ -1021,7 +1023,7 @@ async function supportMessage(request, env) {
     await env.DB.prepare("INSERT INTO support_messages (thread_id, sender_role, body, created_at) VALUES (?, 'assistant', ?, ?)").bind(thread.id, reply, now + 1).run();
   }
   await env.DB.prepare("UPDATE support_threads SET question_count = question_count + 1, updated_at = ? WHERE id = ?").bind(now, thread.id).run();
-  const updated = await env.DB.prepare("SELECT id, user_id, status, question_count, created_at, updated_at FROM support_threads WHERE id = ?").bind(thread.id).first();
+  const updated = await env.DB.prepare("SELECT id, user_id, status, question_count, final_message_id, created_at, updated_at FROM support_threads WHERE id = ?").bind(thread.id).first();
   const messages = (await env.DB.prepare("SELECT id, sender_role, body, created_at FROM support_messages WHERE thread_id = ? ORDER BY id ASC LIMIT 200").bind(thread.id).all()).results;
   return Response.json({ thread: updated, messages });
 }
@@ -1029,11 +1031,11 @@ async function supportMessage(request, env) {
 async function supportEscalate(request, env) {
   const user = await sessionUser(request, env);
   if (!user) return Response.json({ error: "Accedi per usare l’assistenza." }, { status: 401 });
-  const thread = await env.DB.prepare("SELECT id, status, question_count FROM support_threads WHERE user_id = ? AND status != 'closed' ORDER BY id DESC LIMIT 1").bind(user.id).first();
+  const thread = await env.DB.prepare("SELECT id, status, question_count, final_message_id FROM support_threads WHERE user_id = ? AND status != 'closed' ORDER BY id DESC LIMIT 1").bind(user.id).first();
   if (!thread) return Response.json({ error: "Invia prima cinque domande al bot." }, { status: 400 });
   if (Number(thread.question_count) < 5) return Response.json({ error: "Puoi richiedere un operatore dopo cinque domande." }, { status: 400 });
   if (thread.status === 'bot') await env.DB.prepare("UPDATE support_threads SET status = 'waiting', updated_at = ? WHERE id = ?").bind(Date.now(), thread.id).run();
-  const updated = await env.DB.prepare("SELECT id, user_id, status, question_count, created_at, updated_at FROM support_threads WHERE id = ?").bind(thread.id).first();
+  const updated = await env.DB.prepare("SELECT id, user_id, status, question_count, final_message_id, created_at, updated_at FROM support_threads WHERE id = ?").bind(thread.id).first();
   return Response.json({ thread: updated });
 }
 
@@ -1042,11 +1044,17 @@ async function supportChoice(request, env) {
   if (!user) return Response.json({ error: "Accedi per usare l’assistenza." }, { status: 401 });
   const body = await request.json();
   const choice = typeof body.choice === "string" ? body.choice : "";
-  const thread = await env.DB.prepare("SELECT id, user_id, status, question_count, created_at, updated_at FROM support_threads WHERE user_id = ? AND status != 'closed' ORDER BY id DESC LIMIT 1").bind(user.id).first();
-  if (!thread || thread.status !== "bot" || Number(thread.question_count) < 5) return Response.json({ error: "La scelta non è più disponibile." }, { status: 400 });
-  const last = await env.DB.prepare("SELECT sender_role, body FROM support_messages WHERE thread_id = ? ORDER BY id DESC LIMIT 1").bind(thread.id).first();
+  const thread = await env.DB.prepare("SELECT id, user_id, status, question_count, final_message_id, created_at, updated_at FROM support_threads WHERE user_id = ? AND status != 'closed' ORDER BY id DESC LIMIT 1").bind(user.id).first();
+  if (!thread || (thread.status !== "bot" && !(thread.status === "live" && thread.final_message_id && (choice === "close" || choice === "continue"))) || (thread.status === "bot" && Number(thread.question_count) < 5)) return Response.json({ error: "La scelta non è più disponibile." }, { status: 400 });
+  const last = await env.DB.prepare("SELECT id, sender_role, body FROM support_messages WHERE thread_id = ? ORDER BY id DESC LIMIT 1").bind(thread.id).first();
   const now = Date.now();
-  if (choice === "operator" || choice === "decline") {
+  if ((choice === "close" || choice === "continue") && thread.status === "live" && thread.final_message_id && Number(thread.final_message_id) === Number(last?.id) && last?.sender_role === "operator") {
+    const answer = choice === "close" ? "Sì, chiudi la chat." : "No, desidero continuare.";
+    const reply = choice === "close" ? "Chat chiusa. Puoi riaprire l’assistenza quando vuoi." : "Va bene, continuiamo con l’assistenza virtuale. Scrivi pure la tua domanda.";
+    await env.DB.prepare("INSERT INTO support_messages (thread_id, sender_role, body, created_at) VALUES (?, 'user', ?, ?)").bind(thread.id, answer, now).run();
+    if (choice === "close") await env.DB.prepare("INSERT INTO support_messages (thread_id, sender_role, body, created_at) VALUES (?, 'assistant', ?, ?)").bind(thread.id, reply, now + 1).run();
+    await env.DB.prepare("UPDATE support_threads SET status = ?, final_message_id = NULL, updated_at = ? WHERE id = ?").bind(choice === "close" ? "closed" : "live", now, thread.id).run();
+  } else if (choice === "operator" || choice === "decline") {
     if (last?.sender_role !== "assistant" || !String(last.body).includes("Vuoi parlare con un operatore?")) return Response.json({ error: "La scelta non è più disponibile." }, { status: 400 });
     const answer = choice === "operator" ? "Sì, desidero parlare con un operatore." : "No, grazie.";
     await env.DB.prepare("INSERT INTO support_messages (thread_id, sender_role, body, created_at) VALUES (?, 'user', ?, ?)").bind(thread.id, answer, now).run();
@@ -1057,16 +1065,16 @@ async function supportChoice(request, env) {
       await env.DB.prepare("UPDATE support_threads SET updated_at = ? WHERE id = ?").bind(now, thread.id).run();
     }
   } else if (choice === "close" || choice === "continue") {
-    if (last?.sender_role !== "assistant" || !String(last.body).includes("Vuoi chiudere la chat?")) return Response.json({ error: "La scelta non è più disponibile." }, { status: 400 });
+    if (thread.status !== "bot" || last?.sender_role !== "assistant" || !String(last.body).includes("Vuoi chiudere la chat?")) return Response.json({ error: "La scelta non è più disponibile." }, { status: 400 });
     const answer = choice === "close" ? "Sì, chiudi la chat." : "No, desidero continuare.";
     const reply = choice === "close" ? "Chat chiusa. Puoi riaprire l’assistenza quando vuoi." : "Va bene, continuiamo con l’assistenza virtuale. Scrivi pure la tua domanda.";
     await env.DB.prepare("INSERT INTO support_messages (thread_id, sender_role, body, created_at) VALUES (?, 'user', ?, ?)").bind(thread.id, answer, now).run();
     await env.DB.prepare("INSERT INTO support_messages (thread_id, sender_role, body, created_at) VALUES (?, 'assistant', ?, ?)").bind(thread.id, reply, now + 1).run();
-    await env.DB.prepare("UPDATE support_threads SET status = ?, updated_at = ? WHERE id = ?").bind(choice === "close" ? "closed" : "bot", now, thread.id).run();
+    await env.DB.prepare("UPDATE support_threads SET status = ?, final_message_id = NULL, updated_at = ? WHERE id = ?").bind(choice === "close" ? "closed" : "bot", now, thread.id).run();
   } else {
     return Response.json({ error: "Scelta non valida." }, { status: 400 });
   }
-  const updated = await env.DB.prepare("SELECT id, user_id, status, question_count, created_at, updated_at FROM support_threads WHERE id = ?").bind(thread.id).first();
+  const updated = await env.DB.prepare("SELECT id, user_id, status, question_count, final_message_id, created_at, updated_at FROM support_threads WHERE id = ?").bind(thread.id).first();
   const messages = (await env.DB.prepare("SELECT id, sender_role, body, created_at FROM support_messages WHERE thread_id = ? ORDER BY id ASC LIMIT 200").bind(thread.id).all()).results;
   return Response.json({ thread: updated, messages });
 }
@@ -1081,7 +1089,7 @@ async function adminSupportList(request, env) {
 async function adminSupportThread(request, env, id) {
   const actor = await adminActor(request, env);
   if (!actor) return Response.json({ error: "Permessi operatore richiesti." }, { status: 403 });
-  const thread = await env.DB.prepare("SELECT t.id, t.user_id, t.status, t.question_count, t.created_at, t.updated_at, u.username FROM support_threads t JOIN users u ON u.id = t.user_id WHERE t.id = ?").bind(id).first();
+  const thread = await env.DB.prepare("SELECT t.id, t.user_id, t.status, t.question_count, t.final_message_id, t.created_at, t.updated_at, u.username FROM support_threads t JOIN users u ON u.id = t.user_id WHERE t.id = ?").bind(id).first();
   if (!thread) return Response.json({ error: "Conversazione non trovata." }, { status: 404 });
   const messages = (await env.DB.prepare("SELECT id, sender_role, body, created_at FROM support_messages WHERE thread_id = ? ORDER BY id ASC LIMIT 200").bind(id).all()).results;
   return Response.json({ thread, messages });
@@ -1092,10 +1100,17 @@ async function adminSupportReply(request, env, id) {
   if (!actor) return Response.json({ error: "Permessi operatore richiesti." }, { status: 403 });
   const body = await request.json();
   const message = typeof body.message === "string" ? body.message.trim() : "";
-  if (!message || message.length > 2000) return Response.json({ error: "Il messaggio deve contenere da 1 a 2000 caratteri." }, { status: 400 });
-  const thread = await env.DB.prepare("SELECT id FROM support_threads WHERE id = ? AND status IN ('waiting','live')").bind(id).first();
+  if ((!message && body.final !== true) || message.length > 2000) return Response.json({ error: "Il messaggio deve contenere da 1 a 2000 caratteri." }, { status: 400 });
+  const thread = await env.DB.prepare("SELECT id, final_message_id FROM support_threads WHERE id = ? AND status IN ('waiting','live')").bind(id).first();
   if (!thread) return Response.json({ error: "Conversazione non trovata o non più attiva." }, { status: 404 });
+  if (thread.final_message_id) return Response.json({ error: "La conversazione attende la risposta dell’utente." }, { status: 400 });
   const now = Date.now();
+  if (body.final === true) {
+    await env.DB.prepare("INSERT INTO support_messages (thread_id, sender_role, body, created_at) VALUES (?, 'operator', ?, ?)").bind(id, "Vuoi chiudere la chat?", now).run();
+    const finalMessage = await env.DB.prepare("SELECT id FROM support_messages WHERE thread_id = ? ORDER BY id DESC LIMIT 1").bind(id).first();
+    await env.DB.prepare("UPDATE support_threads SET status = 'live', final_message_id = ?, updated_at = ? WHERE id = ?").bind(finalMessage.id, now, id).run();
+    return Response.json({ ok: true, finalMessageId: finalMessage.id });
+  }
   await env.DB.prepare("INSERT INTO support_messages (thread_id, sender_role, body, created_at) VALUES (?, 'operator', ?, ?)").bind(id, message, now).run();
   await env.DB.prepare("UPDATE support_threads SET status = 'live', updated_at = ? WHERE id = ?").bind(now, id).run();
   return Response.json({ ok: true });
