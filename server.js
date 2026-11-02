@@ -933,6 +933,7 @@ const workerHandler = {
       if (method === "GET" && pathName === "/api/support/current") return await supportCurrent(request, env);
       if (method === "POST" && pathName === "/api/support/message") return await supportMessage(request, env);
       if (method === "POST" && pathName === "/api/support/escalate") return await supportEscalate(request, env);
+      if (method === "POST" && pathName === "/api/support/choice") return await supportChoice(request, env);
       if (method === "GET" && pathName === "/api/admin/support") return await adminSupportList(request, env);
       const adminSupportMessagesMatch = pathName.match(/^\/api\/admin\/support\/(\d+)\/messages$/);
       if (method === "POST" && adminSupportMessagesMatch) return await adminSupportReply(request, env, Number(adminSupportMessagesMatch[1]));
@@ -1006,7 +1007,7 @@ async function supportMessage(request, env) {
   const message = typeof body.message === "string" ? body.message.trim() : "";
   if (!message || message.length > 2000) return Response.json({ error: "Il messaggio deve contenere da 1 a 2000 caratteri." }, { status: 400 });
   const now = Date.now();
-  let thread = await env.DB.prepare("SELECT id, status FROM support_threads WHERE user_id = ? AND status != 'closed' ORDER BY id DESC LIMIT 1").bind(user.id).first();
+  let thread = await env.DB.prepare("SELECT id, status, question_count FROM support_threads WHERE user_id = ? AND status != 'closed' ORDER BY id DESC LIMIT 1").bind(user.id).first();
   if (!thread) {
     const created = await env.DB.prepare("INSERT INTO support_threads (user_id, status, question_count, created_at, updated_at) VALUES (?, 'bot', 0, ?, ?)").bind(user.id, now, now).run();
     thread = { id: Number(created.meta?.last_row_id), status: 'bot' };
@@ -1015,7 +1016,8 @@ async function supportMessage(request, env) {
   let reply = "";
   if (thread.status === 'bot') {
     reply = typeof body.botReply === "string" ? body.botReply.trim().slice(0, 4000) : "";
-    if (!reply) reply = "Non riesco a rispondere in questo momento. Puoi riprovare oppure chiedere un operatore dopo cinque domande.";
+    if (!reply) reply = "Mi dispiace, non ho trovato una risposta precisa. Puoi riformulare la domanda o chiedermi informazioni su account, depositi, prelievi e portafogli.";
+    if (Number(thread.question_count || 0) === 4) reply += String.fromCharCode(10) + String.fromCharCode(10) + "Vuoi parlare con un operatore?";
     await env.DB.prepare("INSERT INTO support_messages (thread_id, sender_role, body, created_at) VALUES (?, 'assistant', ?, ?)").bind(thread.id, reply, now + 1).run();
   }
   await env.DB.prepare("UPDATE support_threads SET question_count = question_count + 1, updated_at = ? WHERE id = ?").bind(now, thread.id).run();
@@ -1033,6 +1035,40 @@ async function supportEscalate(request, env) {
   if (thread.status === 'bot') await env.DB.prepare("UPDATE support_threads SET status = 'waiting', updated_at = ? WHERE id = ?").bind(Date.now(), thread.id).run();
   const updated = await env.DB.prepare("SELECT id, user_id, status, question_count, created_at, updated_at FROM support_threads WHERE id = ?").bind(thread.id).first();
   return Response.json({ thread: updated });
+}
+
+async function supportChoice(request, env) {
+  const user = await sessionUser(request, env);
+  if (!user) return Response.json({ error: "Accedi per usare l’assistenza." }, { status: 401 });
+  const body = await request.json();
+  const choice = typeof body.choice === "string" ? body.choice : "";
+  const thread = await env.DB.prepare("SELECT id, user_id, status, question_count, created_at, updated_at FROM support_threads WHERE user_id = ? AND status != 'closed' ORDER BY id DESC LIMIT 1").bind(user.id).first();
+  if (!thread || thread.status !== "bot" || Number(thread.question_count) < 5) return Response.json({ error: "La scelta non è più disponibile." }, { status: 400 });
+  const last = await env.DB.prepare("SELECT sender_role, body FROM support_messages WHERE thread_id = ? ORDER BY id DESC LIMIT 1").bind(thread.id).first();
+  const now = Date.now();
+  if (choice === "operator" || choice === "decline") {
+    if (last?.sender_role !== "assistant" || !String(last.body).includes("Vuoi parlare con un operatore?")) return Response.json({ error: "La scelta non è più disponibile." }, { status: 400 });
+    const answer = choice === "operator" ? "Sì, desidero parlare con un operatore." : "No, grazie.";
+    await env.DB.prepare("INSERT INTO support_messages (thread_id, sender_role, body, created_at) VALUES (?, 'user', ?, ?)").bind(thread.id, answer, now).run();
+    if (choice === "operator") {
+      await env.DB.prepare("UPDATE support_threads SET status = 'waiting', updated_at = ? WHERE id = ?").bind(now, thread.id).run();
+    } else {
+      await env.DB.prepare("INSERT INTO support_messages (thread_id, sender_role, body, created_at) VALUES (?, 'assistant', ?, ?)").bind(thread.id, "Vuoi chiudere la chat?", now + 1).run();
+      await env.DB.prepare("UPDATE support_threads SET updated_at = ? WHERE id = ?").bind(now, thread.id).run();
+    }
+  } else if (choice === "close" || choice === "continue") {
+    if (last?.sender_role !== "assistant" || !String(last.body).includes("Vuoi chiudere la chat?")) return Response.json({ error: "La scelta non è più disponibile." }, { status: 400 });
+    const answer = choice === "close" ? "Sì, chiudi la chat." : "No, desidero continuare.";
+    const reply = choice === "close" ? "Chat chiusa. Puoi riaprire l’assistenza quando vuoi." : "Va bene, continuiamo con l’assistenza virtuale. Scrivi pure la tua domanda.";
+    await env.DB.prepare("INSERT INTO support_messages (thread_id, sender_role, body, created_at) VALUES (?, 'user', ?, ?)").bind(thread.id, answer, now).run();
+    await env.DB.prepare("INSERT INTO support_messages (thread_id, sender_role, body, created_at) VALUES (?, 'assistant', ?, ?)").bind(thread.id, reply, now + 1).run();
+    await env.DB.prepare("UPDATE support_threads SET status = ?, updated_at = ? WHERE id = ?").bind(choice === "close" ? "closed" : "bot", now, thread.id).run();
+  } else {
+    return Response.json({ error: "Scelta non valida." }, { status: 400 });
+  }
+  const updated = await env.DB.prepare("SELECT id, user_id, status, question_count, created_at, updated_at FROM support_threads WHERE id = ?").bind(thread.id).first();
+  const messages = (await env.DB.prepare("SELECT id, sender_role, body, created_at FROM support_messages WHERE thread_id = ? ORDER BY id ASC LIMIT 200").bind(thread.id).all()).results;
+  return Response.json({ thread: updated, messages });
 }
 
 async function adminSupportList(request, env) {
