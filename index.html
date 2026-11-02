@@ -343,7 +343,7 @@
             </div>
           </details>
         </div>
-        <div class="admin-section">
+        <div class="admin-section" id="admin-address-section">
           <div class="section-heading"><div><p class="eyebrow">DEPOSIT NETWORKS</p><h2>Deposit addresses</h2></div></div>
           <p class="page-intro">Only enter a deposit address after the operator verifies its network and destination. Saving it here does not prove ownership or confirm a payment.</p>
           <div class="deposit-address-settings">
@@ -353,21 +353,33 @@
             <button class="outline-wide" id="save-deposit-addresses" type="button">Save deposit addresses</button>
           </div>
         </div>
-        <div class="admin-section">
-          <div class="section-heading"><div><p class="eyebrow">EMAIL VERIFICATION</p><h2>Requests awaiting a code</h2></div></div>
-          <div class="admin-queue" id="pending-email-verifications"></div>
-          <div class="queue-empty" id="email-verification-queue-empty">No email verification requests.</div>
+        <div class="admin-section admin-request-hub" id="admin-request-hub">
+          <div class="section-heading"><div><p class="eyebrow">REQUEST CENTER</p><h2>Requests</h2></div><span class="admin-hub-note">Open a section to review</span></div>
+          <details class="admin-request-group" id="request-group-otp">
+            <summary><span>OTP &amp; account verification</span><span class="count-pill" id="pending-otp-count">0</span></summary>
+            <div class="admin-request-group-content">
+              <section class="admin-request-subsection"><h3>Email verification</h3><div class="admin-queue" id="pending-email-verifications"></div><div class="queue-empty" id="email-verification-queue-empty">No email verification requests.</div></section>
+              <section class="admin-request-subsection"><h3>Password recovery</h3><div class="admin-queue" id="pending-password-resets"></div><div class="queue-empty" id="password-reset-queue-empty">No password recovery requests.</div></section>
+            </div>
+          </details>
+          <details class="admin-request-group" id="request-group-wallet">
+            <summary><span>Wallet changes</span><span class="count-pill" id="pending-wallet-count">0</span></summary>
+            <div class="admin-request-group-content"><div class="admin-queue" id="pending-wallet-changes"></div><div class="queue-empty" id="wallet-queue-empty">No wallet changes awaiting approval.</div></div>
+          </details>
+          <details class="admin-request-group" id="request-group-accounts">
+            <summary><span>Accounts awaiting approval</span><span class="count-pill" id="pending-user-count">0</span></summary>
+            <div class="admin-request-group-content"><div class="admin-queue" id="pending-users"></div><div class="queue-empty" id="users-queue-empty">No accounts awaiting approval.</div></div>
+          </details>
+          <details class="admin-request-group" id="request-group-deposits">
+            <summary><span>Deposits</span><span class="count-pill" id="pending-deposit-count">0</span></summary>
+            <div class="admin-request-group-content"><div class="admin-queue" id="pending-deposits"></div><div class="queue-empty" id="deposits-queue-empty">No pending deposits.</div></div>
+          </details>
+          <details class="admin-request-group" id="request-group-withdrawals">
+            <summary><span>Withdrawals</span><span class="count-pill" id="pending-withdrawal-count">0</span></summary>
+            <div class="admin-request-group-content"><div class="admin-queue" id="pending-withdrawals"></div><div class="queue-empty" id="withdrawals-queue-empty">No pending withdrawals.</div></div>
+          </details>
         </div>
-        <div class="admin-section">
-          <div class="section-heading"><div><p class="eyebrow">PASSWORD RECOVERY</p><h2>Requests awaiting a code</h2></div></div>
-          <div class="admin-queue" id="pending-password-resets"></div>
-          <div class="queue-empty" id="password-reset-queue-empty">No password recovery requests.</div>
-        </div>
-        <div class="admin-section">
-          <div class="section-heading"><div><p class="eyebrow">WALLET SECURITY</p><h2>Wallet changes to review</h2></div><span class="count-pill" id="pending-wallet-count">0</span></div>
-          <div class="admin-queue" id="pending-wallet-changes"></div><div class="queue-empty" id="wallet-queue-empty">No wallet changes awaiting approval.</div>
-        </div>
-        <div class="admin-section">
+        <div class="admin-section" id="admin-users-section">
           <div class="section-heading"><div><p class="eyebrow">REGISTERED USERS</p><h2>Manage accounts</h2></div><span class="count-pill" id="registered-user-count">0</span></div>
           <div class="admin-users-toolbar"><input id="admin-user-search" type="search" placeholder="Search name, email or ID" aria-label="Search users by name, email or ID"><select id="admin-user-role-filter" aria-label="Filter by role"><option value="all">All roles</option><option value="user">Users</option><option value="operator">Operators</option><option value="admin">Admins</option></select></div>
           <div class="admin-table-wrap"><table class="admin-users-table"><thead><tr><th>Account</th><th>Role</th><th>Created</th><th>Email</th><th></th></tr></thead><tbody id="registered-users"></tbody></table></div>
