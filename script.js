@@ -1437,7 +1437,7 @@ $('password-reset-form').addEventListener('submit',async e=>{e.preventDefault();
 async function logout(){try{await post('/api/logout',{sessionToken:token,adminToken})}catch{}token='';adminToken='';stopNotificationStream();state=null;localStorage.removeItem(TOKEN);localStorage.removeItem(ADMIN);if(poll)clearInterval(poll);landing()}
 $('logout-button').addEventListener('click',logout);
 $('refresh-account').addEventListener('click',async(event)=>{const button=$('refresh-account');const automatic=!event.isTrusted;if(button.disabled)return;button.disabled=true;button.classList.add('is-refreshing');button.setAttribute('aria-busy','true');try{if(adminToken){renderAdmin();const data=await api('/api/admin/statistics');adminStatisticsCache=data;renderAdminStatistics(data)}else if(token){await refreshState();await refreshNotifications()}await loadMarket();if(!automatic)notice(adminToken?'Platform data refreshed.':'Account and market data refreshed.')}catch(e){if(!automatic)notice(e.message||'Refresh failed.',true)}finally{button.disabled=false;button.classList.remove('is-refreshing');button.removeAttribute('aria-busy')}});
-let adminRefreshCycle=0;setInterval(()=>{if(!adminToken){adminRefreshCycle=0;return}const button=$('refresh-account');if(document.visibilityState!=='visible'||!button||button.disabled)return;if(++adminRefreshCycle%36!==0)return;button.click()},5000);
+let adminRefreshCycle=0;setInterval(()=>{if(document.visibilityState!=='visible')return;if(adminToken){const button=$('refresh-account');if(!button||button.disabled)return;if(++adminRefreshCycle%36!==0)return;button.click();return}adminRefreshCycle=0;if(token){refreshNotifications();loadMarket()}},5000);
 $('home-link').addEventListener('click',e=>{e.preventDefault();go('home')});document.querySelectorAll('.nav-item[data-tab]').forEach(b=>b.addEventListener('click',()=>go(b.dataset.tab)));
 document.querySelectorAll('[data-go]').forEach(b=>b.addEventListener('click',()=>go(b.dataset.go)));
 document.querySelectorAll('[data-open]').forEach(b=>b.addEventListener('click',()=>open(b.dataset.open)));
@@ -1605,10 +1605,9 @@ function startPolling(){
   else if(adminToken&&$('view-admin').classList.contains('active'))renderAdmin();
   loadMarket();applyLanguage();
   if(adminToken)poll=setInterval(()=>{if(document.visibilityState==='visible'&&$('view-admin').classList.contains('active')&&!document.activeElement.matches('input,select,textarea')&&Date.now()>adminOtpActiveUntil)renderAdmin()},180000);
-  notificationPoll=setInterval(()=>{if(document.visibilityState==='visible'&&token)refreshNotifications()},15000);
-  marketPoll=setInterval(()=>{if(document.visibilityState==='visible')loadMarket()},15000)
+  if(!token)marketPoll=setInterval(()=>{if(document.visibilityState==='visible')loadMarket()},15000)
 }
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&token){refreshState();refreshNotifications()}});
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&token){refreshNotifications();loadMarket()}});
 
 let supportThread=null,supportMessages=[],adminSupportThreadId=null,supportSending=false,adminSupportSending=false;
 const supportFacts=[
