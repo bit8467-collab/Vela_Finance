@@ -384,6 +384,10 @@
           <div class="section-heading"><div><p class="eyebrow">EARNINGS BALANCE</p><h2>Withdrawals to review</h2></div><span class="count-pill" id="pending-withdrawal-count">0</span></div>
           <div class="admin-queue" id="pending-withdrawals"></div><div class="queue-empty" id="withdrawals-queue-empty">No pending withdrawals.</div>
         </div>
+        <div class="admin-section" id="admin-support-section">
+          <div class="section-heading"><div><p class="eyebrow">LIVE ASSISTANCE</p><h2>Support conversations</h2></div><span class="count-pill" id="support-thread-count">0</span></div>
+          <div class="admin-queue" id="admin-support-threads"></div><div class="queue-empty" id="admin-support-empty">No conversations waiting for an operator.</div>
+        </div>
         <button class="outline-wide" type="button" data-go="profile">Back to profile</button>
       </section>
     </main>
@@ -597,6 +601,24 @@
       </div>
     </dialog>
 
+    <button class="support-fab" id="support-fab" type="button" aria-label="Apri chat assistenza">Assistenza <span aria-hidden="true">↗</span></button>
+    <dialog class="modal" id="customer-support-dialog" aria-labelledby="support-title">
+      <section class="modal-card support-card">
+        <button class="modal-close" type="button" data-close="customer-support-dialog" aria-label="Chiudi">×</button>
+        <p class="eyebrow">ASSISTENZA</p><h2 id="support-title">Come possiamo aiutarti?</h2>
+        <p class="support-status" id="support-status" aria-live="polite">Assistente virtuale</p>
+        <div class="support-messages" id="support-messages" role="log" aria-live="polite" aria-relevant="additions text"></div>
+        <button class="support-escalate" id="support-escalate" type="button" hidden>Non sei soddisfatto? Parla con un operatore</button>
+        <form class="support-composer" id="support-form"><input id="support-input" type="text" maxlength="2000" placeholder="Scrivi la tua domanda…" autocomplete="off" required><button type="submit" aria-label="Invia messaggio">Invia</button></form>
+      </section>
+    </dialog>
+    <dialog class="modal" id="admin-support-dialog" aria-labelledby="admin-support-title">
+      <section class="modal-card support-card"><button class="modal-close" type="button" data-close="admin-support-dialog" aria-label="Chiudi">×</button>
+        <p class="eyebrow">LIVE ASSISTANCE</p><h2 id="admin-support-title">Conversation</h2><p class="support-status" id="admin-support-status" aria-live="polite"></p>
+        <div class="support-messages" id="admin-support-messages" role="log" aria-live="polite"></div>
+        <form class="support-composer" id="admin-support-form"><input id="admin-support-input" type="text" maxlength="2000" placeholder="Reply to the user…" autocomplete="off" required><button type="submit">Send</button></form>
+      </section>
+    </dialog>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <dialog class="modal" id="admin-user-dialog" aria-labelledby="admin-user-title">
       <section class="modal-card admin-user-card">

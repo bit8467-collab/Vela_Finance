@@ -687,6 +687,23 @@ const workerHandler = {
           expires_at INTEGER
         );`,
         `CREATE INDEX IF NOT EXISTS notifications_user_created ON notifications(user_id, created_at DESC);`,
+        `CREATE TABLE IF NOT EXISTS support_threads (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'bot' CHECK (status IN ('bot','waiting','live','closed')),
+          question_count INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );`,
+        `CREATE INDEX IF NOT EXISTS support_threads_user_updated ON support_threads(user_id, updated_at DESC);`,
+        `CREATE TABLE IF NOT EXISTS support_messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          thread_id INTEGER NOT NULL,
+          sender_role TEXT NOT NULL CHECK (sender_role IN ('user','assistant','operator')),
+          body TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        );`,
+        `CREATE INDEX IF NOT EXISTS support_messages_thread_id ON support_messages(thread_id, id);`,
         `CREATE TABLE IF NOT EXISTS wallets (
           user_id TEXT PRIMARY KEY,
           deposit REAL NOT NULL DEFAULT 0,
@@ -913,6 +930,14 @@ const workerHandler = {
       if (method === "GET" && pathName === "/api/me") return await me(request, env);
       if (method === "GET" && pathName === "/api/notifications") return await getNotifications(request, env);
       if (method === "POST" && pathName === "/api/notifications/read") return await markNotificationsRead(request, env);
+      if (method === "GET" && pathName === "/api/support/current") return await supportCurrent(request, env);
+      if (method === "POST" && pathName === "/api/support/message") return await supportMessage(request, env);
+      if (method === "POST" && pathName === "/api/support/escalate") return await supportEscalate(request, env);
+      if (method === "GET" && pathName === "/api/admin/support") return await adminSupportList(request, env);
+      const adminSupportMessagesMatch = pathName.match(/^\/api\/admin\/support\/(\d+)\/messages$/);
+      if (method === "POST" && adminSupportMessagesMatch) return await adminSupportReply(request, env, Number(adminSupportMessagesMatch[1]));
+      const adminSupportThreadMatch = pathName.match(/^\/api\/admin\/support\/(\d+)$/);
+      if (method === "GET" && adminSupportThreadMatch) return await adminSupportThread(request, env, Number(adminSupportThreadMatch[1]));
       if (method === "POST" && pathName === "/api/deposit") return await deposit(request, env);
       if (method === "POST" && pathName === "/api/invest") return Response.json({ error: "I vecchi piani a rendimento fisso non accettano nuovi investimenti. Usa i portafogli market con valore variabile." }, { status: 410 });
       if (method === "POST" && pathName === "/api/market/invest") return await marketInvest(request, env);
@@ -964,6 +989,81 @@ const workerHandler = {
     return new Response("Not found", { status: 404 });
   }
 };
+
+async function supportCurrent(request, env) {
+  const user = await sessionUser(request, env);
+  if (!user) return Response.json({ error: "Accedi per usare l’assistenza." }, { status: 401 });
+  const thread = await env.DB.prepare("SELECT id, user_id, status, question_count, created_at, updated_at FROM support_threads WHERE user_id = ? AND status != 'closed' ORDER BY id DESC LIMIT 1").bind(user.id).first();
+  if (!thread) return Response.json({ thread: null, messages: [] });
+  const messages = (await env.DB.prepare("SELECT id, sender_role, body, created_at FROM support_messages WHERE thread_id = ? ORDER BY id ASC LIMIT 200").bind(thread.id).all()).results;
+  return Response.json({ thread, messages });
+}
+
+async function supportMessage(request, env) {
+  const user = await sessionUser(request, env);
+  if (!user) return Response.json({ error: "Accedi per usare l’assistenza." }, { status: 401 });
+  const body = await request.json();
+  const message = typeof body.message === "string" ? body.message.trim() : "";
+  if (!message || message.length > 2000) return Response.json({ error: "Il messaggio deve contenere da 1 a 2000 caratteri." }, { status: 400 });
+  const now = Date.now();
+  let thread = await env.DB.prepare("SELECT id, status FROM support_threads WHERE user_id = ? AND status != 'closed' ORDER BY id DESC LIMIT 1").bind(user.id).first();
+  if (!thread) {
+    const created = await env.DB.prepare("INSERT INTO support_threads (user_id, status, question_count, created_at, updated_at) VALUES (?, 'bot', 0, ?, ?)").bind(user.id, now, now).run();
+    thread = { id: Number(created.meta?.last_row_id), status: 'bot' };
+  }
+  await env.DB.prepare("INSERT INTO support_messages (thread_id, sender_role, body, created_at) VALUES (?, 'user', ?, ?)").bind(thread.id, message, now).run();
+  let reply = "";
+  if (thread.status === 'bot') {
+    reply = typeof body.botReply === "string" ? body.botReply.trim().slice(0, 4000) : "";
+    if (!reply) reply = "Non riesco a rispondere in questo momento. Puoi riprovare oppure chiedere un operatore dopo cinque domande.";
+    await env.DB.prepare("INSERT INTO support_messages (thread_id, sender_role, body, created_at) VALUES (?, 'assistant', ?, ?)").bind(thread.id, reply, now + 1).run();
+  }
+  await env.DB.prepare("UPDATE support_threads SET question_count = question_count + 1, updated_at = ? WHERE id = ?").bind(now, thread.id).run();
+  const updated = await env.DB.prepare("SELECT id, user_id, status, question_count, created_at, updated_at FROM support_threads WHERE id = ?").bind(thread.id).first();
+  const messages = (await env.DB.prepare("SELECT id, sender_role, body, created_at FROM support_messages WHERE thread_id = ? ORDER BY id ASC LIMIT 200").bind(thread.id).all()).results;
+  return Response.json({ thread: updated, messages });
+}
+
+async function supportEscalate(request, env) {
+  const user = await sessionUser(request, env);
+  if (!user) return Response.json({ error: "Accedi per usare l’assistenza." }, { status: 401 });
+  const thread = await env.DB.prepare("SELECT id, status, question_count FROM support_threads WHERE user_id = ? AND status != 'closed' ORDER BY id DESC LIMIT 1").bind(user.id).first();
+  if (!thread) return Response.json({ error: "Invia prima cinque domande al bot." }, { status: 400 });
+  if (Number(thread.question_count) < 5) return Response.json({ error: "Puoi richiedere un operatore dopo cinque domande." }, { status: 400 });
+  if (thread.status === 'bot') await env.DB.prepare("UPDATE support_threads SET status = 'waiting', updated_at = ? WHERE id = ?").bind(Date.now(), thread.id).run();
+  const updated = await env.DB.prepare("SELECT id, user_id, status, question_count, created_at, updated_at FROM support_threads WHERE id = ?").bind(thread.id).first();
+  return Response.json({ thread: updated });
+}
+
+async function adminSupportList(request, env) {
+  const actor = await adminActor(request, env);
+  if (!actor) return Response.json({ error: "Permessi operatore richiesti." }, { status: 403 });
+  const conversations = (await env.DB.prepare("SELECT t.id, t.status, t.question_count, t.updated_at, u.username, (SELECT m.body FROM support_messages m WHERE m.thread_id = t.id ORDER BY m.id DESC LIMIT 1) AS last_message FROM support_threads t JOIN users u ON u.id = t.user_id WHERE t.status IN ('waiting','live') ORDER BY t.updated_at DESC LIMIT 100").all()).results;
+  return Response.json({ conversations });
+}
+
+async function adminSupportThread(request, env, id) {
+  const actor = await adminActor(request, env);
+  if (!actor) return Response.json({ error: "Permessi operatore richiesti." }, { status: 403 });
+  const thread = await env.DB.prepare("SELECT t.id, t.user_id, t.status, t.question_count, t.created_at, t.updated_at, u.username FROM support_threads t JOIN users u ON u.id = t.user_id WHERE t.id = ?").bind(id).first();
+  if (!thread) return Response.json({ error: "Conversazione non trovata." }, { status: 404 });
+  const messages = (await env.DB.prepare("SELECT id, sender_role, body, created_at FROM support_messages WHERE thread_id = ? ORDER BY id ASC LIMIT 200").bind(id).all()).results;
+  return Response.json({ thread, messages });
+}
+
+async function adminSupportReply(request, env, id) {
+  const actor = await adminActor(request, env);
+  if (!actor) return Response.json({ error: "Permessi operatore richiesti." }, { status: 403 });
+  const body = await request.json();
+  const message = typeof body.message === "string" ? body.message.trim() : "";
+  if (!message || message.length > 2000) return Response.json({ error: "Il messaggio deve contenere da 1 a 2000 caratteri." }, { status: 400 });
+  const thread = await env.DB.prepare("SELECT id FROM support_threads WHERE id = ? AND status IN ('waiting','live')").bind(id).first();
+  if (!thread) return Response.json({ error: "Conversazione non trovata o non più attiva." }, { status: 404 });
+  const now = Date.now();
+  await env.DB.prepare("INSERT INTO support_messages (thread_id, sender_role, body, created_at) VALUES (?, 'operator', ?, ?)").bind(id, message, now).run();
+  await env.DB.prepare("UPDATE support_threads SET status = 'live', updated_at = ? WHERE id = ?").bind(now, id).run();
+  return Response.json({ ok: true });
+}
 
 async function register(request, env) {
   const body = await request.json();
