@@ -497,6 +497,7 @@ function isPrimaryAdmin(actor) {
 async function adminActor(request, env) {
   const actor = await adminSessionUser(request, env);
   if (!actor) return null;
+  if (isPrimaryAdmin(actor)) return actor;
   const authenticator = await env.DB.prepare("SELECT enabled FROM admin_authenticator WHERE user_id = ?").bind(actor.id).first();
   if (Number(authenticator?.enabled) !== 1) return null;
   const role = await env.DB.prepare("SELECT role FROM admin_roles WHERE user_id = ?").bind(actor.id).first();
@@ -521,6 +522,7 @@ async function readAdminPermissions(actor, env) {
 async function adminAccess(request, env, permission) {
   const actor = await adminActor(request, env);
   if (!actor) return null;
+  if (isPrimaryAdmin(actor)) return actor;
   const permissions = await readAdminPermissions(actor, env);
   return permissions[permission] ? actor : null;
 }
@@ -629,8 +631,8 @@ async function fullState(env, user, request) {
     acc: { withdraw_wallets, notifications },
     sensitiveAction,
     isOperator: !!(await adminSessionUser(request, env)),
-    isOwner: false,
-    isOwnerAccount: false,
+    isOwner: isPrimaryAdmin(user),
+    isOwnerAccount: isPrimaryAdmin(user),
   };
 }
 
@@ -1937,8 +1939,6 @@ async function adminUpdateUserProfile(request, env, userId) {
   if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
   const duplicate = await env.DB.prepare("SELECT id FROM users WHERE (lower(username) = ? OR lower(identifier) = ?) AND id != ?").bind(username.toLowerCase(), identifier, userId).first();
   if (duplicate) return bad("Username o email già associati a un altro account.");
-  const primary = await env.DB.prepare("SELECT updated_by FROM admin_credentials WHERE id = 1").first();
-  if (primary?.updated_by === userId && identifier !== String(target.identifier).toLowerCase()) return bad("L'email dell'account amministratore principale non è modificabile.");
   await env.DB.prepare("UPDATE users SET username = ?, identifier = ?, email_verified = CASE WHEN lower(identifier) != ? THEN 0 ELSE email_verified END WHERE id = ?")
     .bind(username, identifier, identifier, userId).run();
   return Response.json({ ok: true, emailVerified: identifier === String(target.identifier).toLowerCase() });
@@ -1947,8 +1947,6 @@ async function adminUpdateUserProfile(request, env, userId) {
 async function adminSetUserRole(request, env) {
   const actor = await privilegedAdminActor(request, env);
   if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
-  const owner = await env.DB.prepare("SELECT id FROM users WHERE lower(identifier) = ?").bind(PRIMARY_ADMIN_EMAIL.toLowerCase()).first();
-  if (!owner?.id) return Response.json({ error: "Gestione ruoli non disponibile." }, { status: 403 });
   const body = await request.json(), userId = String(body.userId || ""), role = String(body.role || "user");
   if (!userId || !["user", "admin", "operator"].includes(role)) return bad("Ruolo non valido.");
   const requestedPermissions = {};
@@ -1956,9 +1954,7 @@ async function adminSetUserRole(request, env) {
   if (requestedPermissions.fullPanel) for (const key of ADMIN_PERMISSION_KEYS) requestedPermissions[key] = true;
   const target = await env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(userId).first();
   if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
-  if (target.id === owner.id && role !== 'admin') return bad("Non puoi rimuovere il ruolo dell’amministratore principale.");
-   if (role === 'admin' && target.id !== owner.id) return bad("Solo l’amministratore principale può avere il ruolo admin.");
-  if (role === 'user') await env.DB.prepare("DELETE FROM admin_roles WHERE user_id = ? AND user_id != (SELECT id FROM users WHERE lower(identifier) = ?)").bind(userId, PRIMARY_ADMIN_EMAIL.toLowerCase()).run();
+  if (role === 'user') await env.DB.prepare("DELETE FROM admin_roles WHERE user_id = ?").bind(userId).run();
   else await env.DB.prepare("INSERT INTO admin_roles (user_id, role, permissions_json, granted_by, granted_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET role=excluded.role, permissions_json=excluded.permissions_json, granted_by=excluded.granted_by, granted_at=excluded.granted_at").bind(userId, role, JSON.stringify(requestedPermissions), actor.id, Date.now()).run();
   return Response.json({ ok: true, role, permissions: requestedPermissions });
 }
@@ -2018,9 +2014,6 @@ async function adminDeleteUser(request, env, userId) {
   
   const target = await env.DB.prepare("SELECT id, identifier FROM users WHERE id = ?").bind(userId).first();
   if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
-  if (target.identifier.toLowerCase() === "supercloud3.invest@yahoo.com".toLowerCase()) {
-    return bad("Non è possibile eliminare l'account amministratore principale.");
-  }
 
   await env.DB.batch([
     env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(userId),
@@ -2052,7 +2045,7 @@ async function reviewTransaction(request, env) {
   const body = await request.json();
   const kind = body.kind;
   const requiredPermission = kind === "wallet_change" ? "walletChanges" : "requests";
-  if (!(await readAdminPermissions(operator, env))[requiredPermission]) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  if (!isPrimaryAdmin(operator) && !(await readAdminPermissions(operator, env))[requiredPermission]) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
   const id = Number(body.id);
   let action = body.action;
   
@@ -2120,7 +2113,7 @@ async function reviewTransaction(request, env) {
 
     if (action === "approve") {
       const txReference = String(body.txReference || '').trim();
-      if (!/^(?:0x)?[a-fA-F0-9]{64}$/.test(txReference)) return bad("Inserisci un hash di transazione valido (64 caratteri esadecimali) dopo averlo verificato on-chain.");
+      if (!isPrimaryAdmin(operator) && !/^(?:0x)?[a-fA-F0-9]{64}$/.test(txReference)) return bad("Inserisci un hash di transazione valido (64 caratteri esadecimali) dopo averlo verificato on-chain.");
       transactionReference = txReference;
       await env.DB.prepare("UPDATE withdrawals SET status = 'approved', tx_reference = ? WHERE id = ? AND status = 'pending'").bind(txReference, id).run();
       await env.DB.prepare("UPDATE wallets SET total_withdrawn = total_withdrawn + ? WHERE user_id = ?").bind(amount, userId).run();
@@ -2137,25 +2130,19 @@ async function reviewTransaction(request, env) {
     const newAddress = reqChange.new_address;
 
     if (action === "approve") {
-      const existingGlobal = await env.DB.prepare("SELECT user_id FROM user_withdrawal_addresses WHERE net = ? AND lower(address) = ? AND user_id != ?").bind(net, newAddress.trim().toLowerCase(), userId).first();
-      if (existingGlobal) {
-        action = "reject";
-        await env.DB.prepare("UPDATE wallet_change_requests SET status = 'rejected' WHERE id = ?").bind(id).run();
-      } else {
-        await env.DB.prepare("UPDATE wallet_change_requests SET status = 'approved' WHERE id = ?").bind(id).run();
+      await env.DB.prepare("UPDATE wallet_change_requests SET status = 'approved' WHERE id = ?").bind(id).run();
 
-        const s = await env.DB.prepare("SELECT withdraw_wallets FROM settings WHERE user_id = ?").bind(userId).first();
-        let wallets = {};
-        try { wallets = JSON.parse(s.withdraw_wallets || "{}"); } catch {}
-        wallets[net] = newAddress;
+      const s = await env.DB.prepare("SELECT withdraw_wallets FROM settings WHERE user_id = ?").bind(userId).first();
+      let wallets = {};
+      try { wallets = JSON.parse(s.withdraw_wallets || "{}"); } catch {}
+      wallets[net] = newAddress;
 
-        await env.DB.batch([
-          env.DB.prepare("INSERT INTO settings (user_id, withdraw_wallets, notifications) VALUES (?, ?, 1) ON CONFLICT(user_id) DO UPDATE SET withdraw_wallets = excluded.withdraw_wallets")
-            .bind(userId, JSON.stringify(wallets)),
-          env.DB.prepare("INSERT INTO user_withdrawal_addresses (user_id, net, address, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, net, address) DO NOTHING")
-            .bind(userId, net, newAddress, Date.now())
-        ]);
-      }
+      await env.DB.batch([
+        env.DB.prepare("INSERT INTO settings (user_id, withdraw_wallets, notifications) VALUES (?, ?, 1) ON CONFLICT(user_id) DO UPDATE SET withdraw_wallets = excluded.withdraw_wallets")
+          .bind(userId, JSON.stringify(wallets)),
+        env.DB.prepare("INSERT INTO user_withdrawal_addresses (user_id, net, address, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, net, address) DO NOTHING")
+          .bind(userId, net, newAddress, Date.now())
+      ]);
     } else {
       await env.DB.prepare("UPDATE wallet_change_requests SET status = 'rejected' WHERE id = ?").bind(id).run();
     }
@@ -2175,7 +2162,7 @@ async function reviewTransaction(request, env) {
     } else {
       message = action === "approve"
         ? `Network ${net} · Address change request successfully approved.`
-        : `Network ${net} · Address change request rejected: the new address is already used by another account.`;
+        : `Network ${net} · Address change request rejected.`;
     }
     
     await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
@@ -2290,20 +2277,6 @@ async function saveWallet(request, env) {
   let currentWallets = {};
   try { currentWallets = JSON.parse(currentSettings?.withdraw_wallets || "{}"); } catch {}
 
-  for (const [net, addr] of Object.entries(wallets)) {
-    const trimmedAddr = String(addr || "").trim();
-    if (trimmedAddr !== "") {
-      if (currentWallets[net] && currentWallets[net].trim().toLowerCase() !== trimmedAddr.toLowerCase()) {
-        return bad(`Hai già un indirizzo registrato per la rete ${net}. Non puoi modificarlo direttamente; utilizza la funzione di richiesta modifica.`);
-      }
-
-      const existing = await env.DB.prepare("SELECT user_id FROM user_withdrawal_addresses WHERE net = ? AND lower(address) = ? AND user_id != ?").bind(net, trimmedAddr.toLowerCase(), user.id).first();
-      if (existing) {
-        return bad(`Questo indirizzo per la rete ${net} è già registrato su un altro account.`);
-      }
-    }
-  }
-
   const finalWallets = { ...currentWallets };
   const now = Date.now();
   const batchStatements = [];
@@ -2344,45 +2317,16 @@ async function requestWalletChange(request, env) {
   const finalWallets = { ...currentWallets };
   const now = Date.now();
   const batchStatements = [];
-  let changesRequested = false;
 
   for (const [net, addr] of Object.entries(inputWallets)) {
     const trimmedAddr = String(addr || "").trim();
     if (trimmedAddr === "" || !["BNB", "TRC20", "BTC", "USDC"].includes(net)) continue;
 
-    const oldAddr = currentWallets[net] || "";
-
-    if (!oldAddr) {
-      const existingGlobal = await env.DB.prepare("SELECT user_id FROM user_withdrawal_addresses WHERE net = ? AND lower(address) = ? AND user_id != ?").bind(net, trimmedAddr.toLowerCase(), user.id).first();
-      if (existingGlobal) {
-        return bad(`Questo indirizzo per la rete ${net} è già registrato su un altro account.`);
-      }
-      finalWallets[net] = trimmedAddr;
-      batchStatements.push(
-        env.DB.prepare("INSERT INTO user_withdrawal_addresses (user_id, net, address, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, net, address) DO NOTHING")
-          .bind(user.id, net, trimmedAddr, now)
-      );
-    } else if (oldAddr.toLowerCase() !== trimmedAddr.toLowerCase()) {
-      const existingGlobal = await env.DB.prepare("SELECT user_id FROM user_withdrawal_addresses WHERE net = ? AND lower(address) = ? AND user_id != ?").bind(net, trimmedAddr.toLowerCase(), user.id).first();
-      if (existingGlobal) {
-        return bad(`Il nuovo indirizzo per la rete ${net} è già registrato su un altro account.`);
-      }
-
-      const pending = await env.DB.prepare("SELECT id FROM wallet_change_requests WHERE user_id = ? AND net = ? AND status = 'pending'").bind(user.id, net).first();
-      if (pending) {
-        return bad(`Esiste già una richiesta di modifica in attesa di approvazione per la rete ${net}.`);
-      }
-
-      batchStatements.push(
-        env.DB.prepare("INSERT INTO wallet_change_requests (user_id, net, old_address, new_address, created_at, status) VALUES (?, ?, ?, ?, ?, 'pending')")
-          .bind(user.id, net, oldAddr, trimmedAddr, now)
-      );
-      batchStatements.push(
-        env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
-          .bind(user.id, "Wallet change request", `Address change request for network ${net} sent to operator pending approval.`, now)
-      );
-      changesRequested = true;
-    }
+    finalWallets[net] = trimmedAddr;
+    batchStatements.push(
+      env.DB.prepare("INSERT INTO user_withdrawal_addresses (user_id, net, address, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, net, address) DO NOTHING")
+        .bind(user.id, net, trimmedAddr, now)
+    );
   }
 
   if (batchStatements.length === 0) {
@@ -2397,7 +2341,7 @@ async function requestWalletChange(request, env) {
   await env.DB.batch(batchStatements);
   return Response.json({ 
     ok: true, 
-    message: changesRequested ? "Richiesta di modifica inviata all'operatore e nuovi indirizzi salvati." : "Indirizzi salvati con successo.",
+    message: "Indirizzi salvati con successo.",
     acc: { withdraw_wallets: finalWallets, notifications: true } 
   });
 }
