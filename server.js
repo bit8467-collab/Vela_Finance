@@ -507,26 +507,6 @@ async function privilegedAdminActor(request, env) {
   return primary?.updated_by === actor.id ? actor : null;
 }
 
-const ADMIN_PERMISSION_KEYS = ["fullPanel", "requests", "walletChanges", "otp", "support", "users"];
-async function readAdminPermissions(actor, env) {
-  const primary = await env.DB.prepare("SELECT updated_by FROM admin_credentials WHERE id = 1").first();
-  if (primary?.updated_by === actor.id) return { fullPanel: true, requests: true, walletChanges: true, otp: true, support: true, users: true };
-  const role = await env.DB.prepare("SELECT role, permissions_json FROM admin_roles WHERE user_id = ?").bind(actor.id).first();
-  if (role?.role === "admin") return { fullPanel: true, requests: true, walletChanges: true, otp: true, support: true, users: true };
-  let stored = {};
-  try { stored = JSON.parse(role?.permissions_json || "{}"); } catch {}
-  const isLegacy = !role?.permissions_json || role.permissions_json === "{}";
-  const permissions = Object.fromEntries(ADMIN_PERMISSION_KEYS.map(key => [key, key === "fullPanel" ? !!stored[key] : (stored[key] === undefined ? isLegacy : stored[key] === true)]));
-  if (permissions.fullPanel) for (const key of ADMIN_PERMISSION_KEYS) permissions[key] = true;
-  return permissions;
-}
-async function adminAccess(request, env, permission) {
-  const actor = await adminActor(request, env);
-  if (!actor) return null;
-  const permissions = await readAdminPermissions(actor, env);
-  return permissions[permission] ? actor : null;
-}
-
 async function accrue(env, userId) {
   let wallet = await env.DB.prepare("SELECT * FROM wallets WHERE user_id = ?").bind(userId).first();
   if (!wallet) {
@@ -847,7 +827,6 @@ const workerHandler = {
         `CREATE TABLE IF NOT EXISTS admin_roles (
           user_id TEXT PRIMARY KEY,
           role TEXT NOT NULL CHECK (role IN ('admin','operator')),
-          permissions_json TEXT NOT NULL DEFAULT '{}',
           granted_by TEXT NOT NULL,
           granted_at INTEGER NOT NULL
         );`,
@@ -868,7 +847,6 @@ const workerHandler = {
     await env.DB.prepare("DELETE FROM admin_sessions").run();
     await env.DB.prepare("DELETE FROM sessions").run();
 
-    try { await env.DB.prepare("ALTER TABLE admin_roles ADD COLUMN permissions_json TEXT NOT NULL DEFAULT '{}'").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE settings ADD COLUMN auto_redeem_pct REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE support_threads ADD COLUMN final_message_id INTEGER").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE wallets ADD COLUMN released REAL NOT NULL DEFAULT 0").run(); } catch {}
@@ -978,7 +956,6 @@ const workerHandler = {
       if (method === "POST" && pathName === "/api/wallet-change-request") return await requestWalletChange(request, env);
       if (method === "POST" && pathName === "/api/settings") return await updateSettings(request, env);
       if (method === "POST" && pathName === "/api/change-password") return await changePassword(request, env);
-      if (method === "GET" && pathName === "/api/admin/permissions") return await adminPermissions(request, env);
       if (method === "GET" && pathName === "/api/admin/transactions") return await adminTransactions(request, env);
       if (method === "GET" && pathName === "/api/admin/statistics") return await adminStatistics(request, env);
       if (method === "GET" && pathName === "/api/admin/users") return await adminUsers(request, env);
@@ -1103,14 +1080,14 @@ async function supportChoice(request, env) {
 }
 
 async function adminSupportList(request, env) {
-  const actor = await adminAccess(request, env, "support");
+  const actor = await adminActor(request, env);
   if (!actor) return Response.json({ error: "Permessi operatore richiesti." }, { status: 403 });
   const conversations = (await env.DB.prepare("SELECT t.id, t.status, t.question_count, t.updated_at, u.username, (SELECT m.body FROM support_messages m WHERE m.thread_id = t.id ORDER BY m.id DESC LIMIT 1) AS last_message FROM support_threads t JOIN users u ON u.id = t.user_id WHERE t.status IN ('waiting','live') ORDER BY t.updated_at DESC LIMIT 100").all()).results;
   return Response.json({ conversations });
 }
 
 async function adminSupportThread(request, env, id) {
-  const actor = await adminAccess(request, env, "support");
+  const actor = await adminActor(request, env);
   if (!actor) return Response.json({ error: "Permessi operatore richiesti." }, { status: 403 });
   const thread = await env.DB.prepare("SELECT t.id, t.user_id, t.status, t.question_count, t.final_message_id, t.created_at, t.updated_at, u.username FROM support_threads t JOIN users u ON u.id = t.user_id WHERE t.id = ?").bind(id).first();
   if (!thread) return Response.json({ error: "Conversazione non trovata." }, { status: 404 });
@@ -1119,7 +1096,7 @@ async function adminSupportThread(request, env, id) {
 }
 
 async function adminSupportReply(request, env, id) {
-  const actor = await adminAccess(request, env, "support");
+  const actor = await adminActor(request, env);
   if (!actor) return Response.json({ error: "Permessi operatore richiesti." }, { status: 403 });
   const body = await request.json();
   const message = typeof body.message === "string" ? body.message.trim() : "";
@@ -1231,7 +1208,7 @@ async function confirmPasswordReset(request, env) {
 }
 
 async function setPasswordResetOtp(request, env, userId) {
-  const actor = await adminAccess(request, env, "otp");
+  const actor = await adminActor(request, env);
   if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
   const body = await request.json();
   const otp = typeof body.otp === "string" ? body.otp.trim() : "";
@@ -1340,7 +1317,7 @@ async function confirmEmailVerification(request, env) {
 }
 
 async function setUserVerificationOtp(request, env, userId) {
-  const actor = await adminAccess(request, env, "otp");
+  const actor = await adminActor(request, env);
   if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
   const body = await request.json();
   const otp = typeof body.otp === "string" ? body.otp.trim() : "";
@@ -1599,7 +1576,7 @@ async function getDepositAddresses(request, env) {
   return Response.json({ addresses: await readDepositAddresses(env) }, { headers: { "Cache-Control": "no-store" } });
 }
 async function adminDepositAddresses(request, env) {
-  if (!await adminAccess(request, env, "fullPanel")) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  if (!await adminActor(request, env)) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
   return Response.json({ addresses: await readDepositAddresses(env) });
 }
 async function saveAdminDepositAddresses(request, env) {
@@ -1883,19 +1860,11 @@ async function confirmSensitiveActionOtp(request, env) {
   return Response.json({ ok: true });
 }
 
-async function adminPermissions(request, env) {
-  const actor = await adminActor(request, env);
-  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
-  const permissions = await readAdminPermissions(actor, env);
-  return Response.json({ permissions });
-}
-
 async function adminTransactions(request, env) {
   const user = await adminActor(request, env);
   if (!user) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
-  const permissions = await readAdminPermissions(user, env);
-  const deposits = permissions.requests ? (await env.DB.prepare("SELECT d.*, u.username FROM deposits d JOIN users u ON u.id = d.user_id WHERE d.status = 'pending' ORDER BY d.date ASC").all()).results : [];
-  const withdrawals = permissions.requests ? (await env.DB.prepare("SELECT w.*, u.username FROM withdrawals w JOIN users u ON u.id = w.user_id WHERE w.status = 'pending' ORDER BY w.date ASC").all()).results : [];
+  const deposits = (await env.DB.prepare("SELECT d.*, u.username FROM deposits d JOIN users u ON u.id = d.user_id WHERE d.status = 'pending' ORDER BY d.date ASC").all()).results;
+  const withdrawals = (await env.DB.prepare("SELECT w.*, u.username FROM withdrawals w JOIN users u ON u.id = w.user_id WHERE w.status = 'pending' ORDER BY w.date ASC").all()).results;
   
   const rawWalletChanges = (await env.DB.prepare(`
     SELECT r.id, r.user_id, r.net, r.old_address, r.new_address, r.created_at, r.status, u.username, u.identifier 
@@ -1905,7 +1874,7 @@ async function adminTransactions(request, env) {
     ORDER BY r.created_at ASC
   `).all()).results;
 
-  const walletChanges = permissions.walletChanges ? rawWalletChanges.map(w => {
+  const walletChanges = rawWalletChanges.map(w => {
     const addressDetails = `Vecchio: ${w.old_address} -> Nuovo: ${w.new_address}`;
     return {
       ...w,
@@ -1922,13 +1891,13 @@ async function adminTransactions(request, env) {
       description: addressDetails,
       text: addressDetails
     };
-  }) : [];
+  });
   
-  const emailVerifications = permissions.otp ? (await env.DB.prepare("SELECT r.user_id, r.requested_at, r.otp_expires_at, u.username, u.identifier FROM email_verification_requests r JOIN users u ON u.id = r.user_id WHERE r.verified_at IS NULL").all()).results : [];
-  const sensitiveActionVerifications = permissions.otp ? (await env.DB.prepare("SELECT r.user_id, r.action, r.requested_at, r.otp_expires_at, u.username, u.identifier FROM sensitive_action_verifications r JOIN users u ON u.id = r.user_id WHERE r.consumed_at IS NULL").all()).results : [];
-  const passwordResets = permissions.otp ? (await env.DB.prepare("SELECT r.user_id, r.requested_at, r.otp_expires_at, r.issued_at, u.username, u.identifier FROM password_reset_requests r JOIN users u ON u.id = r.user_id").all()).results : [];
+  const emailVerifications = (await env.DB.prepare("SELECT r.user_id, r.requested_at, r.otp_expires_at, u.username, u.identifier FROM email_verification_requests r JOIN users u ON u.id = r.user_id WHERE r.verified_at IS NULL").all()).results;
+  const sensitiveActionVerifications = (await env.DB.prepare("SELECT r.user_id, r.action, r.requested_at, r.otp_expires_at, u.username, u.identifier FROM sensitive_action_verifications r JOIN users u ON u.id = r.user_id WHERE r.consumed_at IS NULL").all()).results;
+  const passwordResets = (await env.DB.prepare("SELECT r.user_id, r.requested_at, r.otp_expires_at, r.issued_at, u.username, u.identifier FROM password_reset_requests r JOIN users u ON u.id = r.user_id").all()).results;
 
-  return Response.json({ deposits, withdrawals, walletChanges, emailVerifications, sensitiveActionVerifications, passwordResets, operator: user.username, permissions });
+  return Response.json({ deposits, withdrawals, walletChanges, emailVerifications, sensitiveActionVerifications, passwordResets, operator: user.username });
 }
 
 async function adminUpdateUserProfile(request, env, userId) {
@@ -1957,20 +1926,17 @@ async function adminSetUserRole(request, env) {
   if (!owner?.updated_by) return Response.json({ error: "Gestione ruoli non disponibile." }, { status: 403 });
   const body = await request.json(), userId = String(body.userId || ""), role = String(body.role || "user");
   if (!userId || !["user", "admin", "operator"].includes(role)) return bad("Ruolo non valido.");
-  const requestedPermissions = {};
-  if (role === "operator") for (const key of ADMIN_PERMISSION_KEYS) requestedPermissions[key] = body.permissions?.[key] === true;
-  if (requestedPermissions.fullPanel) for (const key of ADMIN_PERMISSION_KEYS) requestedPermissions[key] = true;
   const target = await env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(userId).first();
   if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
   if (target.id === owner.updated_by && role !== 'admin') return bad("Non puoi rimuovere il ruolo dell’amministratore principale.");
    if (role === 'admin' && target.id !== owner.updated_by) return bad("Solo l’amministratore principale può avere il ruolo admin.");
   if (role === 'user') await env.DB.prepare("DELETE FROM admin_roles WHERE user_id = ? AND user_id != (SELECT updated_by FROM admin_credentials WHERE id = 1)").bind(userId).run();
-  else await env.DB.prepare("INSERT INTO admin_roles (user_id, role, permissions_json, granted_by, granted_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET role=excluded.role, permissions_json=excluded.permissions_json, granted_by=excluded.granted_by, granted_at=excluded.granted_at").bind(userId, role, JSON.stringify(requestedPermissions), actor.id, Date.now()).run();
-  return Response.json({ ok: true, role, permissions: requestedPermissions });
+  else await env.DB.prepare("INSERT INTO admin_roles (user_id, role, granted_by, granted_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET role=excluded.role, granted_by=excluded.granted_by, granted_at=excluded.granted_at").bind(userId, role, actor.id, Date.now()).run();
+  return Response.json({ ok: true, role });
 }
 
 async function adminStatistics(request, env) {
-  const actor = await adminAccess(request, env, "fullPanel");
+  const actor = await adminActor(request, env);
   if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
   const totals = await env.DB.prepare("SELECT (SELECT COUNT(*) FROM users) AS users, (SELECT COUNT(*) FROM deposits) AS deposit_count, (SELECT COUNT(*) FROM deposits WHERE status = 'approved') AS deposits_approved, (SELECT COUNT(*) FROM deposits WHERE status = 'pending') AS deposits_pending, (SELECT COALESCE(SUM(amount),0) FROM deposits WHERE status = 'approved') AS deposits_amount, (SELECT COALESCE(SUM(amount),0) FROM deposits WHERE status = 'pending') AS deposits_pending_amount, (SELECT COUNT(*) FROM withdrawals) AS withdrawal_count, (SELECT COUNT(*) FROM withdrawals WHERE status = 'approved') AS withdrawals_approved, (SELECT COUNT(*) FROM withdrawals WHERE status = 'pending') AS withdrawals_pending, (SELECT COALESCE(SUM(amount),0) FROM withdrawals WHERE status = 'approved') AS withdrawals_amount, (SELECT COALESCE(SUM(amount),0) FROM withdrawals WHERE status = 'pending') AS withdrawals_pending_amount, (SELECT COUNT(*) FROM investments)+(SELECT COUNT(*) FROM market_positions) AS investment_count, (SELECT COALESCE(SUM(amount),0) FROM investments)+(SELECT COALESCE(SUM(amount),0) FROM market_positions) AS investment_amount, (SELECT COUNT(*) FROM investments WHERE active=1)+(SELECT COUNT(*) FROM market_positions WHERE status IN ('active','paused')) AS active_investments, (SELECT COALESCE(SUM(amount),0) FROM investments WHERE active=1)+(SELECT COALESCE(SUM(amount),0) FROM market_positions WHERE status IN ('active','paused')) AS active_investment_amount").first();
   const referrals = (await env.DB.prepare("WITH RECURSIVE referral_tree(inviter_id,user_id,level) AS (SELECT referred_by,id,1 FROM users WHERE referred_by IS NOT NULL AND referred_by!='' UNION ALL SELECT tree.inviter_id,child.id,tree.level+1 FROM referral_tree tree JOIN users child ON child.referred_by=tree.user_id WHERE tree.level<3) SELECT tree.inviter_id,inviter.username AS inviter_username,tree.user_id,invited.username,invited.created_at,tree.level,(SELECT COUNT(*) FROM deposits d WHERE d.user_id=tree.user_id) AS deposit_count,(SELECT COUNT(*) FROM deposits d WHERE d.user_id=tree.user_id AND d.status='approved') AS deposits_approved,(SELECT COALESCE(SUM(d.amount),0) FROM deposits d WHERE d.user_id=tree.user_id AND d.status='approved') AS deposit_amount,(SELECT COUNT(*) FROM withdrawals w WHERE w.user_id=tree.user_id) AS withdrawal_count,(SELECT COUNT(*) FROM withdrawals w WHERE w.user_id=tree.user_id AND w.status='approved') AS withdrawals_approved,(SELECT COALESCE(SUM(w.amount),0) FROM withdrawals w WHERE w.user_id=tree.user_id AND w.status='approved') AS withdrawal_amount,(SELECT COUNT(*) FROM investments i WHERE i.user_id=tree.user_id)+(SELECT COUNT(*) FROM market_positions m WHERE m.user_id=tree.user_id) AS investment_count,(SELECT COALESCE(SUM(i.amount),0) FROM investments i WHERE i.user_id=tree.user_id)+(SELECT COALESCE(SUM(m.amount),0) FROM market_positions m WHERE m.user_id=tree.user_id) AS investment_amount FROM referral_tree tree JOIN users inviter ON inviter.id=tree.inviter_id JOIN users invited ON invited.id=tree.user_id ORDER BY inviter.username COLLATE NOCASE,tree.level,invited.created_at DESC").all()).results;
@@ -1978,16 +1944,16 @@ async function adminStatistics(request, env) {
 }
 
 async function adminUsers(request, env) {
-  const user = await adminAccess(request, env, "users");
+  const user = await adminActor(request, env);
   if (!user) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
   const users = (await env.DB.prepare("SELECT u.id, u.username, u.identifier, u.created_at, u.email_verified, COALESCE(r.role, 'user') AS role FROM users u LEFT JOIN admin_roles r ON r.user_id = u.id ORDER BY u.created_at DESC").all()).results;
   return Response.json({ users });
 }
 
 async function adminUserDetails(request, env, userId) {
-  const actor = await adminAccess(request, env, "users");
+  const actor = await adminActor(request, env);
   if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
-  const target = await env.DB.prepare("SELECT u.id, u.username, u.identifier, u.created_at, u.referred_by, u.email_verified, COALESCE(r.role, 'user') AS role, COALESCE(r.permissions_json, '{}') AS permissions_json FROM users u LEFT JOIN admin_roles r ON r.user_id = u.id WHERE u.id = ?").bind(userId).first();
+  const target = await env.DB.prepare("SELECT u.id, u.username, u.identifier, u.created_at, u.referred_by, u.email_verified, COALESCE(r.role, 'user') AS role FROM users u LEFT JOIN admin_roles r ON r.user_id = u.id WHERE u.id = ?").bind(userId).first();
   if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
   const wallet = await accrue(env, target.id);
   const investments = (await env.DB.prepare("SELECT id, amount, days, rate, created, credited, active FROM investments WHERE user_id = ? ORDER BY created DESC").bind(target.id).all()).results;
@@ -1999,9 +1965,8 @@ async function adminUserDetails(request, env, userId) {
   const passwordResetRequest = await env.DB.prepare("SELECT requested_at, otp_expires_at, issued_at FROM password_reset_requests WHERE user_id = ?").bind(target.id).first();
   const settings = await env.DB.prepare("SELECT withdraw_wallets FROM settings WHERE user_id = ?").bind(target.id).first();
   const operator = await env.DB.prepare("SELECT role FROM admin_roles WHERE user_id = ?").bind(actor.id).first();
-  const targetPermissions = (() => { try { return JSON.parse(target.permissions_json || "{}"); } catch { return {}; } })();
   const invitedCount = await env.DB.prepare("SELECT COUNT(*) AS count FROM users WHERE referred_by = ?").bind(target.id).first();
-  return Response.json({ user: target, wallet, investments, marketPositions, deposits, withdrawals, settings, verificationRequest, actionVerification, passwordResetRequest, invitedCount: Number(invitedCount?.count || 0), actorRole: operator?.role || 'operator', permissions: targetPermissions });
+  return Response.json({ user: target, wallet, investments, marketPositions, deposits, withdrawals, settings, verificationRequest, actionVerification, passwordResetRequest, invitedCount: Number(invitedCount?.count || 0), actorRole: operator?.role || 'operator' });
 }
 
 async function adminUpdateUserBalance(request, env, userId) {
@@ -2057,8 +2022,6 @@ async function reviewTransaction(request, env) {
   if (!operator) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
   const body = await request.json();
   const kind = body.kind;
-  const requiredPermission = kind === "wallet_change" ? "walletChanges" : "requests";
-  if (!(await readAdminPermissions(operator, env))[requiredPermission]) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
   const id = Number(body.id);
   let action = body.action;
   
