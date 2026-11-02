@@ -965,6 +965,7 @@ const workerHandler = {
       if (method === "POST" && pathName === "/api/change-password") return await changePassword(request, env);
       if (method === "GET" && pathName === "/api/admin/permissions") return await adminPermissions(request, env);
       if (method === "GET" && pathName === "/api/admin/transactions") return await adminTransactions(request, env);
+      if (method === "POST" && pathName === "/api/admin/payments/mark-sent") return await markWithdrawalSent(request, env);
       if (method === "GET" && pathName === "/api/admin/statistics") return await adminStatistics(request, env);
       if (method === "GET" && pathName === "/api/admin/users") return await adminUsers(request, env);
       if (method === "POST" && pathName === "/api/market/add-funds") return await addMarketFunds(request, env);
@@ -2037,6 +2038,22 @@ async function adminDeleteUser(request, env, userId) {
   return Response.json({ ok: true, message: "Utente e tutti i dati associati eliminati con successo." });
 }
 
+async function markWithdrawalSent(request, env) {
+  const actor = await privilegedAdminActor(request, env);
+  if (!actor) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  const body = await request.json();
+  const id = Number(body.id);
+  const txReference = String(body.txReference || "").trim();
+  if (!Number.isInteger(id) || id < 1) return bad("Richiesta di prelievo non valida.");
+  if (!/^(?:0x)?[a-fA-F0-9]{64}$/.test(txReference)) return bad("Inserisci un hash di transazione valido dopo aver inviato il pagamento.");
+  const withdrawal = await env.DB.prepare("SELECT id, status FROM withdrawals WHERE id = ?").bind(id).first();
+  if (!withdrawal) return bad("Prelievo non trovato.");
+  if (withdrawal.status !== "pending") return bad("Il prelievo è già stato esaminato.");
+  const result = await env.DB.prepare("UPDATE withdrawals SET tx_reference = ? WHERE id = ? AND status = 'pending'").bind(txReference, id).run();
+  if (!result.meta?.changes) return bad("Il prelievo non è più in attesa.");
+  return Response.json({ ok: true, status: "pending", txReference });
+}
+
 async function reviewTransaction(request, env) {
   const operator = await adminActor(request, env);
   if (!operator) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
@@ -2110,10 +2127,13 @@ async function reviewTransaction(request, env) {
     net = wit.net;
 
     if (action === "approve") {
-      const txReference = String(body.txReference || '').trim();
-      if (!/^(?:0x)?[a-fA-F0-9]{64}$/.test(txReference)) return bad("Inserisci un hash di transazione valido (64 caratteri esadecimali) dopo averlo verificato on-chain.");
+      const txReference = String(wit.tx_reference || '').trim();
+      const submittedReference = String(body.txReference || '').trim();
+      if (!/^(?:0x)?[a-fA-F0-9]{64}$/.test(txReference)) return bad("L’amministratore deve prima registrare l’hash del pagamento.");
+      if (submittedReference.toLowerCase() !== txReference.toLowerCase()) return bad("L’hash verificato non corrisponde a quello registrato dall’amministratore.");
       transactionReference = txReference;
-      await env.DB.prepare("UPDATE withdrawals SET status = 'approved', tx_reference = ? WHERE id = ? AND status = 'pending'").bind(txReference, id).run();
+      const reviewed = await env.DB.prepare("UPDATE withdrawals SET status = 'approved' WHERE id = ? AND status = 'pending' AND tx_reference = ?").bind(id, txReference).run();
+      if (!reviewed.meta?.changes) return bad("Il prelievo non è più in attesa o l’hash è cambiato.");
       await env.DB.prepare("UPDATE wallets SET total_withdrawn = total_withdrawn + ? WHERE user_id = ?").bind(amount, userId).run();
     } else {
       await env.DB.prepare("UPDATE withdrawals SET status = 'rejected' WHERE id = ?").bind(id).run();

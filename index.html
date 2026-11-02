@@ -324,6 +324,7 @@
       <section class="view" id="view-admin" aria-labelledby="admin-title">
         <div class="page-heading"><div><p class="eyebrow">ADMINISTRATION</p><h1 id="admin-title">Admin</h1></div></div>
         <p class="page-intro">Review requests and manage account information.</p>
+        <button class="admin-payment-launch" id="open-payment-desk" type="button" hidden>Open payment desk <span aria-hidden="true">↗</span></button>
         <div class="admin-section admin-overview" id="admin-overview">
           <div class="section-heading"><div><p class="eyebrow">PLATFORM OVERVIEW</p><h2>Global statistics</h2></div></div>
           <div class="admin-stat-grid">
@@ -401,6 +402,25 @@
           <div class="admin-queue" id="admin-support-threads"></div><div class="queue-empty" id="admin-support-empty">No conversations waiting for an operator.</div>
         </div>
         <button class="outline-wide" type="button" data-go="profile">Back to profile</button>
+      </section>
+      <section class="payment-desk-screen" id="admin-payment-desk" aria-labelledby="payment-desk-title" hidden>
+        <header class="payment-desk-header">
+          <div><p class="eyebrow">ADMIN · MANUAL SETTLEMENT</p><h1 id="payment-desk-title">Payment desk</h1></div>
+          <div class="payment-desk-controls"><button type="button" id="refresh-payment-desk">Refresh</button><button type="button" id="close-payment-desk">Back to admin</button></div>
+        </header>
+        <p class="payment-desk-note">Payments are made outside this platform. Confirm incoming deposits on-chain. After sending a withdrawal, record its transaction hash here; operators can then verify it before approval.</p>
+        <div class="payment-desk-sections">
+          <details class="payment-desk-group" open>
+            <summary><span>Incoming · deposits to receive</span><b class="count-pill" id="payment-incoming-count">0</b></summary>
+            <div class="payment-desk-list" id="payment-incoming-list"></div>
+            <p class="payment-desk-empty" id="payment-incoming-empty">No pending deposits.</p>
+          </details>
+          <details class="payment-desk-group" open>
+            <summary><span>Outgoing · withdrawals to pay</span><b class="count-pill" id="payment-outgoing-count">0</b></summary>
+            <div class="payment-desk-list" id="payment-outgoing-list"></div>
+            <p class="payment-desk-empty" id="payment-outgoing-empty">No pending withdrawals.</p>
+          </details>
+        </div>
       </section>
     </main>
 
