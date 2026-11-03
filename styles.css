@@ -2722,3 +2722,58 @@ body:has(#view-admin.active) .topbar { position:relative; top:auto; z-index:10; 
 }
 #view-admin.active>.page-heading { margin-bottom:0!important; padding-bottom:0!important; }
 #view-admin.active>.page-intro { margin-top:0!important; margin-bottom:1px!important; }
+
+
+/* Full-viewport pages and dialogs; keep the content open and free of nested card frames. */
+#app-shell {
+  width:100%!important;
+  max-width:none!important;
+  min-height:100dvh!important;
+  margin:0!important;
+  border:0!important;
+  border-radius:0!important;
+  box-shadow:none!important;
+}
+#app-shell .view.active {
+  width:100%!important;
+  max-width:none!important;
+  min-height:100dvh!important;
+}
+#app-shell .view.active :is(section,article,details),
+#app-shell .view.active div[class*="-card"] {
+  border:0!important;
+  border-radius:0!important;
+  background:transparent!important;
+  box-shadow:none!important;
+}
+dialog.modal {
+  position:fixed!important;
+  inset:0!important;
+  width:100vw!important;
+  height:100dvh!important;
+  max-width:none!important;
+  max-height:100dvh!important;
+  margin:0!important;
+  padding:0!important;
+  border:0!important;
+  border-radius:0!important;
+  overflow:auto!important;
+}
+dialog.modal .modal-card {
+  box-sizing:border-box;
+  width:100%!important;
+  max-width:none!important;
+  min-height:100dvh;
+  margin:0!important;
+  border:0!important;
+  border-radius:0!important;
+  background:var(--bg)!important;
+  box-shadow:none!important;
+}
+dialog.modal .modal-card :is(section,article,details),
+dialog.modal .modal-card div[class*="-card"] {
+  border:0!important;
+  border-radius:0!important;
+  background:transparent!important;
+  box-shadow:none!important;
+}

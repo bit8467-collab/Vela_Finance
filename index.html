@@ -108,7 +108,7 @@
 
       <details class="company-info" id="market-infrastructure">
         <summary class="company-info-summary"><span class="company-info-icon" aria-hidden="true">02</span><span class="company-info-copy"><span class="company-info-kicker">INFRASTRUTTURA</span><strong>Terminale e dati di mercato</strong><small>Come funziona la piattaforma attuale</small></span><span class="company-info-toggle" aria-hidden="true"></span></summary>
-        <div class="company-info-content"><section class="company-section compliance-section"><div class="section-label"><span>02</span> DATI E OPERATIVITÀ</div><div class="about-copy"><p class="about-lead">La piattaforma visualizza quotazioni pubbliche e calcola indici di riferimento ponderati per monitorare i piani.</p><p><b>Richieste e saldi.</b> I depositi e i prelievi sono registrati come richieste e sottoposti a revisione manuale. L’invio non trasferisce fondi. Gli eventuali accrediti interni seguono l’esito della revisione.</p><p><b>Smart routing e piani.</b> In questa versione non è attivo lo smistamento automatico dei capitali verso wallet decentralizzati o mercati, e i piani non eseguono acquisti o vendite. I grafici mostrano dati di riferimento: non attestano che gli asset siano stati acquistati o custoditi.</p><p><b>Aggiornamento.</b> La schermata usa le quotazioni pubbliche disponibili, che possono essere ritardate o mancanti. Le soglie sono controllate all’aggiornamento dei dati e non sono ordini continui su un exchange.</p></div></section></div>
+        <div class="company-info-content"><section class="company-section compliance-section"><div class="section-label"><span>02</span> DATI E OPERATIVITÀ</div><div class="about-copy"><p class="about-lead">La piattaforma visualizza quotazioni pubbliche e calcola indici di riferimento ponderati per monitorare i piani.</p><p><b>Richieste e saldi.</b> I depositi e i prelievi sono registrati come richieste e sottoposti a revisione manuale. L’invio non trasferisce fondi. Gli eventuali accrediti interni seguono l’esito della revisione.</p><p><b>Aggiornamento.</b> La schermata usa le quotazioni pubbliche disponibili, che possono essere ritardate o mancanti. Le soglie sono controllate all’aggiornamento dei dati e non sono ordini continui su un exchange.</p></div></section></div>
       </details>
 
       <details class="company-info" id="user-autonomy">
@@ -576,11 +576,6 @@
           <div id="investment-detail-chart" class="asset-history-chart line-chart"></div>
           <p class="investment-chart-note">Indicative weighted trend from available public market prices since the plan start. It is not a statement of account value or guaranteed performance.</p>
         </section>
-        <section class="investment-allocation-section"><div class="investment-chart-heading"><div><p class="eyebrow">PORTFOLIO MIX</p><h3>Asset weights</h3></div></div><div id="investment-detail-allocation" class="investment-allocation-list"></div></section>
-        <details class="investment-asset-history" id="investment-asset-history">
-          <summary><span><b id="investment-asset-history-title">Asset values over time</b><small id="investment-asset-history-count"></small></span><i aria-hidden="true">⌄</i></summary>
-          <div id="investment-asset-history-list" class="investment-asset-history-grid"></div>
-        </details>
         <section class="auto-redeem-panel" id="investment-auto-redeem" hidden aria-labelledby="auto-redeem-title">
           <div class="auto-redeem-heading"><div><p class="eyebrow">PLAN SETTINGS</p><h3 id="auto-redeem-title">Automatic profit redemption</h3></div><span class="auto-redeem-mark" aria-hidden="true">↗</span></div>
           <div class="auto-redeem-fields">
@@ -591,6 +586,12 @@
           <p class="auto-redeem-help">At this reference value, gains move to your earnings balance; the principal stays invested.</p>
           <button class="outline-button auto-redeem-save" id="save-investment-auto-redeem" type="button">Save</button>
         </section>
+        <section class="investment-allocation-section"><div class="investment-chart-heading"><div><p class="eyebrow">PORTFOLIO MIX</p><h3>Asset weights</h3></div></div><div id="investment-detail-allocation" class="investment-allocation-list"></div></section>
+        <details class="investment-asset-history" id="investment-asset-history">
+          <summary><span><b id="investment-asset-history-title">Asset values over time</b><small id="investment-asset-history-count"></small></span><i aria-hidden="true">⌄</i></summary>
+          <div id="investment-asset-history-list" class="investment-asset-history-grid"></div>
+        </details>
+        
         <div class="investment-detail-actions"><button class="primary-button" id="investment-detail-redeem-gains" type="button" hidden>Redeem gains</button><button class="outline-button" id="investment-detail-add-funds" type="button" hidden>Add funds</button><button class="danger-button" id="investment-detail-close-early" type="button" hidden>Close early · 65% fee</button></div>
         <p class="modal-footnote">The platform tracks reference quotes; it does not purchase or custody these assets. Closing early deducts 65% of current reference value; the remainder stays in the internal balance.</p>
       </div>
