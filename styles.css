@@ -2018,7 +2018,7 @@ button[data-redeem-earnings]:disabled { opacity:.55; cursor:not-allowed; }
 #refresh-account { transition:transform .2s ease,box-shadow .2s ease,color .2s ease; }
 #refresh-account:hover,#refresh-account:focus-visible { color:#fff; box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 55%,transparent),0 0 18px color-mix(in srgb,var(--accent) 35%,transparent); }
 #refresh-account:disabled { opacity:.72; cursor:wait; }
-#refresh-account.is-refreshing svg { animation:account-refresh-spin .75s linear infinite; }
+#refresh-account.is-refreshing svg { animation:none; }
 @keyframes account-refresh-spin { to { transform:rotate(360deg); } }
 @media (prefers-reduced-motion:reduce) { #refresh-account.is-refreshing svg { animation-duration:2.4s; } }
 
@@ -2440,3 +2440,60 @@ svg { shape-rendering:geometricPrecision; }
 #plan-dialog .plan-terms { border-left:3px solid var(--accent); border-radius:0 8px 8px 0; background:color-mix(in srgb,var(--accent) 8%,var(--surface)); padding:9px 12px; }
 @media (min-width:760px) { .plan-allocation-grid { grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; } }
 @media (max-width:390px) { .plan-allocation-grid { grid-template-columns:minmax(0,1fr); } }
+
+/* Admin command center: compact clickable section index with live queue badges. */
+@media (min-width:900px) {
+  #app-shell:has(#view-admin.active) { width:min(100%,1920px); max-width:1920px; padding-left:clamp(20px,3vw,52px); padding-right:clamp(20px,3vw,52px); }
+  #view-admin.active { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); align-content:start; align-items:start; gap:10px; min-height:calc(100dvh - 64px); padding-top:16px; }
+  #view-admin>.page-heading,#view-admin>.page-intro,#view-admin>#open-payment-desk { grid-column:1/-1; }
+  #view-admin>.page-heading { margin-bottom:0; }
+  #view-admin>.page-intro { margin:0 0 3px; }
+  #view-admin>#open-payment-desk { justify-self:start; min-height:38px; margin:0 0 4px; padding:8px 13px; }
+  #view-admin>.admin-section { min-width:0; margin:0; padding:0!important; border:1px solid color-mix(in srgb,var(--line) 70%,var(--accent) 30%); border-radius:14px; background:linear-gradient(145deg,color-mix(in srgb,var(--surface) 90%,var(--accent) 10%),var(--surface)); box-shadow:0 8px 22px rgba(2,12,25,.13); overflow:hidden; }
+  #view-admin>details.admin-workspace-disclosure { display:block!important; grid-column:auto; }
+  #view-admin>details.admin-workspace-disclosure[open] { grid-column:1/-1; }
+  #view-admin>details.admin-workspace-disclosure[hidden],#view-admin>.admin-section[hidden] { display:none!important; }
+  #view-admin>details.admin-workspace-disclosure>.admin-workspace-summary,
+  #view-admin>.admin-referral-overview .admin-referral-panel>summary {
+    display:flex; align-items:center; justify-content:space-between; gap:10px; min-width:0; min-height:74px; margin:0; border:0; border-radius:0; background:transparent; padding:12px 14px; color:var(--text); cursor:pointer; list-style:none; text-align:left;
+  }
+  #view-admin>details.admin-workspace-disclosure>.admin-workspace-summary::-webkit-details-marker,
+  #view-admin>.admin-referral-overview .admin-referral-panel>summary::-webkit-details-marker { display:none; }
+  #view-admin>details.admin-workspace-disclosure>.admin-workspace-summary::after,
+  #view-admin>.admin-referral-overview .admin-referral-panel>summary::after { content:'＋'; flex:0 0 auto; margin-left:2px; color:var(--accent); font-size:17px; font-weight:600; }
+  #view-admin>details.admin-workspace-disclosure[open]>.admin-workspace-summary::after,
+  #view-admin>.admin-referral-overview .admin-referral-panel[open]>summary::after { content:'−'; }
+  #view-admin>details.admin-workspace-disclosure>.admin-workspace-summary:hover,
+  #view-admin>.admin-referral-overview .admin-referral-panel>summary:hover { background:color-mix(in srgb,var(--accent) 8%,transparent); }
+  #view-admin .admin-workspace-summary>div,#view-admin>.admin-referral-overview .admin-referral-panel>summary>div { min-width:0; }
+  #view-admin .admin-workspace-summary .eyebrow,#view-admin>.admin-referral-overview .admin-referral-panel>summary .eyebrow { margin:0 0 4px; font-size:8px; }
+  #view-admin .admin-workspace-summary h2,#view-admin>.admin-referral-overview .admin-referral-panel>summary h2 { margin:0; font-size:13px; line-height:1.25; overflow-wrap:anywhere; }
+  #view-admin .admin-hub-note { max-width:94px; color:var(--muted); font-size:9px; text-align:right; }
+  #view-admin .admin-workspace-pending-total { flex:0 0 auto; margin-left:0; border-color:color-mix(in srgb,var(--amber) 50%,var(--line)); background:color-mix(in srgb,var(--amber) 15%,var(--surface)); color:var(--amber); }
+  #view-admin .admin-request-group .count-pill.has-alert,#view-admin #support-thread-count.has-alert,#view-admin #operator-admin-request-count.has-alert { border-color:#ff718f99; background:#ff718f24; color:#ff9cae; box-shadow:0 0 16px #ff718f20; }
+  #view-admin>.details.admin-referral-overview,#view-admin>.admin-referral-overview:has(.admin-referral-panel[open]) { grid-column:1/-1; }
+  #view-admin>.admin-referral-overview { padding:0!important; }
+  #view-admin>.admin-referral-overview .admin-referral-panel { overflow:hidden; border:0; border-radius:14px; background:transparent; }
+  #view-admin>.admin-referral-overview .admin-referral-content { padding:0 14px 14px; }
+  #view-admin>.admin-request-hub, #app-shell:has(#view-admin.active) #view-admin>.admin-request-hub { grid-column:auto; display:block; }
+  #view-admin>.admin-request-hub[open],#app-shell:has(#view-admin.active) #view-admin>.admin-request-hub[open] { grid-column:1/-1; }
+  #view-admin>.admin-workspace-disclosure>.admin-workspace-content { display:grid; grid-template-columns:minmax(0,1fr); gap:12px; min-width:0; border-top:1px solid var(--line); padding:14px; }
+  #view-admin>.admin-request-hub>.admin-workspace-content { grid-template-columns:repeat(auto-fit,minmax(245px,1fr)); align-items:start; }
+  #view-admin>.admin-request-hub>.admin-workspace-content>.admin-request-group { min-width:0; }
+  #view-admin>.admin-overview[open] .admin-stat-grid { grid-template-columns:repeat(5,minmax(0,1fr)); }
+}
+@media (min-width:1200px) {
+  #view-admin.active { grid-template-columns:repeat(4,minmax(0,1fr)); }
+}
+@media (min-width:1600px) {
+  #view-admin.active { grid-template-columns:repeat(5,minmax(0,1fr)); }
+}
+@media (max-width:899px) {
+  #view-admin>details.admin-workspace-disclosure { display:block; }
+  #view-admin>details.admin-workspace-disclosure>.admin-workspace-summary { display:flex; align-items:center; justify-content:space-between; gap:10px; cursor:pointer; list-style:none; }
+  #view-admin>details.admin-workspace-disclosure>.admin-workspace-summary::-webkit-details-marker { display:none; }
+  #view-admin>details.admin-workspace-disclosure>.admin-workspace-summary::after { content:'＋'; margin-left:auto; color:var(--accent); }
+  #view-admin>details.admin-workspace-disclosure[open]>.admin-workspace-summary::after { content:'−'; }
+  #view-admin>details.admin-workspace-disclosure>.admin-workspace-content { display:grid; gap:12px; }
+  #view-admin>details.admin-workspace-disclosure[hidden] { display:none!important; }
+}
