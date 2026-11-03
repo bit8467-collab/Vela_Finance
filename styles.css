@@ -2497,3 +2497,37 @@ svg { shape-rendering:geometricPrecision; }
   #view-admin>details.admin-workspace-disclosure>.admin-workspace-content { display:grid; gap:12px; }
   #view-admin>details.admin-workspace-disclosure[hidden] { display:none!important; }
 }
+
+/* Compact admin launcher refinements: retain all sections while reducing dashboard chrome. */
+@media (min-width:900px) {
+  #view-admin.active { gap:7px; padding-top:10px; }
+  #view-admin>.page-heading { grid-column:1/span 2; margin:0; }
+  #view-admin>.page-heading h1 { margin:0; font-size:clamp(22px,2vw,28px); }
+  #view-admin>.page-intro { grid-column:1/-1; margin:0 0 1px; font-size:11px; }
+  #view-admin>#open-payment-desk { grid-column:3/-1; justify-self:end; align-self:center; min-height:34px; margin:0; padding:7px 11px; font-size:11px; }
+  #view-admin>details.admin-workspace-disclosure>.admin-workspace-summary,
+  #view-admin>.admin-referral-overview .admin-referral-panel>summary { min-height:56px; padding:8px 10px; gap:7px; }
+  #view-admin .admin-workspace-summary .eyebrow,
+  #view-admin>.admin-referral-overview .admin-referral-panel>summary .eyebrow { margin-bottom:2px; font-size:7px; }
+  #view-admin .admin-workspace-summary h2,
+  #view-admin>.admin-referral-overview .admin-referral-panel>summary h2 { font-size:12px; line-height:1.2; }
+  #view-admin .admin-hub-note { max-width:75px; font-size:8px; }
+  #view-admin .admin-workspace-summary .count-pill { min-width:24px; padding:2px 6px; font-size:10px; }
+  #view-admin>.admin-workspace-disclosure>.admin-workspace-content { gap:9px; padding:10px; }
+}
+@media (min-width:1200px) {
+  #view-admin>.page-heading { grid-column:1/span 3; }
+  #view-admin>#open-payment-desk { grid-column:4/-1; }
+}
+@media (min-width:1600px) {
+  #view-admin>.page-heading { grid-column:1/span 4; }
+  #view-admin>#open-payment-desk { grid-column:5/-1; }
+}
+@media (max-width:899px) {
+  #view-admin>details.admin-workspace-disclosure>.admin-workspace-summary,
+  #view-admin>.admin-referral-overview .admin-referral-panel>summary { min-height:52px; padding:9px 11px; gap:8px; }
+  #view-admin .admin-workspace-summary h2,
+  #view-admin>.admin-referral-overview .admin-referral-panel>summary h2 { font-size:13px; }
+  #view-admin>details.admin-workspace-disclosure>.admin-workspace-content { padding:10px; gap:10px; }
+}
+.refresh-chart-symbol { display:inline-block; font-size:19px; line-height:1; filter:saturate(1.08); }
