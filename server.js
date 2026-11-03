@@ -587,6 +587,15 @@ async function inviterStats(env, userId) {
 async function fullState(env, user, request) {
   let wallet = await accrue(env, user.id);
   const marketPositions = await syncMarketPositions(env, user.id);
+  const redemptionRows = (await env.DB.prepare("SELECT position_id, amount, reference_value, created_at, segment_start_at, basis_quotes_json FROM market_position_redemptions WHERE user_id = ? ORDER BY created_at DESC").bind(user.id).all()).results || [];
+  const redemptionsByPosition = new Map();
+  for (const row of redemptionRows) {
+    let bucket = redemptionsByPosition.get(Number(row.position_id));
+    if (!bucket) redemptionsByPosition.set(Number(row.position_id), bucket = []);
+    let basisQuotes = {}; try { basisQuotes = JSON.parse(row.basis_quotes_json || '{}'); } catch {}
+    bucket.push({ amount: Number(row.amount), referenceValue: Number(row.reference_value), createdAt: Number(row.created_at), segmentStartAt: Number(row.segment_start_at), basisQuotes });
+  }
+  for (const position of marketPositions) position.redemptions = redemptionsByPosition.get(Number(position.id)) || [];
   wallet = await env.DB.prepare("SELECT * FROM wallets WHERE user_id = ?").bind(user.id).first() || wallet;
   const investments = (await env.DB.prepare("SELECT * FROM investments WHERE user_id = ? ORDER BY id DESC").bind(user.id).all()).results;
   const deposits = (await env.DB.prepare("SELECT * FROM deposits WHERE user_id = ? ORDER BY id DESC").bind(user.id).all()).results;
@@ -785,6 +794,18 @@ const workerHandler = {
           custom_fee REAL NOT NULL DEFAULT 0
         );`,
         `CREATE INDEX IF NOT EXISTS market_positions_user ON market_positions(user_id, status, created_at DESC);`,
+        `CREATE TABLE IF NOT EXISTS market_position_redemptions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          position_id INTEGER NOT NULL,
+          user_id TEXT NOT NULL,
+          event_id TEXT NOT NULL UNIQUE,
+          amount REAL NOT NULL,
+          reference_value REAL NOT NULL,
+          created_at INTEGER NOT NULL,
+          segment_start_at INTEGER NOT NULL,
+          basis_quotes_json TEXT NOT NULL
+        );`,
+        `CREATE INDEX IF NOT EXISTS market_position_redemptions_user_position ON market_position_redemptions(user_id, position_id, created_at DESC);`,
         `CREATE TABLE IF NOT EXISTS referral_commissions (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           user_id TEXT NOT NULL,
@@ -1636,6 +1657,8 @@ async function syncMarketPositions(env, userId) {
           const redemption = await env.DB.batch([
             env.DB.prepare("UPDATE market_positions SET last_value = ?, entry_quotes_json = ?, last_redemption_id = ?, basis_updated_at = ? WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND entry_quotes_json = ? AND auto_redeem_enabled = 1 AND auto_redeem_pct = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ?)")
               .bind(amount, basisJson, transactionId, now, row.id, userId, value, row.entry_quotes_json, autoPct, userId),
+            env.DB.prepare("INSERT INTO market_position_redemptions (position_id, user_id, event_id, amount, reference_value, created_at, segment_start_at, basis_quotes_json) SELECT ?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND last_redemption_id = ?)")
+              .bind(row.id, userId, transactionId, gain, value, now, Number(row.basis_updated_at || row.created_at), row.entry_quotes_json || '{}', row.id, userId, amount, transactionId),
             env.DB.prepare("UPDATE wallets SET earnings = earnings + ? WHERE user_id = ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND last_redemption_id = ?)")
               .bind(gain, userId, row.id, userId, amount, transactionId),
             env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND last_redemption_id = ?)")
@@ -1829,13 +1852,16 @@ async function redeemMarketGains(request, env) {
   const basisJson = JSON.stringify(nextBasis);
   const transactionId = makeToken();
   const oldStatus = position.status;
+  const now = Date.now();
   const batch = await env.DB.batch([
     env.DB.prepare("UPDATE market_positions SET last_value = ?, entry_quotes_json = ?, last_redemption_id = ?, basis_updated_at = ? WHERE id = ? AND user_id = ? AND status = ? AND last_value = ? AND entry_quotes_json = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ?)")
-      .bind(Number(position.amount), basisJson, transactionId, Date.now(), id, user.id, oldStatus, Number(position.last_value), position.entry_quotes_json, user.id),
+      .bind(Number(position.amount), basisJson, transactionId, now, id, user.id, oldStatus, Number(position.last_value), position.entry_quotes_json, user.id),
+    env.DB.prepare("INSERT INTO market_position_redemptions (position_id, user_id, event_id, amount, reference_value, created_at, segment_start_at, basis_quotes_json) SELECT ?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = ? AND last_redemption_id = ?)")
+      .bind(id, user.id, transactionId, gain, value, now, Number(position.basis_updated_at || position.created_at), position.entry_quotes_json || '{}', id, user.id, oldStatus, transactionId),
     env.DB.prepare("UPDATE wallets SET earnings = earnings + ? WHERE user_id = ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = ? AND last_value = ? AND last_redemption_id = ?)")
       .bind(gain, user.id, id, user.id, oldStatus, Number(position.amount), transactionId),
     env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = ? AND last_redemption_id = ?)")
-      .bind(user.id, 'Plan gains redeemed', gain.toFixed(3) + ' USDT moved to your internal redeemable balance. The invested principal remains in the plan.', Date.now(), id, user.id, oldStatus, transactionId),
+      .bind(user.id, 'Plan gains redeemed', gain.toFixed(3) + ' USDT moved to your internal redeemable balance. The invested principal remains in the plan.', now, id, user.id, oldStatus, transactionId),
   ]);
   if (!(batch[0]?.meta?.changes > 0)) return Response.json({ error: 'Il piano è cambiato. Aggiorna e riprova.' }, { status: 409 });
   return Response.json({ ok: true, redeemed: gain, referenceValue: Number(position.amount) });
