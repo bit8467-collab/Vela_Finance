@@ -2139,3 +2139,12 @@ body:has(#view-admin.active){padding:0!important;overflow-x:hidden}body:has(#vie
 .payment-desk-empty{margin:0;padding:0 18px 17px}
 @media(max-width:600px){.payment-desk-header{align-items:flex-start}.payment-desk-controls{flex-direction:column}.payment-desk-controls button{min-height:36px;padding:7px 10px}.payment-desk-card>header{align-items:flex-start}}
 
+/* Operator-to-admin support escalation */
+.operator-admin-escalation{display:grid;gap:7px;max-height:26dvh;overflow:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface-2);padding:11px}
+.operator-admin-escalation>small{color:var(--muted);font-size:10px}
+.operator-admin-escalation>p{margin:0;color:var(--text);font-size:11px;overflow-wrap:anywhere}
+.operator-admin-escalation label{color:var(--muted);font-size:11px}
+.operator-admin-escalation textarea{width:100%;min-height:64px;resize:vertical;border:1px solid var(--line);border-radius:9px;background:var(--bg);padding:9px;color:var(--text);font:inherit;font-size:12px}
+.operator-admin-escalation button{min-height:36px;justify-self:start;border:1px solid color-mix(in srgb,var(--accent) 50%,var(--line));border-radius:9px;background:var(--surface);padding:7px 11px;color:var(--text);font-weight:700;cursor:pointer}
+#operator-admin-requests-section .admin-request p{margin:2px 0;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.55}
+

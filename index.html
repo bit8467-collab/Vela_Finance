@@ -401,6 +401,10 @@
           <div class="section-heading"><div><p class="eyebrow">LIVE ASSISTANCE</p><h2>Support conversations</h2></div><span class="count-pill" id="support-thread-count">0</span></div>
           <div class="admin-queue" id="admin-support-threads"></div><div class="queue-empty" id="admin-support-empty">No conversations waiting for an operator.</div>
         </div>
+        <div class="admin-section" id="admin-operator-requests-section" hidden>
+          <div class="section-heading"><div><p class="eyebrow">OPERATOR ESCALATIONS</p><h2>Requests for admin</h2></div><span class="count-pill" id="operator-admin-request-count">0</span></div>
+          <div class="admin-queue" id="operator-admin-requests"></div><div class="queue-empty" id="operator-admin-requests-empty">No open operator requests.</div>
+        </div>
         <button class="outline-wide" type="button" data-go="profile">Back to profile</button>
       </section>
       <section class="payment-desk-screen" id="admin-payment-desk" aria-labelledby="payment-desk-title" hidden>
@@ -648,6 +652,13 @@
       <section class="modal-card support-card"><button class="modal-close" type="button" data-close="admin-support-dialog" aria-label="Chiudi">×</button>
         <p class="eyebrow">LIVE ASSISTANCE</p><h2 id="admin-support-title">Conversation</h2><p class="support-status" id="admin-support-status" aria-live="polite"></p>
         <div class="support-messages" id="admin-support-messages" role="log" aria-live="polite"></div>
+        <section class="operator-admin-escalation" id="admin-escalation-panel" hidden>
+          <small>USER IN THIS CONVERSATION</small><p id="admin-escalation-user"></p>
+          <label for="admin-escalation-details">Describe the issue for admin</label>
+          <textarea id="admin-escalation-details" rows="3" maxlength="2000" placeholder="What happened, and what have you tried?"></textarea>
+          <button type="button" id="send-admin-escalation">Send request to admin</button>
+          <small id="admin-escalation-feedback" aria-live="polite"></small>
+        </section>
         <form class="support-composer" id="admin-support-form"><input id="admin-support-input" type="text" maxlength="2000" placeholder="Reply to the user…" autocomplete="off" required><button type="submit" id="admin-support-send">Send</button><button type="button" class="outline-button" id="admin-support-finish">Finish conversation</button></form>
       </section>
     </dialog>
