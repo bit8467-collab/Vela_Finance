@@ -367,6 +367,10 @@ async function loadQuotes() {
       ? { ...electricity, price: Number((electricity.price * eurUsd.price).toFixed(6)), currency: 'USD', instrument: 'DE-LU day-ahead electricity · USD per MWh', provider: electricity.provider + ' · converted with Yahoo Finance FX', unit: 'per MWh' }
       : electricity;
   }
+  for (const quote of Object.values(quotes)) {
+    const price = Number(quote?.price);
+    if (Number.isFinite(price)) quote.price = Number(price.toFixed(3));
+  }
   return { quotes, fetchedAt: Date.now() };
 }
 
@@ -388,7 +392,7 @@ const marketApi = {
       return Response.json(await historyInFlight, { headers: { "Cache-Control": "no-store" } });
     }
     if (url.pathname !== "/api/asset-prices") return new Response("Not found", { status: 404 });
-    if (cachedQuotes && Date.now() - cachedAt < 5_000) {
+    if (cachedQuotes && Date.now() - cachedAt < 1_000) {
       return Response.json(cachedQuotes, { headers: { "Cache-Control": "no-store" } });
     }
     if (!refreshInFlight) {
@@ -540,7 +544,7 @@ async function accrue(env, userId) {
     const elapsed = (now - inv.created) / DAY;
     const target = Math.min(inv.days, elapsed);
     if (target > inv.credited + 1e-9) {
-      const gain = Number(((inv.amount * inv.rate / 100) * (target - inv.credited)).toFixed(8));
+      const gain = Number(((inv.amount * inv.rate / 100) * (target - inv.credited)).toFixed(3));
       wallet.earnings += gain;
       wallet.total_earned += gain;
 
@@ -1527,7 +1531,7 @@ async function deposit(request, env) {
   const created = Date.now();
   await env.DB.batch([
     env.DB.prepare("INSERT INTO deposits (user_id, amount, net, date, status, tx_reference) VALUES (?,?,?,?, 'pending', ?)").bind(user.id, amount, net, created, txReference),
-    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Deposit request submitted", amount.toFixed(2) + " USDT · " + net + " · Pending review.", created),
+    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Deposit request submitted", amount.toFixed(3) + " USDT · " + net + " · Pending review.", created),
   ]);
   return Response.json({ ok: true, status: "pending" });
 }
@@ -1544,7 +1548,7 @@ const MARKET_PLAN_ALLOCATIONS = {
 };
 
 async function currentMarketQuotes() {
-  if (cachedQuotes && Date.now() - cachedAt < 5_000) return cachedQuotes.quotes;
+  if (cachedQuotes && Date.now() - cachedAt < 1_000) return cachedQuotes.quotes;
   const data = await loadQuotes();
   if (Object.keys(data.quotes || {}).length) {
     cachedQuotes = { quotes: { ...(cachedQuotes?.quotes || {}), ...data.quotes }, fetchedAt: data.fetchedAt };
@@ -1575,7 +1579,7 @@ function marketPositionValue(position, quotes) {
     const ratio = initial > 0 && current > 0 ? current / initial : 1;
     multiplier += Number(weight) / 100 * ratio;
   }
-  return Number((Number(position.amount) * (multiplier || 1)).toFixed(8));
+  return Number((Number(position.amount) * (multiplier || 1)).toFixed(3));
 }
 
 async function syncMarketPositions(env, userId) {
@@ -1604,7 +1608,7 @@ async function syncMarketPositions(env, userId) {
       row.closed_at = isClosed ? now : null;
       if (status === 'matured') {
         await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
-          .bind(userId, 'Plan matured', 'Reference value ' + value.toFixed(2) + ' USDT. Internal balance updated; no market order or external payout was executed.', now).run();
+          .bind(userId, 'Plan matured', 'Reference value ' + value.toFixed(3) + ' USDT. Internal balance updated; no market order or external payout was executed.', now).run();
       } else if (status === 'stop_loss') {
         await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
           .bind(userId, 'Plan closed at stop', 'The aggressive plan reached its fixed ' + Number(row.stop_loss_pct) + '% stop. Remaining reference value was moved to your internal released balance.', now).run();
@@ -1626,8 +1630,8 @@ async function syncMarketPositions(env, userId) {
           if (!(price > 0)) { basisReady = false; break; }
           nextBasis[key] = price;
         }
-        const gain = Number(Math.max(0, value - amount).toFixed(2));
-        if (basisReady && Object.keys(nextBasis).length && gain >= 0.01) {
+        const gain = Number(Math.max(0, value - amount).toFixed(3));
+        if (basisReady && Object.keys(nextBasis).length && gain >= 0.001) {
           const transactionId = makeToken(), basisJson = JSON.stringify(nextBasis);
           const redemption = await env.DB.batch([
             env.DB.prepare("UPDATE market_positions SET last_value = ?, entry_quotes_json = ?, last_redemption_id = ?, basis_updated_at = ? WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND entry_quotes_json = ? AND auto_redeem_enabled = 1 AND auto_redeem_pct = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ?)")
@@ -1635,7 +1639,7 @@ async function syncMarketPositions(env, userId) {
             env.DB.prepare("UPDATE wallets SET earnings = earnings + ? WHERE user_id = ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND last_redemption_id = ?)")
               .bind(gain, userId, row.id, userId, amount, transactionId),
             env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND last_redemption_id = ?)")
-              .bind(userId, 'Plan gains redeemed', gain.toFixed(2) + ' USDT moved to the redeemable balance after reaching the ' + autoPct + '% gain threshold. The plan remains active.', now, row.id, userId, amount, transactionId),
+              .bind(userId, 'Plan gains redeemed', gain.toFixed(3) + ' USDT moved to the redeemable balance after reaching the ' + autoPct + '% gain threshold. The plan remains active.', now, row.id, userId, amount, transactionId),
           ]);
           if (redemption[0]?.meta?.changes > 0) {
             row.last_value = amount;
@@ -1692,7 +1696,7 @@ async function saveAdminDepositAddresses(request, env) {
 async function marketInvest(request, env) {
   const user = await authed(request, env);
   const body = await request.json();
-  const amount = Number(body.amount);
+  const amount = Number(Number(body.amount).toFixed(3));
   const months = Number(body.months);
   if (body.riskAcknowledged !== true) return bad('È necessario confermare di aver compreso i rischi prima di avviare il piano.');
   const riskLevel = typeof body.riskLevel === 'string' ? body.riskLevel : 'balanced';
@@ -1721,7 +1725,7 @@ async function marketInvest(request, env) {
   ]);
   if (!(results[0]?.meta?.changes > 0) || !(results[1]?.meta?.changes > 0)) return bad("Saldo insufficiente o modifica concorrente dell'account. Aggiorna e riprova.");
   await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
-    .bind(user.id, "Market plan started", amount.toFixed(2) + " USDT · duration " + months + " months · risk " + riskLevel + " · fixed stop-loss " + stopLossPct + "%.", now).run();
+    .bind(user.id, "Market plan started", amount.toFixed(3) + " USDT · duration " + months + " months · risk " + riskLevel + " · fixed stop-loss " + stopLossPct + "%.", now).run();
   return Response.json({ ok: true, positionId: results[0]?.meta?.last_row_id || null });
 }
 
@@ -1730,7 +1734,7 @@ async function customMarketInvest(request, env) {
   const body = await request.json().catch(() => ({}));
   if (body.riskAcknowledged !== true) return bad('È necessario confermare di aver compreso i rischi prima di avviare il piano.');
   const months = Number(body.months);
-  const principal = Number(body.amount);
+  const principal = Number(Number(body.amount).toFixed(3));
   const stopLossPct = Number(body.stopLossPct);
   const fee = CUSTOM_PLAN_FEES[months];
   if (!fee) return bad('Durata del piano personalizzato non valida.');
@@ -1749,9 +1753,9 @@ async function customMarketInvest(request, env) {
   }
   const allocationTotal = allocations.reduce((sum, item) => sum + item[1], 0);
   if (Math.abs(allocationTotal - 100) > 0.01) return bad('Le percentuali degli asset devono sommare esattamente 100%.');
-  const totalCharge = Number((principal + fee).toFixed(2));
+  const totalCharge = Number((principal + fee).toFixed(3));
   const wallet = await accrue(env, user.id);
-  if (totalCharge > Number(wallet[source] || 0) + 1e-9) return bad('Saldo insufficiente: servono ' + totalCharge.toFixed(2) + ' USDT, inclusa la quota del piano.');
+  if (totalCharge > Number(wallet[source] || 0) + 1e-9) return bad('Saldo insufficiente: servono ' + totalCharge.toFixed(3) + ' USDT, inclusa la quota del piano.');
   const quotes = await currentMarketQuotes(), entry = {};
   for (const [key] of allocations) {
     const price = Number(quotes[key]?.price);
@@ -1769,14 +1773,14 @@ async function customMarketInvest(request, env) {
   ]);
   if (!(results[0]?.meta?.changes > 0) || !(results[1]?.meta?.changes > 0)) return bad('Saldo insufficiente o modifica concorrente dell’account. Aggiorna e riprova.');
   await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
-    .bind(user.id, 'Custom market portfolio started', principal.toFixed(2) + ' USDT invested · plan fee ' + fee.toFixed(2) + ' USDT · duration ' + months + ' months · stop loss ' + stopLossPct + '%.', now).run();
+    .bind(user.id, 'Custom market portfolio started', principal.toFixed(3) + ' USDT invested · plan fee ' + fee.toFixed(3) + ' USDT · duration ' + months + ' months · stop loss ' + stopLossPct + '%.', now).run();
   return Response.json({ ok: true, positionId: results[0]?.meta?.last_row_id || null, amount: principal, fee, totalCharged: totalCharge });
 }
 
 async function addMarketFunds(request, env) {
   const user = await authed(request, env);
   const body = await request.json();
-  const id = Number(body.positionId), amount = Number(body.amount);
+  const id = Number(body.positionId), amount = Number(Number(body.amount).toFixed(3));
   const source = body.source === 'earnings' ? 'earnings' : 'deposit';
   if (!Number.isInteger(id) || id < 1 || !Number.isFinite(amount) || amount < 1) return bad("Importo o piano non valido.");
   const wallet = await accrue(env, user.id);
@@ -1812,8 +1816,8 @@ async function redeemMarketGains(request, env) {
   if (!position) return Response.json({ error: 'Il piano non è più attivo o riscattabile.' }, { status: 409 });
   const quotes = await currentMarketQuotes();
   const value = marketPositionValue(position, quotes);
-  const gain = Number((value - Number(position.amount)).toFixed(2));
-  if (!(gain >= 0.01)) return bad('Non ci sono guadagni sopra il capitale investito da riscattare.');
+  const gain = Number((value - Number(position.amount)).toFixed(3));
+  if (!(gain >= 0.001)) return bad('Non ci sono guadagni sopra il capitale investito da riscattare.');
   let allocation = [];
   try { allocation = JSON.parse(position.allocations_json || '[]'); } catch {}
   const nextBasis = {};
@@ -1831,7 +1835,7 @@ async function redeemMarketGains(request, env) {
     env.DB.prepare("UPDATE wallets SET earnings = earnings + ? WHERE user_id = ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = ? AND last_value = ? AND last_redemption_id = ?)")
       .bind(gain, user.id, id, user.id, oldStatus, Number(position.amount), transactionId),
     env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = ? AND last_redemption_id = ?)")
-      .bind(user.id, 'Plan gains redeemed', gain.toFixed(2) + ' USDT moved to your internal redeemable balance. The invested principal remains in the plan.', Date.now(), id, user.id, oldStatus, transactionId),
+      .bind(user.id, 'Plan gains redeemed', gain.toFixed(3) + ' USDT moved to your internal redeemable balance. The invested principal remains in the plan.', Date.now(), id, user.id, oldStatus, transactionId),
   ]);
   if (!(batch[0]?.meta?.changes > 0)) return Response.json({ error: 'Il piano è cambiato. Aggiorna e riprova.' }, { status: 409 });
   return Response.json({ ok: true, redeemed: gain, referenceValue: Number(position.amount) });
@@ -1846,10 +1850,10 @@ async function closeMarketPositionEarly(request, env) {
   const position = await env.DB.prepare("SELECT * FROM market_positions WHERE id = ? AND user_id = ? AND status IN ('active','paused')").bind(id, user.id).first();
   if (!position) return Response.json({ error: 'Il piano è già chiuso, maturato o non disponibile.' }, { status: 409 });
   const quotes = await currentMarketQuotes();
-  const value = Number(marketPositionValue(position, quotes).toFixed(8));
+  const value = Number(marketPositionValue(position, quotes).toFixed(3));
   if (!(value > 0)) return bad('Il valore di riferimento non è disponibile per la chiusura.');
-  const fee = Number((value * 0.65).toFixed(8));
-  const net = Number((value - fee).toFixed(8));
+  const fee = Number((value * 0.65).toFixed(3));
+  const net = Number((value - fee).toFixed(3));
   const now = Date.now();
   const transactionId = makeToken();
   const batch = await env.DB.batch([
@@ -1858,7 +1862,7 @@ async function closeMarketPositionEarly(request, env) {
     env.DB.prepare("UPDATE wallets SET released = MAX(0, released - ?), earnings = earnings + ? WHERE user_id = ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'early_closed' AND last_redemption_id = ?)")
       .bind(value, net, user.id, id, user.id, transactionId),
     env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'early_closed' AND last_redemption_id = ?)")
-      .bind(user.id, 'Plan closed early', 'Current reference value ' + value.toFixed(2) + ' USDT; 65% early-closure fee ' + fee.toFixed(2) + ' USDT; net credited to earnings balance and available for withdrawal request ' + net.toFixed(2) + ' USDT. No external payout was made.', now, id, user.id, transactionId),
+      .bind(user.id, 'Plan closed early', 'Current reference value ' + value.toFixed(3) + ' USDT; 65% early-closure fee ' + fee.toFixed(3) + ' USDT; net credited to earnings balance and available for withdrawal request ' + net.toFixed(3) + ' USDT. No external payout was made.', now, id, user.id, transactionId),
   ]);
   if (!(batch[0]?.meta?.changes > 0)) return Response.json({ error: 'Il piano è cambiato. Aggiorna e riprova.' }, { status: 409 });
   return Response.json({ ok: true, referenceValue: value, fee, net });
@@ -1927,7 +1931,7 @@ async function withdraw(request, env) {
     env.DB.prepare("UPDATE wallets SET " + prepared.source + " = " + prepared.source + " - ? WHERE user_id = ? AND " + prepared.source + " >= ?").bind(prepared.amount, user.id, prepared.amount),
     env.DB.prepare("INSERT INTO withdrawals (user_id, amount, net, date, status, wallet_address, source) VALUES (?, ?, ?, ?, 'pending', ?, ?)")
       .bind(user.id, prepared.amount, prepared.net, created, prepared.address, prepared.source),
-    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Withdrawal request submitted", prepared.amount.toFixed(2) + " USDT · " + prepared.net + " · Pending review.", created),
+    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Withdrawal request submitted", prepared.amount.toFixed(3) + " USDT · " + prepared.net + " · Pending review.", created),
   ]);
   return Response.json({ ok: true, status: "pending" });
 }
@@ -2175,7 +2179,7 @@ async function reviewTransaction(request, env) {
           if (!uplineUser) break;
 
           const pct = REFERRAL_PCTS[level];
-          const commAmount = Number((amount * pct).toFixed(8));
+          const commAmount = Number((amount * pct).toFixed(3));
           if (commAmount > 0) {
             await env.DB.prepare(
               "INSERT INTO wallets (user_id, deposit, earnings, total_deposited, total_earned, total_withdrawn) VALUES (?, 0, ?, 0, ?, 0) " +
@@ -2188,7 +2192,7 @@ async function reviewTransaction(request, env) {
 
             await env.DB.prepare(
               "INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)"
-            ).bind(uplineUser.id, "Referral commission", `Credited ${commAmount.toFixed(2)} USDT referral commission (Level ${level + 1}) on user's first deposit.`, now).run();
+            ).bind(uplineUser.id, "Referral commission", `Credited ${commAmount.toFixed(3)} USDT referral commission (Level ${level + 1}) on user's first deposit.`, now).run();
           }
 
           const nextParent = await env.DB.prepare("SELECT referred_by FROM users WHERE id = ?").bind(currentReferrerId).first();
@@ -2260,9 +2264,9 @@ async function reviewTransaction(request, env) {
     const transactionLabel = kind === "deposit" ? "Deposit" : kind === "withdrawal" ? "Withdrawal" : "Wallet change request";
     let message = "";
     if (kind === "deposit") {
-      message = `${amount.toFixed(2)} USDT · ${net} · Request ${statusLabel}${action === "approve" ? ". Amount successfully credited to wallet." : ". Amount was not credited."}`;
+      message = `${amount.toFixed(3)} USDT · ${net} · Request ${statusLabel}${action === "approve" ? ". Amount successfully credited to wallet." : ". Amount was not credited."}`;
     } else if (kind === "withdrawal") {
-      message = `${amount.toFixed(2)} USDT · ${net} · Request ${statusLabel}${action === "reject" ? ". Amount refunded to wallet successfully." : ". Operation completed. TX: " + transactionReference}`;
+      message = `${amount.toFixed(3)} USDT · ${net} · Request ${statusLabel}${action === "reject" ? ". Amount refunded to wallet successfully." : ". Operation completed. TX: " + transactionReference}`;
     } else {
       message = action === "approve"
         ? `Network ${net} · Address change request successfully approved.`
