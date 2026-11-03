@@ -2147,4 +2147,11 @@ body:has(#view-admin.active){padding:0!important;overflow-x:hidden}body:has(#vie
 .operator-admin-escalation textarea{width:100%;min-height:64px;resize:vertical;border:1px solid var(--line);border-radius:9px;background:var(--bg);padding:9px;color:var(--text);font:inherit;font-size:12px}
 .operator-admin-escalation button{min-height:36px;justify-self:start;border:1px solid color-mix(in srgb,var(--accent) 50%,var(--line));border-radius:9px;background:var(--surface);padding:7px 11px;color:var(--text);font-weight:700;cursor:pointer}
 #operator-admin-requests-section .admin-request p{margin:2px 0;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.55}
+.operator-admin-guidance{display:grid;gap:7px;border-top:1px solid var(--line);padding-top:8px}
+.operator-admin-guidance>small,.operator-admin-guidance article>small{color:var(--accent);font-size:10px;font-weight:750;letter-spacing:.06em}
+.operator-admin-guidance article{display:grid;gap:4px;border-radius:8px;background:var(--surface);padding:8px}
+.operator-admin-guidance article p{margin:0;color:var(--text);font-size:11px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}
+.operator-admin-guidance article b{font-size:11px;color:var(--green)}
+.admin-guidance-field{display:grid;gap:5px;color:var(--muted);font-size:11px}
+.admin-guidance-field textarea{width:100%;min-height:58px;resize:vertical;border:1px solid var(--line);border-radius:8px;background:var(--bg);padding:8px;color:var(--text);font:inherit;font-size:12px}
 

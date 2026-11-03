@@ -734,7 +734,9 @@ const workerHandler = {
           details TEXT NOT NULL,
           status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','resolved')),
           created_at INTEGER NOT NULL,
-          resolved_at INTEGER
+          resolved_at INTEGER,
+          admin_reply TEXT NOT NULL DEFAULT '',
+          replied_at INTEGER
         );`,
         `CREATE INDEX IF NOT EXISTS operator_admin_requests_status_created ON operator_admin_requests(status, created_at);`,
         `CREATE TABLE IF NOT EXISTS wallets (
@@ -905,6 +907,9 @@ const workerHandler = {
       `);
     } catch {}
 
+    try { await env.DB.prepare("ALTER TABLE operator_admin_requests ADD COLUMN admin_reply TEXT NOT NULL DEFAULT ''").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE operator_admin_requests ADD COLUMN replied_at INTEGER").run(); } catch {}
+
     const adminEmail = PRIMARY_ADMIN_EMAIL.toLowerCase();
     const legacyAdmin = await env.DB.prepare("SELECT id FROM users WHERE lower(identifier) = ?").bind(adminEmail).first();
     const existingAdminCreds = await env.DB.prepare("SELECT salt, password_hash, iterations, updated_by FROM admin_credentials WHERE id = 1").first();
@@ -964,6 +969,8 @@ const workerHandler = {
       if (method === "POST" && pathName === "/api/admin/support-requests") return await createOperatorAdminRequest(request, env);
       const adminSupportRequestResolveMatch = pathName.match(/^\/api\/admin\/support-requests\/(\d+)\/resolve$/);
       if (method === "POST" && adminSupportRequestResolveMatch) return await resolveOperatorAdminRequest(request, env, Number(adminSupportRequestResolveMatch[1]));
+      const adminSupportRequestReplyMatch = pathName.match(/^\/api\/admin\/support-requests\/(\d+)\/reply$/);
+      if (method === "POST" && adminSupportRequestReplyMatch) return await replyToOperatorAdminRequest(request, env, Number(adminSupportRequestReplyMatch[1]));
       const adminSupportMessagesMatch = pathName.match(/^\/api\/admin\/support\/(\d+)\/messages$/);
       if (method === "POST" && adminSupportMessagesMatch) return await adminSupportReply(request, env, Number(adminSupportMessagesMatch[1]));
       const adminSupportThreadMatch = pathName.match(/^\/api\/admin\/support\/(\d+)$/);
@@ -1163,10 +1170,31 @@ async function createOperatorAdminRequest(request, env) {
 }
 
 async function listOperatorAdminRequests(request, env) {
+  const actor = await adminAccess(request, env, "support");
+  if (!actor) return Response.json({ error: "Permessi supporto richiesti." }, { status: 403 });
+  const url = new URL(request.url);
+  const threadId = Number(url.searchParams.get("threadId")) || 0;
+  if (isPrimaryAdmin(actor)) {
+    const rows = (await env.DB.prepare("SELECT id, operator_username, thread_id, user_id, username, user_identifier, details, admin_reply, replied_at, created_at FROM operator_admin_requests WHERE status = 'open' ORDER BY created_at ASC LIMIT 100").all()).results;
+    return Response.json({ requests: rows });
+  }
+  let sql = "SELECT id, thread_id, details, admin_reply, replied_at, status, created_at FROM operator_admin_requests WHERE operator_id = ?";
+  const params = [actor.id];
+  if (Number.isInteger(threadId) && threadId > 0) { sql += " AND thread_id = ?"; params.push(threadId); }
+  sql += " ORDER BY created_at DESC LIMIT 100";
+  const rows = (await env.DB.prepare(sql).bind(...params).all()).results;
+  return Response.json({ requests: rows });
+}
+
+async function replyToOperatorAdminRequest(request, env, id) {
   const admin = await privilegedAdminActor(request, env);
   if (!admin) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
-  const rows = (await env.DB.prepare("SELECT id, operator_username, thread_id, user_id, username, user_identifier, details, created_at FROM operator_admin_requests WHERE status = 'open' ORDER BY created_at ASC LIMIT 100").all()).results;
-  return Response.json({ requests: rows });
+  const body = await request.json();
+  const message = typeof body.message === "string" ? body.message.trim() : "";
+  if (!message || message.length > 2000) return bad("Le istruzioni devono contenere da 1 a 2000 caratteri.");
+  const result = await env.DB.prepare("UPDATE operator_admin_requests SET admin_reply = ?, replied_at = ? WHERE id = ? AND status = 'open'").bind(message, Date.now(), id).run();
+  if (!result.meta?.changes) return bad("Richiesta non trovata o già risolta.");
+  return Response.json({ ok: true });
 }
 
 async function resolveOperatorAdminRequest(request, env, id) {
