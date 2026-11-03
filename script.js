@@ -1619,10 +1619,11 @@ function supportRuleReply(message){
   const sections=[...(template?.content?.querySelectorAll('.guide-section')||[])].map(section=>{
     const text=String(section.textContent||'').replace(/\s+/g,' ').trim(),lower=text.toLocaleLowerCase();
     return {text,score:terms.reduce((score,term)=>score+(lower.includes(term)?1:0),0)};
-  }).filter(section=>section.score>0).sort((a,b)=>b.score-a.score).slice(0,2);
-  const answers=facts.slice(0,3).map(item=>item.info);
-  for(const section of sections)answers.push(section.text.slice(0,1000));
-  return answers.length?answers.join('\n\n').slice(0,3000):supportFallback();
+  }).filter(section=>section.score>0).sort((a,b)=>b.score-a.score).slice(0,1);
+  const answers=facts.slice(0,1).map(item=>item.info);
+  for(const section of sections)answers.push(section.text.slice(0,420));
+  const reply=answers.length?answers.join('\n\n').slice(0,1100):supportFallback();
+  return facts.length||sections.length?reply+'\n\n[[GUIDE]]':reply;
 }
 const supportUi={
   user:['You','Vous','Tú','Du','Você','आप','你','Tu'],operator:['Operator','Opérateur','Operador','Operator','Operador','ऑपरेटर','客服','Operatore'],assistant:['Assistant','Assistant','Asistente','Assistent','Assistente','सहायक','助手','Assistente'],
@@ -1670,7 +1671,7 @@ function renderSupportMessages(){
   const box=$('support-messages');if(!box)return;applySupportStaticLanguage();
   const status=supportThread?.status||'bot',latest=supportMessages[supportMessages.length-1];
   const finalPending=!!(supportThread?.final_message_id&&Number(supportThread.final_message_id)===Number(latest?.id));
-  box.innerHTML=supportMessages.map(m=>{const role=m.sender_role==='user'?'user':m.sender_role==='operator'?'operator':'assistant';return '<article class="support-message '+(role==='user'?'user':'')+'"><small>'+esc(supportCopy(role))+' · '+new Date(Number(m.created_at)).toLocaleTimeString(getLocale(),{hour:'2-digit',minute:'2-digit'})+'</small>'+esc(localizeSupportMessage(m.body))+'</article>'}).join('')||'<p class="support-empty">'+esc(supportCopy('empty'))+'</p>';
+  box.innerHTML=supportMessages.map(m=>{const role=m.sender_role==='user'?'user':m.sender_role==='operator'?'operator':'assistant';return '<article class="support-message '+(role==='user'?'user':'')+'"><small>'+esc(supportCopy(role))+' · '+new Date(Number(m.created_at)).toLocaleTimeString(getLocale(),{hour:'2-digit',minute:'2-digit'})+'</small>'+(function(){const raw=String(m.body||''),hasGuide=role==='assistant'&&raw.includes('[[GUIDE]]'),body=hasGuide?raw.replace(/\s*\[\[GUIDE\]\]\s*$/,''):raw;return esc(localizeSupportMessage(body))+(hasGuide?'<a href="#guida" style="display:inline-block;margin-top:7px;color:var(--accent);font-weight:700;text-decoration:underline">Apri la guida tutorial ↗</a>':'')})()+'</article>'}).join('')||'<p class="support-empty">'+esc(supportCopy('empty'))+'</p>';
   box.scrollTop=box.scrollHeight;$('support-status').textContent=finalPending?supportCopy('closing'):status==='waiting'?supportCopy('waiting'):status==='live'?supportCopy('live'):status==='closed'?supportCopy('closed'):supportCopy('bot');
   $('support-escalate').hidden=true;$('support-form').hidden=status==='closed'||finalPending;
   $('support-input').placeholder=status==='waiting'?supportCopy('waitingPlaceholder'):status==='live'?supportCopy('messagePlaceholder'):supportCopy('questionPlaceholder');
