@@ -2613,3 +2613,112 @@ body:has(#view-admin.active) .topbar { position:relative; top:auto; z-index:10; 
   #view-admin .admin-workspace-link { flex:0 0 172px; width:172px; min-height:43px; }
   #view-admin .admin-workspace-stage { height:100%; min-height:0!important; }
 }
+
+
+/* Full-screen investment details with a flat, uncluttered content layout. */
+#investment-detail-dialog.investment-detail-dialog {
+  width:100vw!important;
+  max-width:none!important;
+  height:100dvh!important;
+  max-height:100dvh!important;
+  margin:0!important;
+  padding:0!important;
+  border:0!important;
+  border-radius:0!important;
+  overflow:auto!important;
+}
+#investment-detail-dialog .detail-modal-card {
+  box-sizing:border-box;
+  width:100%!important;
+  max-width:none!important;
+  min-height:100dvh;
+  margin:0!important;
+  border:0!important;
+  border-radius:0!important;
+  background:var(--bg)!important;
+  box-shadow:none!important;
+  padding:max(18px,env(safe-area-inset-top)) clamp(16px,4vw,44px) max(20px,env(safe-area-inset-bottom))!important;
+  gap:16px;
+}
+#investment-detail-dialog .investment-detail-metrics>div {
+  border:0!important;
+  border-bottom:1px solid var(--line)!important;
+  border-radius:0!important;
+  background:transparent!important;
+  box-shadow:none!important;
+  padding:9px 4px!important;
+}
+#investment-detail-dialog .investment-chart-section,
+#investment-detail-dialog .investment-allocation-section {
+  border:0!important;
+  border-top:1px solid var(--line)!important;
+  border-radius:0!important;
+  background:transparent!important;
+  box-shadow:none!important;
+  padding:13px 0!important;
+}
+#investment-detail-dialog #investment-asset-history {
+  overflow:visible!important;
+  border:0!important;
+  border-top:1px solid var(--line)!important;
+  border-radius:0!important;
+  background:transparent!important;
+  box-shadow:none!important;
+}
+#investment-detail-dialog #investment-asset-history>summary {
+  min-height:44px!important;
+  border:0!important;
+  border-radius:0!important;
+  background:transparent!important;
+  box-shadow:none!important;
+  padding:9px 0!important;
+  color:var(--text)!important;
+}
+#investment-detail-dialog #investment-asset-history>summary b,
+#investment-detail-dialog #investment-asset-history>summary small,
+#investment-detail-dialog #investment-asset-history>summary i { color:var(--text)!important; }
+#investment-detail-dialog #investment-asset-history-list { padding:6px 0 0!important; }
+#investment-detail-dialog .investment-asset-history-card {
+  border:0!important;
+  border-bottom:1px solid var(--line)!important;
+  border-radius:0!important;
+  background:transparent!important;
+  box-shadow:none!important;
+  padding:9px 0!important;
+}
+#investment-detail-dialog #investment-auto-redeem,
+#investment-detail-dialog #investment-auto-add {
+  border:0!important;
+  border-top:1px solid color-mix(in srgb,#c99732 48%,var(--line))!important;
+  border-radius:0!important;
+  background:transparent!important;
+  box-shadow:none!important;
+  padding:12px 0!important;
+}
+#investment-detail-dialog #investment-auto-redeem>summary,
+#investment-detail-dialog #investment-auto-add>summary {
+  border:0!important;
+  border-radius:0!important;
+  background:transparent!important;
+  box-shadow:none!important;
+  padding:5px 0!important;
+  color:#d0a13e!important;
+  text-shadow:0 0 8px rgba(208,161,62,.52),0 0 18px rgba(183,126,26,.28);
+}
+#investment-detail-dialog #investment-auto-redeem>summary span,
+#investment-detail-dialog #investment-auto-add>summary span,
+#investment-detail-dialog #investment-auto-redeem .auto-redeem-heading h3 {
+  color:#d0a13e!important;
+  text-shadow:0 0 8px rgba(208,161,62,.52),0 0 18px rgba(183,126,26,.28);
+}
+#investment-detail-dialog #investment-auto-redeem>summary i,
+#investment-detail-dialog #investment-auto-add>summary i { color:#d0a13e!important; }
+
+/* Compact spacing at the top of the administration workspace. */
+#app-shell:has(#view-admin.active) #view-admin.active {
+  row-gap:5px!important;
+  padding-top:7px!important;
+  padding-bottom:10px!important;
+}
+#view-admin.active>.page-heading { margin-bottom:0!important; padding-bottom:0!important; }
+#view-admin.active>.page-intro { margin-top:0!important; margin-bottom:1px!important; }
