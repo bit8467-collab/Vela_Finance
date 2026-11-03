@@ -2155,3 +2155,9 @@ body:has(#view-admin.active){padding:0!important;overflow-x:hidden}body:has(#vie
 .admin-guidance-field{display:grid;gap:5px;color:var(--muted);font-size:11px}
 .admin-guidance-field textarea{width:100%;min-height:58px;resize:vertical;border:1px solid var(--line);border-radius:8px;background:var(--bg);padding:8px;color:var(--text);font:inherit;font-size:12px}
 
+
+/* Compact top-right actions */
+.topbar-actions #refresh-account,.topbar-actions #open-notifications{width:30px;height:30px;min-width:30px;min-height:30px;border-radius:9px;padding:0}
+.topbar-actions #refresh-account svg,.topbar-actions #open-notifications svg{width:15px;height:15px}
+.topbar-actions .topbar-logout{min-height:30px;padding:0 8px;border:1px solid var(--line);border-radius:9px;background:var(--surface);color:var(--text);font:700 9px/1 var(--font);white-space:nowrap}
+.topbar-actions .topbar-logout:hover,.topbar-actions .topbar-logout:focus-visible{border-color:var(--accent);color:var(--accent)}
