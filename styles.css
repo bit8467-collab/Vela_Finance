@@ -2413,3 +2413,30 @@ svg { shape-rendering:geometricPrecision; }
 }
 #investment-auto-add .auto-redeem-save { border-color:color-mix(in srgb,var(--accent) 42%,var(--line)); }
 #investment-auto-redeem:focus-within,#investment-auto-add:focus-within { border-color:color-mix(in srgb,var(--accent) 58%,var(--line)); }
+
+/* Full-screen plan composition and purchase view. */
+#view-catalog #catalog-plans .catalog-plan-card { display:flex; flex-direction:column; align-items:stretch; min-width:0; border-color:color-mix(in srgb,var(--accent) 38%,var(--line)); background:linear-gradient(145deg,color-mix(in srgb,var(--surface) 83%,var(--accent) 17%),var(--surface) 62%,color-mix(in srgb,var(--surface) 91%,#9b8cff 9%)); box-shadow:0 12px 30px rgba(2,12,25,.2),inset 0 1px 0 rgba(255,255,255,.09); }
+#view-catalog #catalog-plans .catalog-plan-card:hover,#view-catalog #catalog-plans .catalog-plan-card:focus-visible { border-color:color-mix(in srgb,var(--accent) 76%,var(--line)); background:linear-gradient(145deg,color-mix(in srgb,var(--surface-2) 76%,var(--accent) 24%),var(--surface)); box-shadow:0 16px 38px rgba(2,12,25,.24),0 0 24px color-mix(in srgb,var(--accent) 17%,transparent),inset 0 1px 0 rgba(255,255,255,.12); }
+#view-catalog .catalog-plan-card .plan-card-top { align-items:center; }
+#view-catalog .catalog-plan-card .plan-duration,#view-catalog .catalog-plan-card .plan-badge { border:1px solid color-mix(in srgb,var(--accent) 34%,var(--line)); border-radius:999px; background:color-mix(in srgb,var(--accent) 13%,var(--surface-2)); color:var(--accent); padding:5px 9px; font-size:10px; font-weight:700; }
+#view-catalog .catalog-plan-card .plan-badge { color:var(--green); border-color:color-mix(in srgb,var(--green) 28%,var(--line)); background:color-mix(in srgb,var(--green) 10%,var(--surface-2)); }
+#view-catalog .catalog-plan-card h3 { color:var(--text); } #view-catalog .catalog-plan-card .plan-description { color:var(--muted); }
+.plan-open-hint { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:auto; border-top:1px solid color-mix(in srgb,var(--accent) 24%,var(--line)); padding-top:12px; color:var(--accent); font-size:11px; font-weight:700; }
+.plan-open-hint>span:last-child { display:grid; width:26px; height:26px; place-items:center; border:1px solid color-mix(in srgb,var(--accent) 42%,var(--line)); border-radius:50%; background:color-mix(in srgb,var(--accent) 12%,var(--surface-2)); font-size:15px; transition:transform .16s ease,background-color .16s ease; }
+.catalog-plan-card:hover .plan-open-hint>span:last-child { transform:translate(2px,-2px); background:color-mix(in srgb,var(--accent) 24%,var(--surface-2)); }
+#plan-dialog.modal { position:fixed; inset:0; width:100%; height:100vh; height:100dvh; max-width:none; max-height:none; margin:0; overflow:auto; border:0; border-radius:0; background:var(--bg); padding:0; }
+#plan-dialog .modal-card { width:min(100%,1080px); min-height:100%; margin:0 auto; padding:max(26px,env(safe-area-inset-top)) clamp(18px,5vw,64px) max(28px,env(safe-area-inset-bottom)); gap:10px; background:transparent; }
+#plan-dialog .plan-allocation-panel { min-width:0; margin:5px 0 9px; border:1px solid color-mix(in srgb,var(--accent) 36%,var(--line)); border-radius:18px; background:linear-gradient(145deg,color-mix(in srgb,var(--surface) 84%,var(--accent) 16%),var(--surface)); padding:clamp(13px,2vw,22px); box-shadow:0 12px 28px rgba(2,12,25,.14),inset 0 1px 0 rgba(255,255,255,.06); }
+.plan-allocation-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
+.plan-allocation-heading .eyebrow { margin:0 0 4px; color:var(--accent); } .plan-allocation-heading h3 { margin:0; color:var(--text); font-size:17px; }
+.plan-allocation-total { display:grid; min-width:48px; min-height:38px; place-items:center; border:1px solid color-mix(in srgb,var(--accent) 40%,var(--line)); border-radius:12px; background:color-mix(in srgb,var(--accent) 13%,var(--surface-2)); color:var(--accent); font-size:13px; }
+.plan-allocation-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+.plan-allocation-item { min-width:0; border:1px solid var(--line); border-radius:12px; background:color-mix(in srgb,var(--surface-2) 88%,var(--accent) 12%); padding:10px; }
+.plan-allocation-item-head { display:flex; align-items:center; justify-content:space-between; gap:8px; min-width:0; margin-bottom:9px; }
+.plan-allocation-item-head>span { display:grid; min-width:0; gap:3px; } .plan-allocation-item-head b { color:var(--text); font-size:11px; overflow-wrap:anywhere; }
+.plan-allocation-item-head small { color:var(--muted); font-size:9px; overflow-wrap:anywhere; } .plan-allocation-item-head>strong { flex:0 0 auto; color:var(--accent); font-size:12px; }
+.plan-allocation-track { height:5px; overflow:hidden; border-radius:999px; background:color-mix(in srgb,var(--line) 72%,transparent); }
+.plan-allocation-track>span { display:block; height:100%; border-radius:inherit; background:linear-gradient(90deg,var(--accent),var(--green)); box-shadow:0 0 10px color-mix(in srgb,var(--accent) 46%,transparent); }
+#plan-dialog .plan-terms { border-left:3px solid var(--accent); border-radius:0 8px 8px 0; background:color-mix(in srgb,var(--accent) 8%,var(--surface)); padding:9px 12px; }
+@media (min-width:760px) { .plan-allocation-grid { grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; } }
+@media (max-width:390px) { .plan-allocation-grid { grid-template-columns:minmax(0,1fr); } }
