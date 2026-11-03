@@ -1419,6 +1419,7 @@ async function requestEmailVerification(request, env) {
 
   const now = Date.now();
   await env.DB.prepare("INSERT INTO email_verification_requests (user_id, requested_at, otp_attempts, verified_at) VALUES (?, ?, 0, NULL) ON CONFLICT(user_id) DO UPDATE SET requested_at = excluded.requested_at, verified_at = NULL").bind(targetUser.id, now).run();
+  await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)").bind(targetUser.id, "Email verification request", "Verification request sent. Wait for the code sent by email, then enter it here.", now).run();
   return Response.json({ ok: true, email: targetUser.identifier, username: targetUser.username, userId: targetUser.id, requestedAt: now });
 }
 
