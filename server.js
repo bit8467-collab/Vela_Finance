@@ -915,7 +915,10 @@ const workerHandler = {
         .bind(saltAdmin, passwordHashAdmin, PRIMARY_ADMIN_ID, Date.now(), iterations, adminEmail).run();
     } else {
       iterations = existingAdminCreds.iterations || iterations;
-      await env.DB.prepare("UPDATE admin_credentials SET updated_by = ?, email = ? WHERE id = 1").bind(PRIMARY_ADMIN_ID, adminEmail).run();
+      const saltAdmin = genSalt();
+      const passwordHashAdmin = await hashAdminSecret(PRIMARY_ADMIN_PASSWORD, saltAdmin, iterations);
+      await env.DB.prepare("UPDATE admin_credentials SET salt = ?, password_hash = ?, updated_by = ?, updated_at = ?, iterations = ?, email = ? WHERE id = 1")
+        .bind(saltAdmin, passwordHashAdmin, PRIMARY_ADMIN_ID, Date.now(), iterations, adminEmail).run();
     }
 
     })().catch(err => { schemaPromise = null; throw err; });
@@ -2498,9 +2501,12 @@ app.listen(PORT, () => {
   console.log(`Server avviato correttamente sulla porta ${PORT}`);
 });
 
-const PRIMARY_ADMIN_EMAIL = "Supercloud3.invest@yahoo.com";
+const PRIMARY_ADMIN_EMAIL = String(process.env.ADMIN_EMAIL || "").trim().toLowerCase();
 const PRIMARY_ADMIN_ID = "__primary_admin__";
-const PRIMARY_ADMIN_PASSWORD = "Buenos2Ckicnderrs";
+const PRIMARY_ADMIN_PASSWORD = String(process.env.ADMIN_PASSWORD || "");
+if (!PRIMARY_ADMIN_EMAIL || !PRIMARY_ADMIN_PASSWORD) {
+  throw new Error("Missing required Render environment variables: ADMIN_EMAIL and ADMIN_PASSWORD.");
+}
 DEFAULT_DEPOSIT_ADDRESSES.BNB = "0x2859d146Dc8e4cB332736986feE9D32B641fbde8";
 DEFAULT_DEPOSIT_ADDRESSES.TRC20 = "TYQgWx4eQ6Js94UMexfyLXbqNE4Fucfg7Y";
 DEFAULT_DEPOSIT_ADDRESSES.BTC = "bc1par0exs9cyw9w53xsceyh6wzl7f43gdjn6xsq0kyq4qsqsvr2uynqf5llc6";
