@@ -2165,3 +2165,114 @@ body:has(#view-admin.active){padding:0!important;overflow-x:hidden}body:has(#vie
 .view{scroll-margin-top:82px}
 .topbar-actions .topbar-logout{display:grid;place-items:center;width:30px;height:30px;min-width:30px;min-height:30px;padding:0}
 .topbar-actions .topbar-logout svg{width:15px;height:15px;fill:currentColor}
+
+/* Render HD visual finish — color, contrast and surface detail only; geometry stays unchanged. */
+:root:not([data-theme="light"]) {
+  --bg:#07111f;
+  --surface:#0d1c2e;
+  --surface-2:#142640;
+  --line:#263f5d;
+  --text:#eef5ff;
+  --muted:#9aafca;
+  --accent:#72e5ee;
+  --green:#5ce1a7;
+  --red:#ff718f;
+  --amber:#ffd16f;
+}
+:root[data-theme="light"] {
+  --bg:#f2f6fc;
+  --surface:#ffffff;
+  --surface-2:#eaf1fa;
+  --line:#d1deed;
+  --text:#172a43;
+  --muted:#657994;
+  --accent:#087fa6;
+  --green:#13865c;
+  --red:#d64261;
+  --amber:#a66b08;
+}
+html,body { text-rendering:optimizeLegibility; -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale; }
+body { font-kerning:normal; }
+:root:not([data-theme="light"]) body {
+  background:radial-gradient(760px 440px at 100% -8%,rgba(61,174,213,.12),transparent 66%),radial-gradient(640px 400px at -12% 56%,rgba(91,112,226,.08),transparent 68%),var(--bg);
+}
+:root[data-theme="light"] body {
+  background:radial-gradient(720px 400px at 100% -10%,rgba(36,152,196,.09),transparent 68%),linear-gradient(180deg,#f7faff,var(--bg));
+}
+::selection { background:color-mix(in srgb,var(--accent) 34%,transparent); color:var(--text); }
+button,input,select { font-kerning:normal; }
+svg { shape-rendering:geometricPrecision; }
+.auth-card,.section-block,.compound-calculator,.market-history-card,.custom-plan-card,.plan-card,.empty-card,
+.action-tile,.investment-summary>div,.profile-balances>div,.investment-tile,.investment-card,.activity-row,
+.profile-card,.info-card,.company-contact-card,.settings-card,.history-disclosure,.movement-entry,.points-card,
+.invite-card,.mystery-card,.reward-card,.queue-card,.admin-section,.admin-request,.account-history-row,
+.investment-detail-metrics>div,.investment-chart-section,.investment-allocation-section,.investment-asset-history,
+.investment-asset-history-card,.auto-redeem-panel,.details-overview>div,.chart-tooltip {
+  border-color:var(--line);
+  background-image:linear-gradient(145deg,color-mix(in srgb,var(--surface) 96%,var(--accent) 4%),var(--surface));
+  box-shadow:0 10px 28px rgba(2,12,25,.12),inset 0 1px 0 rgba(255,255,255,.035);
+}
+.balance-card,.points-card {
+  border-color:color-mix(in srgb,var(--accent) 28%,var(--line));
+  background-image:linear-gradient(145deg,color-mix(in srgb,var(--surface) 82%,var(--accent) 18%),var(--surface) 74%);
+  box-shadow:0 14px 36px rgba(2,12,25,.2),inset 0 1px 0 rgba(255,255,255,.06);
+}
+.auth-switch,.calculator-fields input,.custom-form-grid input,.custom-form-grid select,.asset-market-row,
+.compound-table-wrap,.compound-table,.admin-table-wrap,.admin-wallets,.account-balance-fields input,
+.account-credit-fields input,.account-history,.asset-chart-ranges,.chart-selector,.chart-tooltip {
+  border-color:var(--line);
+  background-color:var(--surface-2);
+}
+.auth-form input,.modal-card input,.modal-card select,.invite-link-row input,.admin-users-toolbar input,.admin-users-toolbar select {
+  border-color:var(--line);
+  background-color:color-mix(in srgb,var(--surface) 78%,var(--bg));
+  color:var(--text);
+}
+.auth-form input:focus,.modal-card input:focus,.modal-card select:focus,.calculator-fields input:focus,
+.custom-form-grid input:focus,.custom-form-grid select:focus,.invite-link-row input:focus {
+  border-color:color-mix(in srgb,var(--accent) 72%,var(--line));
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 13%,transparent);
+}
+.primary-button,.confirm-button,.redeem-button,.credit-rewards-button {
+  background-image:linear-gradient(135deg,color-mix(in srgb,var(--accent) 86%,white 14%),color-mix(in srgb,var(--green) 76%,var(--accent) 24%));
+  box-shadow:0 5px 18px color-mix(in srgb,var(--accent) 18%,transparent),inset 0 1px 0 rgba(255,255,255,.34);
+}
+.outline-button,.outline-wide,.icon-button,.history-filter,.chart-selector,.asset-chart-range,.duration-tag {
+  border-color:color-mix(in srgb,var(--accent) 22%,var(--line));
+  background-color:color-mix(in srgb,var(--surface-2) 86%,var(--accent) 14%);
+}
+.icon-button,.text-button,.outline-button { color:var(--accent); }
+.nav-item.active,.brand > span:last-child b,.asset-chart-readout b { color:var(--accent); }
+.icon-button:hover,.outline-button:hover,.outline-wide:hover,.chart-selector:hover,.asset-chart-range:hover {
+  border-color:color-mix(in srgb,var(--accent) 60%,var(--line));
+  box-shadow:0 0 18px color-mix(in srgb,var(--accent) 13%,transparent);
+}
+.plan-card:hover,.investment-tile:hover,.action-tile:hover,.asset-market-row:hover,.activity-row:hover,.reward-row:hover,.points-row:hover {
+  border-color:color-mix(in srgb,var(--accent) 45%,var(--line));
+  background-color:color-mix(in srgb,var(--surface-2) 75%,var(--accent) 25%);
+  box-shadow:0 9px 26px rgba(2,12,25,.2),0 0 18px color-mix(in srgb,var(--accent) 9%,transparent);
+}
+.state-badge { border:1px solid color-mix(in srgb,var(--green) 22%,transparent); background-color:color-mix(in srgb,var(--green) 12%,transparent); color:var(--green); }
+.state-badge.paused,.state-badge.protected { border-color:color-mix(in srgb,var(--amber) 28%,transparent); background-color:color-mix(in srgb,var(--amber) 12%,transparent); color:var(--amber); }
+.state-badge.ended { border-color:var(--line); background-color:var(--surface-2); color:var(--muted); }
+.positive,.green,.credit-amount { color:var(--green)!important; }
+.negative,.debit-amount,.danger-button { color:var(--red); }
+.segment-deposit { stroke:#38d9cf; }
+.segment-unlocked { stroke:#8ad866; }
+.segment-earnings { stroke:#829cff; }
+.segment-invested { stroke:#ffbf68; }
+.balance-chart-track { stroke:color-mix(in srgb,var(--muted) 20%,transparent); }
+.asset-history-grid,.chart-grid,.market-chart-grid { stroke:color-mix(in srgb,var(--line) 78%,var(--muted) 22%); }
+.asset-history-line,.chart-line,.market-chart-line { stroke:var(--accent); filter:drop-shadow(0 0 4px color-mix(in srgb,var(--accent) 50%,transparent)); }
+.asset-history-current,.asset-history-focus,.chart-focus-dot { fill:var(--accent); stroke:var(--surface); }
+.asset-history-chart text,.asset-chart-readout time,.chart-tooltip,.muted,.small-note { color:var(--muted); }
+.asset-market-change.positive,.investment-tile-change.positive { color:var(--green); }
+.asset-market-change.negative,.investment-tile-change.negative { color:var(--red); }
+.bottom-nav { border-top-color:var(--line); background:color-mix(in srgb,var(--surface) 86%,transparent); box-shadow:0 -8px 28px rgba(2,12,25,.2); }
+.modal,.modal-card,.dialog-card { border-color:var(--line); background-color:var(--surface); box-shadow:0 24px 80px rgba(1,8,18,.52),inset 0 1px 0 rgba(255,255,255,.045); }
+.modal::backdrop { background:rgba(2,8,18,.72); backdrop-filter:blur(8px); }
+.topbar,.page-heading,.section-heading { color:var(--text); }
+.page-intro,.small-note,.modal-footnote { color:var(--muted); }
+.compound-table thead th,.admin-users-table th { background-color:var(--surface-2); color:var(--muted); }
+.compound-table tbody tr:hover,.admin-users-table tbody tr:hover { background-color:color-mix(in srgb,var(--accent) 7%,var(--surface)); }
+:focus-visible { outline-color:var(--accent); }
