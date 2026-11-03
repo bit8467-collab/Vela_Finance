@@ -1854,9 +1854,12 @@ async function addMarketFunds(request, env) {
     const old = Number(basis[key]) || current;
     updatedBasis[key] = (Number(position.amount) + amount) / (Number(position.amount) / old + amount / current);
   }
+  const now=Date.now(),newAmount=Number((Number(position.amount)+amount).toFixed(3)),newValue=Number((Number(position.last_value)+amount).toFixed(3));
   const results = await env.DB.batch([
     env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?").bind(amount, user.id, amount),
-    env.DB.prepare("UPDATE market_positions SET amount = amount + ?, last_value = last_value + ?, entry_quotes_json = ?, basis_updated_at = ?, auto_add_anchor_value = last_value + ? WHERE id = ? AND user_id = ? AND status = 'active'").bind(amount, amount, JSON.stringify(updatedBasis), Date.now(), amount, id, user.id),
+    env.DB.prepare("UPDATE market_positions SET amount = amount + ?, last_value = last_value + ?, entry_quotes_json = ?, basis_updated_at = ?, auto_add_anchor_value = last_value + ? WHERE id = ? AND user_id = ? AND status = 'active'").bind(amount, amount, JSON.stringify(updatedBasis), now, amount, id, user.id),
+    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND amount = ? AND last_value = ? AND basis_updated_at = ?)")
+      .bind(user.id, 'Additional funds added', amount.toFixed(3) + ' USDT added manually to market portfolio #' + id + '.', now, id, user.id, newAmount, newValue, now),
   ]);
   if (!(results[0]?.meta?.changes > 0) || !(results[1]?.meta?.changes > 0)) return bad("Saldo insufficiente o piano modificato. Aggiorna e riprova.");
   return Response.json({ ok: true });
