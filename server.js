@@ -752,6 +752,19 @@ const workerHandler = {
           replied_at INTEGER
         );`,
         `CREATE INDEX IF NOT EXISTS operator_admin_requests_status_created ON operator_admin_requests(status, created_at);`,
+        `CREATE TABLE IF NOT EXISTS operator_review_audit (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          operator_id TEXT NOT NULL,
+          operator_username TEXT NOT NULL,
+          request_kind TEXT NOT NULL,
+          request_id INTEGER NOT NULL,
+          user_id TEXT NOT NULL,
+          username TEXT NOT NULL DEFAULT '',
+          action TEXT NOT NULL CHECK (action IN ('approve','reject')),
+          request_details TEXT NOT NULL DEFAULT '{}',
+          created_at INTEGER NOT NULL
+        );`,
+        `CREATE INDEX IF NOT EXISTS operator_review_audit_operator_created ON operator_review_audit(operator_id, created_at DESC);`,
         `CREATE TABLE IF NOT EXISTS wallets (
           user_id TEXT PRIMARY KEY,
           deposit REAL NOT NULL DEFAULT 0,
@@ -1032,6 +1045,7 @@ const workerHandler = {
       if (method === "POST" && pathName === "/api/admin/payments/mark-sent") return await markWithdrawalSent(request, env);
       if (method === "GET" && pathName === "/api/admin/statistics") return await adminStatistics(request, env);
       if (method === "GET" && pathName === "/api/admin/users") return await adminUsers(request, env);
+      if (method === "GET" && pathName === "/api/admin/operator-audit") return await adminOperatorAudit(request, env);
       if (method === "POST" && pathName === "/api/market/add-funds") return await addMarketFunds(request, env);
       if (method === "POST" && pathName === "/api/admin/users/role") return await adminSetUserRole(request, env);
       
@@ -2102,6 +2116,18 @@ async function adminUpdateUserProfile(request, env, userId) {
   return Response.json({ ok: true, emailVerified: identifier === String(target.identifier).toLowerCase() });
 }
 
+async function adminOperatorAudit(request, env) {
+  const actor = await privilegedAdminActor(request, env);
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const operators = (await env.DB.prepare(
+    "SELECT u.id, u.username, u.identifier, r.granted_at FROM admin_roles r JOIN users u ON u.id = r.user_id WHERE r.role = 'operator' ORDER BY lower(u.username)"
+  ).all()).results;
+  const activity = (await env.DB.prepare(
+    "SELECT id, operator_id, operator_username, request_kind, request_id, user_id, username, action, request_details, created_at FROM operator_review_audit ORDER BY created_at DESC, id DESC LIMIT 1000"
+  ).all()).results;
+  return Response.json({ operators, activity });
+}
+
 async function adminSetUserRole(request, env) {
   const actor = await privilegedAdminActor(request, env);
   if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
@@ -2334,6 +2360,18 @@ async function reviewTransaction(request, env) {
     }
   } else {
     return bad("Tipo di transazione non valido.");
+  }
+
+  const actorRole = await env.DB.prepare("SELECT role FROM admin_roles WHERE user_id = ?").bind(operator.id).first();
+  if (actorRole?.role === "operator" && (action === "approve" || action === "reject")) {
+    const reviewedUser = await env.DB.prepare("SELECT username FROM users WHERE id = ?").bind(userId).first();
+    const requestDetails = JSON.stringify({
+      amount: Number(amount) || 0,
+      network: String(net || ""),
+      transactionReference: kind === "withdrawal" && action === "approve" ? transactionReference : ""
+    });
+    await env.DB.prepare("INSERT INTO operator_review_audit (operator_id, operator_username, request_kind, request_id, user_id, username, action, request_details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .bind(operator.id, String(operator.username || "Operator"), kind, id, String(userId || ""), String(reviewedUser?.username || "user"), action, requestDetails, Date.now()).run();
   }
 
   if (userId) {
