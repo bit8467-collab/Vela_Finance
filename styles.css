@@ -2593,3 +2593,23 @@ svg { shape-rendering:geometricPrecision; }
 @keyframes refresh-chart-red-float { from { transform:translateY(1px); } to { transform:translateY(-1.4px); } }
 @keyframes refresh-chart-green-float { from { transform:translateY(-1.2px); } to { transform:translateY(1.2px); } }
 @media (prefers-reduced-motion:reduce) { #refresh-account.is-refreshing .refresh-chart-red,#refresh-account.is-refreshing .refresh-chart-green { animation:none; } }
+
+/* Admin occupies the full viewport; its navigation and active workspace scroll independently. */
+body:has(#view-admin.active) { width:100%; height:100dvh; min-height:100dvh; margin:0!important; padding:0!important; overflow:hidden!important; }
+#app-shell:has(#view-admin.active) { box-sizing:border-box; display:block; width:100vw!important; max-width:none!important; height:100dvh!important; min-height:100dvh!important; margin:0!important; padding:0!important; border:0!important; border-radius:0!important; overflow:hidden!important; box-shadow:none!important; }
+body:has(#view-admin.active) .topbar { position:relative; top:auto; z-index:10; box-sizing:border-box; width:100%; height:64px; min-height:64px; margin:0!important; padding-inline:clamp(14px,2vw,32px)!important; }
+#app-shell:has(#view-admin.active) #view-admin.active { box-sizing:border-box; display:grid!important; grid-template-columns:minmax(0,1fr)!important; grid-template-rows:auto auto auto auto minmax(0,1fr)!important; align-content:stretch!important; gap:clamp(7px,1vh,13px)!important; width:100%!important; max-width:none!important; height:calc(100dvh - 64px)!important; min-height:0!important; max-height:none!important; margin:0!important; padding:clamp(10px,1.5vw,22px)!important; overflow:hidden!important; }
+#view-admin.active > .page-heading, #view-admin.active > .page-intro, #view-admin.active > #open-payment-desk, #view-admin.active > .outline-wide { grid-column:1/-1!important; min-width:0; }
+#view-admin.active > .admin-workspace-shell { grid-column:1/-1!important; display:grid!important; grid-template-columns:minmax(220px,clamp(230px,22vw,320px)) minmax(0,1fr)!important; grid-template-rows:minmax(0,1fr)!important; align-items:stretch!important; gap:12px!important; width:100%; height:100%; min-width:0; min-height:0; overflow:hidden; }
+#view-admin .admin-workspace-nav { position:relative!important; top:auto!important; height:100%; max-height:none!important; min-height:0; overflow:auto; align-self:stretch; }
+#view-admin .admin-workspace-stage { width:100%; height:100%; max-height:none!important; min-height:0!important; overflow:auto!important; overscroll-behavior:contain; }
+@media(max-width:760px) {
+  body:has(#view-admin.active) .topbar { height:58px; min-height:58px; }
+  #app-shell:has(#view-admin.active) #view-admin.active { height:calc(100dvh - 58px)!important; grid-template-rows:auto auto auto auto minmax(0,1fr)!important; gap:7px!important; padding:9px!important; }
+  #view-admin.active > .admin-workspace-shell { grid-template-columns:minmax(0,1fr)!important; grid-template-rows:auto minmax(0,1fr)!important; gap:7px!important; }
+  #view-admin .admin-workspace-nav { height:auto; max-height:none!important; overflow:hidden; padding:7px; }
+  #view-admin .admin-workspace-nav-heading { display:none; }
+  #view-admin .admin-workspace-nav-list { display:flex; align-items:stretch; gap:5px; overflow-x:auto; overscroll-behavior-x:contain; padding-bottom:2px; }
+  #view-admin .admin-workspace-link { flex:0 0 172px; width:172px; min-height:43px; }
+  #view-admin .admin-workspace-stage { height:100%; min-height:0!important; }
+}
