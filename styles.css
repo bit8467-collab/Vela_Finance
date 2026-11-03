@@ -2161,3 +2161,7 @@ body:has(#view-admin.active){padding:0!important;overflow-x:hidden}body:has(#vie
 .topbar-actions #refresh-account svg,.topbar-actions #open-notifications svg{width:15px;height:15px}
 .topbar-actions .topbar-logout{min-height:30px;padding:0 8px;border:1px solid var(--line);border-radius:9px;background:var(--surface);color:var(--text);font:700 9px/1 var(--font);white-space:nowrap}
 .topbar-actions .topbar-logout:hover,.topbar-actions .topbar-logout:focus-visible{border-color:var(--accent);color:var(--accent)}
+
+.view{scroll-margin-top:82px}
+.topbar-actions .topbar-logout{display:grid;place-items:center;width:30px;height:30px;min-width:30px;min-height:30px;padding:0}
+.topbar-actions .topbar-logout svg{width:15px;height:15px;fill:currentColor}
