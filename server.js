@@ -791,7 +791,12 @@ const workerHandler = {
           basis_updated_at INTEGER NOT NULL DEFAULT 0,
           auto_redeem_enabled INTEGER NOT NULL DEFAULT 0,
           auto_redeem_pct REAL NOT NULL DEFAULT 10,
-          custom_fee REAL NOT NULL DEFAULT 0
+          custom_fee REAL NOT NULL DEFAULT 0,
+          auto_add_enabled INTEGER NOT NULL DEFAULT 0,
+          auto_add_drawdown_pct REAL NOT NULL DEFAULT 10,
+          auto_add_mode TEXT NOT NULL DEFAULT 'fixed',
+          auto_add_value REAL NOT NULL DEFAULT 10,
+          auto_add_anchor_value REAL NOT NULL DEFAULT 0
         );`,
         `CREATE INDEX IF NOT EXISTS market_positions_user ON market_positions(user_id, status, created_at DESC);`,
         `CREATE TABLE IF NOT EXISTS market_position_redemptions (
@@ -918,6 +923,11 @@ const workerHandler = {
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_redeem_enabled INTEGER NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_redeem_pct REAL NOT NULL DEFAULT 10").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN custom_fee REAL NOT NULL DEFAULT 0").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_add_enabled INTEGER NOT NULL DEFAULT 0").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_add_drawdown_pct REAL NOT NULL DEFAULT 10").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_add_mode TEXT NOT NULL DEFAULT 'fixed'").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_add_value REAL NOT NULL DEFAULT 10").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_add_anchor_value REAL NOT NULL DEFAULT 0").run(); } catch {}
     await env.DB.prepare("UPDATE market_positions SET basis_updated_at = created_at WHERE basis_updated_at = 0").run();
     await env.DB.prepare("UPDATE market_positions SET risk_level = CASE WHEN stop_loss_pct <= 8 THEN 'conservative' WHEN stop_loss_pct >= 30 THEN 'aggressive' ELSE 'balanced' END WHERE risk_level = 'legacy'").run();
     
@@ -1006,6 +1016,7 @@ const workerHandler = {
       if (method === "POST" && pathName === "/api/market/custom-invest") return await customMarketInvest(request, env);
       if (method === "POST" && pathName === "/api/market/redeem-gains") return await redeemMarketGains(request, env);
       if (method === "POST" && pathName === "/api/market/auto-redeem") return await savePositionAutoRedeem(request, env);
+      if (method === "POST" && pathName === "/api/market/auto-add") return await savePositionAutoAdd(request, env);
       if (method === "POST" && pathName === "/api/market/close-early") return await closeMarketPositionEarly(request, env);
       if (method === "GET" && pathName === "/api/deposit-addresses") return await getDepositAddresses(request, env);
       if (method === "GET" && pathName === "/api/admin/deposit-addresses") return await adminDepositAddresses(request, env);
@@ -1655,8 +1666,8 @@ async function syncMarketPositions(env, userId) {
         if (basisReady && Object.keys(nextBasis).length && gain >= 0.001) {
           const transactionId = makeToken(), basisJson = JSON.stringify(nextBasis);
           const redemption = await env.DB.batch([
-            env.DB.prepare("UPDATE market_positions SET last_value = ?, entry_quotes_json = ?, last_redemption_id = ?, basis_updated_at = ? WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND entry_quotes_json = ? AND auto_redeem_enabled = 1 AND auto_redeem_pct = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ?)")
-              .bind(amount, basisJson, transactionId, now, row.id, userId, value, row.entry_quotes_json, autoPct, userId),
+            env.DB.prepare("UPDATE market_positions SET last_value = ?, entry_quotes_json = ?, last_redemption_id = ?, basis_updated_at = ?, auto_add_anchor_value = ? WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND entry_quotes_json = ? AND auto_redeem_enabled = 1 AND auto_redeem_pct = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ?)")
+              .bind(amount, basisJson, transactionId, now, amount, row.id, userId, value, row.entry_quotes_json, autoPct, userId),
             env.DB.prepare("INSERT INTO market_position_redemptions (position_id, user_id, event_id, amount, reference_value, created_at, segment_start_at, basis_quotes_json) SELECT ?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND last_redemption_id = ?)")
               .bind(row.id, userId, transactionId, gain, value, now, Number(row.basis_updated_at || row.created_at), row.entry_quotes_json || '{}', row.id, userId, amount, transactionId),
             env.DB.prepare("UPDATE wallets SET earnings = earnings + ? WHERE user_id = ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND last_redemption_id = ?)")
@@ -1674,10 +1685,32 @@ async function syncMarketPositions(env, userId) {
       }
     }
   }
+  for (const row of rows) {
+    if (!['active','paused'].includes(row.status) || Number(row.auto_add_enabled)!==1) continue;
+    const value=Number(row.last_value),amount=Number(row.amount),drawdown=Number(row.auto_add_drawdown_pct||10),anchor=Number(row.auto_add_anchor_value)||value,mode=row.auto_add_mode==='balance_pct'?'balance_pct':'fixed',setting=Number(row.auto_add_value||10);
+    if (!(value>0&&amount>0&&anchor>0&&drawdown>=1&&drawdown<=90&&value<=anchor*(1-drawdown/100))) continue;
+    const wallet=await env.DB.prepare("SELECT deposit, earnings FROM wallets WHERE user_id = ?").bind(userId).first();if(!wallet)continue;
+    const deposit=Number(wallet.deposit)||0,earnings=Number(wallet.earnings)||0,available=deposit+earnings;
+    const added=mode==='balance_pct'?Math.floor((available*setting/100+1e-9)*1000)/1000:Number(setting.toFixed(3));
+    if (!(available>0&&added>=0.001&&added<=available+1e-9&&(mode!=='fixed'||setting<=available+1e-9))) continue;
+    const depositPart=Number(Math.min(deposit,added).toFixed(3)),earningsPart=Number((added-depositPart).toFixed(3)),newAmount=Number((amount+added).toFixed(3)),newValue=Number((value+added).toFixed(3));
+    let allocation=[],basis={};try{allocation=JSON.parse(row.allocations_json||'[]');basis=JSON.parse(row.entry_quotes_json||'{}')}catch{continue}
+    const updatedBasis={...basis};let ready=true;for(const [key] of allocation){const current=Number(quotes[key]?.price),old=Number(basis[key])||current;if(!(current>0&&old>0)){ready=false;break}updatedBasis[key]=newAmount/(amount/old+added/current)}if(!ready||!allocation.length)continue;
+    const basisJson=JSON.stringify(updatedBasis),depositAnchor=Number(row.auto_add_anchor_value)||value;
+    const batch=await env.DB.batch([
+      env.DB.prepare("UPDATE market_positions SET amount = ?, last_value = ?, entry_quotes_json = ?, basis_updated_at = ?, auto_add_anchor_value = ? WHERE id = ? AND user_id = ? AND status IN ('active','paused') AND last_value = ? AND amount = ? AND auto_add_enabled = 1 AND auto_add_anchor_value = ? AND auto_add_drawdown_pct = ? AND auto_add_mode = ? AND auto_add_value = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND deposit >= ? AND earnings >= ?)")
+        .bind(newAmount,newValue,basisJson,now,newValue,row.id,userId,value,amount,depositAnchor,drawdown,mode,setting,userId,depositPart,earningsPart),
+      env.DB.prepare("UPDATE wallets SET deposit = deposit - ?, earnings = earnings - ? WHERE user_id = ? AND deposit >= ? AND earnings >= ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status IN ('active','paused') AND amount = ? AND last_value = ? AND basis_updated_at = ? AND auto_add_anchor_value = ?)")
+        .bind(depositPart,earningsPart,userId,depositPart,earningsPart,row.id,userId,newAmount,newValue,now,newValue),
+      env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND amount = ? AND last_value = ? AND basis_updated_at = ? AND auto_add_anchor_value = ?)")
+        .bind(userId,'Automatic top-up added',added.toFixed(3)+' USDT added automatically after a '+drawdown+'% portfolio decline. Funds were taken from available balances.',now,row.id,userId,newAmount,newValue,now,newValue),
+    ]);
+    if(batch[0]?.meta?.changes>0){row.amount=newAmount;row.last_value=newValue;row.entry_quotes_json=basisJson;row.basis_updated_at=now;row.auto_add_anchor_value=newValue;}
+  }
   return rows.map(row => ({
     id: row.id, planId: row.plan_id, months: Number(row.months), amount: Number(row.amount),
     stopLossPct: Number(row.stop_loss_pct), riskLevel: row.risk_level || 'legacy', earlyCloseFee: Number(row.early_close_fee || 0), basisUpdatedAt: Number(row.basis_updated_at || row.created_at), entryQuotes: (() => { try { return JSON.parse(row.entry_quotes_json || '{}'); } catch { return {}; } })(), currentValue: Number(row.last_value),
-    autoRedeemEnabled: Number(row.auto_redeem_enabled) === 1, autoRedeemPct: Number(row.auto_redeem_pct || 10), customFee: Number(row.custom_fee || 0),
+    autoRedeemEnabled: Number(row.auto_redeem_enabled) === 1, autoRedeemPct: Number(row.auto_redeem_pct || 10), autoAddEnabled: Number(row.auto_add_enabled) === 1, autoAddDrawdownPct: Number(row.auto_add_drawdown_pct || 10), autoAddMode: row.auto_add_mode === 'balance_pct' ? 'balance_pct' : 'fixed', autoAddValue: Number(row.auto_add_value || 10), autoAddAnchorValue: Number(row.auto_add_anchor_value || row.last_value || row.amount), customFee: Number(row.custom_fee || 0),
     status: row.status, createdAt: Number(row.created_at), closedAt: row.closed_at ? Number(row.closed_at) : null,
     allocations: (() => { try { return JSON.parse(row.allocations_json || '[]'); } catch { return []; } })(),
   }));
@@ -1823,7 +1856,7 @@ async function addMarketFunds(request, env) {
   }
   const results = await env.DB.batch([
     env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?").bind(amount, user.id, amount),
-    env.DB.prepare("UPDATE market_positions SET amount = amount + ?, last_value = last_value + ?, entry_quotes_json = ?, basis_updated_at = ? WHERE id = ? AND user_id = ? AND status = 'active'").bind(amount, amount, JSON.stringify(updatedBasis), Date.now(), id, user.id),
+    env.DB.prepare("UPDATE market_positions SET amount = amount + ?, last_value = last_value + ?, entry_quotes_json = ?, basis_updated_at = ?, auto_add_anchor_value = last_value + ? WHERE id = ? AND user_id = ? AND status = 'active'").bind(amount, amount, JSON.stringify(updatedBasis), Date.now(), amount, id, user.id),
   ]);
   if (!(results[0]?.meta?.changes > 0) || !(results[1]?.meta?.changes > 0)) return bad("Saldo insufficiente o piano modificato. Aggiorna e riprova.");
   return Response.json({ ok: true });
@@ -1854,8 +1887,8 @@ async function redeemMarketGains(request, env) {
   const oldStatus = position.status;
   const now = Date.now();
   const batch = await env.DB.batch([
-    env.DB.prepare("UPDATE market_positions SET last_value = ?, entry_quotes_json = ?, last_redemption_id = ?, basis_updated_at = ? WHERE id = ? AND user_id = ? AND status = ? AND last_value = ? AND entry_quotes_json = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ?)")
-      .bind(Number(position.amount), basisJson, transactionId, now, id, user.id, oldStatus, Number(position.last_value), position.entry_quotes_json, user.id),
+    env.DB.prepare("UPDATE market_positions SET last_value = ?, entry_quotes_json = ?, last_redemption_id = ?, basis_updated_at = ?, auto_add_anchor_value = ? WHERE id = ? AND user_id = ? AND status = ? AND last_value = ? AND entry_quotes_json = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ?)")
+      .bind(Number(position.amount), basisJson, transactionId, now, Number(position.amount), id, user.id, oldStatus, Number(position.last_value), position.entry_quotes_json, user.id),
     env.DB.prepare("INSERT INTO market_position_redemptions (position_id, user_id, event_id, amount, reference_value, created_at, segment_start_at, basis_quotes_json) SELECT ?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = ? AND last_redemption_id = ?)")
       .bind(id, user.id, transactionId, gain, value, now, Number(position.basis_updated_at || position.created_at), position.entry_quotes_json || '{}', id, user.id, oldStatus, transactionId),
     env.DB.prepare("UPDATE wallets SET earnings = earnings + ? WHERE user_id = ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = ? AND last_value = ? AND last_redemption_id = ?)")
@@ -1906,6 +1939,22 @@ async function savePositionAutoRedeem(request, env) {
     .bind(enabled ? 1 : 0, percent, positionId, user.id).run();
   if (!(result.meta?.changes > 0)) return Response.json({ error: 'Questo piano non è più attivo.' }, { status: 409 });
   return Response.json({ ok: true, positionId, enabled, percent });
+}
+
+async function savePositionAutoAdd(request, env) {
+  const user=await authed(request,env),body=await request.json().catch(()=>({})),positionId=Number(body.positionId),enabled=body.enabled===true,drawdownPct=Number(body.drawdownPct),mode=body.mode==='balance_pct'?'balance_pct':'fixed',rawValue=Number(body.value);
+  if(!Number.isInteger(positionId)||positionId<1)return bad('Piano non valido.');
+  if(!Number.isFinite(drawdownPct)||drawdownPct<1||drawdownPct>90)return bad('La soglia di calo deve essere tra 1% e 90%.');
+  if(!Number.isFinite(rawValue)||(mode==='balance_pct'?(rawValue<1||rawValue>100):rawValue<0.001))return bad('Importo o percentuale di ricarica non validi.');
+  const value=mode==='fixed'?Number(rawValue.toFixed(3)):rawValue;
+  await syncMarketPositions(env,user.id);
+  const position=await env.DB.prepare("SELECT last_value FROM market_positions WHERE id = ? AND user_id = ? AND status IN ('active','paused')").bind(positionId,user.id).first();
+  if(!position)return Response.json({error:'Questo piano non è più attivo.'},{status:409});
+  const anchor=Number(position.last_value)||0;
+  const result=await env.DB.prepare("UPDATE market_positions SET auto_add_enabled = ?, auto_add_drawdown_pct = ?, auto_add_mode = ?, auto_add_value = ?, auto_add_anchor_value = ? WHERE id = ? AND user_id = ? AND status IN ('active','paused')")
+    .bind(enabled?1:0,drawdownPct,mode,value,anchor,positionId,user.id).run();
+  if(!(result.meta?.changes>0))return Response.json({error:'Questo piano non è più attivo.'},{status:409});
+  return Response.json({ok:true,positionId,enabled,drawdownPct,mode,value,anchor});
 }
 
 async function validateWithdrawal(env, user, body) {
