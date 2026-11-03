@@ -1214,7 +1214,7 @@ async function adminSupportReply(request, env, id) {
   const thread = await env.DB.prepare("SELECT id, final_message_id FROM support_threads WHERE id = ? AND status IN ('waiting','live')").bind(id).first();
   if (!thread) return Response.json({ error: "Conversazione non trovata o non più attiva." }, { status: 404 });
   if (thread.final_message_id) return Response.json({ error: "La conversazione attende la risposta dell’utente." }, { status: 400 });
-  await env.DB.prepare("UPDATE support_threads SET support_operator_id = ?, support_operator_username = ? WHERE id = ?").bind(operator.id, String(operator.username || "Operator"), id).run();
+  await env.DB.prepare("UPDATE support_threads SET support_operator_id = ?, support_operator_username = ? WHERE id = ?").bind(actor.id, String(actor.username || "Operator"), id).run();
   const now = Date.now();
   if (body.final === true) {
     await env.DB.prepare("INSERT INTO support_messages (thread_id, sender_role, body, created_at) VALUES (?, 'operator', ?, ?)").bind(id, "Vuoi chiudere la chat?", now).run();
