@@ -926,6 +926,10 @@ const workerHandler = {
     try { await env.DB.prepare("ALTER TABLE admin_roles ADD COLUMN permissions_json TEXT NOT NULL DEFAULT '{}'").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE settings ADD COLUMN auto_redeem_pct REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE support_threads ADD COLUMN final_message_id INTEGER").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE support_threads ADD COLUMN support_operator_id TEXT").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE support_threads ADD COLUMN support_operator_username TEXT").run(); } catch {}
+    await env.DB.prepare("CREATE TABLE IF NOT EXISTS support_feedback (thread_id INTEGER PRIMARY KEY, user_id TEXT NOT NULL, username TEXT NOT NULL, operator_id TEXT NOT NULL, operator_username TEXT NOT NULL, rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5), comment TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL)").run();
+    await env.DB.prepare("CREATE INDEX IF NOT EXISTS support_feedback_operator_created ON support_feedback(operator_id, created_at DESC)").run();
     try { await env.DB.prepare("ALTER TABLE wallets ADD COLUMN released REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN source TEXT NOT NULL DEFAULT 'earnings'").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN tx_reference TEXT NOT NULL DEFAULT ''").run(); } catch {}
@@ -1012,6 +1016,7 @@ const workerHandler = {
       if (method === "POST" && pathName === "/api/support/message") return await supportMessage(request, env);
       if (method === "POST" && pathName === "/api/support/escalate") return await supportEscalate(request, env);
       if (method === "POST" && pathName === "/api/support/choice") return await supportChoice(request, env);
+      if (method === "POST" && pathName === "/api/support/feedback") return await submitSupportFeedback(request, env);
       if (method === "GET" && pathName === "/api/admin/support") return await adminSupportList(request, env);
       if (method === "GET" && pathName === "/api/admin/support-requests") return await listOperatorAdminRequests(request, env);
       if (method === "POST" && pathName === "/api/admin/support-requests") return await createOperatorAdminRequest(request, env);
@@ -1082,7 +1087,7 @@ const workerHandler = {
 async function supportCurrent(request, env) {
   const user = await sessionUser(request, env);
   if (!user) return Response.json({ error: "Accedi per usare l’assistenza." }, { status: 401 });
-  const thread = await env.DB.prepare("SELECT id, user_id, status, question_count, final_message_id, created_at, updated_at FROM support_threads WHERE user_id = ? AND status != 'closed' ORDER BY id DESC LIMIT 1").bind(user.id).first();
+  const thread = await env.DB.prepare("SELECT t.id, t.user_id, t.status, t.question_count, t.final_message_id, t.created_at, t.updated_at, t.support_operator_id, t.support_operator_username FROM support_threads t WHERE t.user_id = ? AND (t.status != 'closed' OR (t.support_operator_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM support_feedback f WHERE f.thread_id = t.id))) ORDER BY CASE WHEN t.status = 'closed' THEN 1 ELSE 0 END, t.id DESC LIMIT 1").bind(user.id).first();
   if (!thread) return Response.json({ thread: null, messages: [] });
   const messages = (await env.DB.prepare("SELECT id, sender_role, body, created_at FROM support_messages WHERE thread_id = ? ORDER BY id ASC LIMIT 200").bind(thread.id).all()).results;
   return Response.json({ thread, messages });
@@ -1126,12 +1131,30 @@ async function supportEscalate(request, env) {
   return Response.json({ thread: updated });
 }
 
+async function submitSupportFeedback(request, env) {
+  const user = await sessionUser(request, env);
+  if (!user) return Response.json({ error: "Accedi per inviare un feedback." }, { status: 401 });
+  const body = await request.json();
+  const threadId = Number(body.threadId);
+  const rating = Number(body.rating);
+  const comment = typeof body.comment === "string" ? body.comment.trim() : "";
+  if (!Number.isInteger(threadId) || threadId < 1) return bad("Conversazione non valida.");
+  if (!Number.isInteger(rating) || rating < 1 || rating > 5) return bad("Seleziona una valutazione da 1 a 5 stelle.");
+  if (comment.length > 1200) return bad("Il commento non può superare 1200 caratteri.");
+  const thread = await env.DB.prepare("SELECT id, status, support_operator_id, support_operator_username FROM support_threads WHERE id = ? AND user_id = ?").bind(threadId, user.id).first();
+  if (!thread || thread.status !== "closed" || !thread.support_operator_id) return Response.json({ error: "Il feedback è disponibile solo dopo una conversazione conclusa con un operatore." }, { status: 400 });
+  const result = await env.DB.prepare("INSERT OR IGNORE INTO support_feedback (thread_id, user_id, username, operator_id, operator_username, rating, comment, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .bind(threadId, user.id, String(user.username || "user"), thread.support_operator_id, String(thread.support_operator_username || "Operator"), rating, comment, Date.now()).run();
+  if (!result.meta?.changes) return Response.json({ error: "Hai già inviato il feedback per questa conversazione." }, { status: 409 });
+  return Response.json({ ok: true });
+}
+
 async function supportChoice(request, env) {
   const user = await sessionUser(request, env);
   if (!user) return Response.json({ error: "Accedi per usare l’assistenza." }, { status: 401 });
   const body = await request.json();
   const choice = typeof body.choice === "string" ? body.choice : "";
-  const thread = await env.DB.prepare("SELECT id, user_id, status, question_count, final_message_id, created_at, updated_at FROM support_threads WHERE user_id = ? AND status != 'closed' ORDER BY id DESC LIMIT 1").bind(user.id).first();
+  const thread = await env.DB.prepare("SELECT id, user_id, status, question_count, final_message_id, created_at, updated_at, support_operator_id, support_operator_username FROM support_threads WHERE user_id = ? AND status != 'closed' ORDER BY id DESC LIMIT 1").bind(user.id).first();
   if (!thread || (thread.status !== "bot" && !(thread.status === "live" && thread.final_message_id && (choice === "close" || choice === "continue"))) || (thread.status === "bot" && Number(thread.question_count) < 5)) return Response.json({ error: "La scelta non è più disponibile." }, { status: 400 });
   const last = await env.DB.prepare("SELECT id, sender_role, body FROM support_messages WHERE thread_id = ? ORDER BY id DESC LIMIT 1").bind(thread.id).first();
   const now = Date.now();
@@ -1161,7 +1184,7 @@ async function supportChoice(request, env) {
   } else {
     return Response.json({ error: "Scelta non valida." }, { status: 400 });
   }
-  const updated = await env.DB.prepare("SELECT id, user_id, status, question_count, final_message_id, created_at, updated_at FROM support_threads WHERE id = ?").bind(thread.id).first();
+  const updated = await env.DB.prepare("SELECT id, user_id, status, question_count, final_message_id, created_at, updated_at, support_operator_id, support_operator_username FROM support_threads WHERE id = ?").bind(thread.id).first();
   const messages = (await env.DB.prepare("SELECT id, sender_role, body, created_at FROM support_messages WHERE thread_id = ? ORDER BY id ASC LIMIT 200").bind(thread.id).all()).results;
   return Response.json({ thread: updated, messages });
 }
@@ -1191,6 +1214,7 @@ async function adminSupportReply(request, env, id) {
   const thread = await env.DB.prepare("SELECT id, final_message_id FROM support_threads WHERE id = ? AND status IN ('waiting','live')").bind(id).first();
   if (!thread) return Response.json({ error: "Conversazione non trovata o non più attiva." }, { status: 404 });
   if (thread.final_message_id) return Response.json({ error: "La conversazione attende la risposta dell’utente." }, { status: 400 });
+  await env.DB.prepare("UPDATE support_threads SET support_operator_id = ?, support_operator_username = ? WHERE id = ?").bind(operator.id, String(operator.username || "Operator"), id).run();
   const now = Date.now();
   if (body.final === true) {
     await env.DB.prepare("INSERT INTO support_messages (thread_id, sender_role, body, created_at) VALUES (?, 'operator', ?, ?)").bind(id, "Vuoi chiudere la chat?", now).run();
@@ -2125,7 +2149,10 @@ async function adminOperatorAudit(request, env) {
   const activity = (await env.DB.prepare(
     "SELECT id, operator_id, operator_username, request_kind, request_id, user_id, username, action, request_details, created_at FROM operator_review_audit ORDER BY created_at DESC, id DESC LIMIT 1000"
   ).all()).results;
-  return Response.json({ operators, activity });
+  const feedback = (await env.DB.prepare(
+    "SELECT thread_id, user_id, username, operator_id, operator_username, rating, comment, created_at FROM support_feedback ORDER BY created_at DESC LIMIT 1000"
+  ).all()).results;
+  return Response.json({ operators, activity, feedback });
 }
 
 async function adminSetUserRole(request, env) {
