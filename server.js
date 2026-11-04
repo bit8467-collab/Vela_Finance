@@ -2144,7 +2144,7 @@ async function adminTransactions(request, env) {
   }) : [];
   
   const emailVerifications = permissions.otp ? (await env.DB.prepare("SELECT r.user_id, r.requested_at, r.otp_expires_at, u.username, u.identifier FROM email_verification_requests r JOIN users u ON u.id = r.user_id WHERE r.verified_at IS NULL").all()).results : [];
-  const sensitiveActionVerifications = permissions.otp ? (await env.DB.prepare("SELECT r.user_id, r.action, r.requested_at, r.otp_expires_at, u.username, u.identifier FROM sensitive_action_verifications r JOIN users u ON u.id = r.user_id WHERE r.consumed_at IS NULL").all()).results : [];
+  const sensitiveActionVerifications = permissions.otp ? (await env.DB.prepare("SELECT r.user_id, r.action, r.payload_json, r.requested_at, r.otp_expires_at, u.username, u.identifier FROM sensitive_action_verifications r JOIN users u ON u.id = r.user_id WHERE r.consumed_at IS NULL").all()).results : [];
   const passwordResets = permissions.otp ? (await env.DB.prepare("SELECT r.user_id, r.requested_at, r.otp_expires_at, r.issued_at, u.username, u.identifier FROM password_reset_requests r JOIN users u ON u.id = r.user_id").all()).results : [];
 
   return Response.json({ deposits, withdrawals, walletChanges, emailVerifications, sensitiveActionVerifications, passwordResets, operator: user.username, permissions });
@@ -2566,11 +2566,16 @@ async function createWalletChangeOtpRequest(env, user, wallets) {
   if (!Object.keys(requestedWallets).length) return bad("Nessuna modifica o nuovo indirizzo valido specificato.");
   const existingAddrs = await env.DB.prepare("SELECT COUNT(*) as cnt FROM user_withdrawal_addresses WHERE user_id = ?").bind(user.id).first();
   if ((!existingAddrs || existingAddrs.cnt === 0) && !user.email_verified) return Response.json({ error: "Verifica l’email prima di salvare l’indirizzo di prelievo per la prima volta.", verificationRequired: true, email: user.identifier }, { status: 403 });
+  const currentSettings = await env.DB.prepare("SELECT withdraw_wallets FROM settings WHERE user_id = ?").bind(user.id).first();
+  let currentWallets = {};
+  try { currentWallets = JSON.parse(currentSettings?.withdraw_wallets || "{}"); } catch {}
+  const changes = Object.entries(requestedWallets).filter(([net, address]) => String(currentWallets[net] || "").toLowerCase() !== address.toLowerCase()).map(([net, newAddress]) => ({ net, oldAddress: currentWallets[net] || "", newAddress }));
+  if (!changes.length) return bad("Nessuna modifica wallet da applicare.");
   const pending = await env.DB.prepare("SELECT action, otp_expires_at FROM sensitive_action_verifications WHERE user_id = ? AND consumed_at IS NULL").bind(user.id).first();
   if (pending && pending.action !== "wallet-change") return bad("Completa prima la verifica OTP già in corso.");
   const now = Date.now();
   await env.DB.prepare("INSERT INTO sensitive_action_verifications (user_id, action, payload_json, requested_at, otp_hash, otp_salt, otp_expires_at, otp_attempts, issued_at, issued_by, consumed_at) VALUES (?, 'wallet-change', ?, ?, NULL, NULL, NULL, 0, NULL, NULL, NULL) ON CONFLICT(user_id) DO UPDATE SET action = excluded.action, payload_json = excluded.payload_json, requested_at = excluded.requested_at, otp_hash = NULL, otp_salt = NULL, otp_expires_at = NULL, otp_attempts = 0, issued_at = NULL, issued_by = NULL, consumed_at = NULL")
-    .bind(user.id, JSON.stringify({ wallets: requestedWallets }), now).run();
+    .bind(user.id, JSON.stringify({ wallets: requestedWallets, changes }), now).run();
   await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)")
     .bind(user.id, "Wallet change verification", "Wallet change requested. Ask the operator to issue a six-digit verification code.", now).run();
   return Response.json({ ok: true, otpRequired: true, message: "Richiesta OTP wallet inviata all’operatore. Inserisci il codice dopo averlo ricevuto." });
@@ -2584,7 +2589,6 @@ async function applyWalletChange(env, user, inputWallets) {
   const finalWallets = { ...currentWallets };
   const now = Date.now();
   const batchStatements = [];
-  let changesRequested = false;
   for (const [net, addr] of Object.entries(inputWallets || {})) {
     const trimmedAddr = String(addr || "").trim();
     if (!trimmedAddr || trimmedAddr.length > 256 || !allowedNetworks.includes(net)) continue;
@@ -2597,17 +2601,15 @@ async function applyWalletChange(env, user, inputWallets) {
     } else if (oldAddr.toLowerCase() !== trimmedAddr.toLowerCase()) {
       const existingGlobal = await env.DB.prepare("SELECT user_id FROM user_withdrawal_addresses WHERE net = ? AND lower(address) = ? AND user_id != ?").bind(net, trimmedAddr.toLowerCase(), user.id).first();
       if (existingGlobal) return bad("Il nuovo indirizzo per la rete " + net + " è già registrato su un altro account.");
-      const pending = await env.DB.prepare("SELECT id FROM wallet_change_requests WHERE user_id = ? AND net = ? AND status = 'pending'").bind(user.id, net).first();
-      if (pending) return bad("Esiste già una richiesta di modifica in attesa di approvazione per la rete " + net + ".");
-      batchStatements.push(env.DB.prepare("INSERT INTO wallet_change_requests (user_id, net, old_address, new_address, created_at, status) VALUES (?, ?, ?, ?, ?, 'pending')").bind(user.id, net, oldAddr, trimmedAddr, now));
-      batchStatements.push(env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Wallet change request", "Address change request for network " + net + " sent to operator pending approval.", now));
-      changesRequested = true;
+      finalWallets[net] = trimmedAddr;
+      batchStatements.push(env.DB.prepare("INSERT INTO user_withdrawal_addresses (user_id, net, address, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, net, address) DO NOTHING").bind(user.id, net, trimmedAddr, now));
+      batchStatements.push(env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)").bind(user.id, "Wallet address updated", "Your wallet address for " + net + " was updated after OTP verification.", now));
     }
   }
   if (batchStatements.length === 0) return bad("Nessuna modifica o nuovo indirizzo valido specificato.");
   batchStatements.unshift(env.DB.prepare("INSERT INTO settings (user_id, withdraw_wallets, notifications) VALUES (?, ?, 1) ON CONFLICT(user_id) DO UPDATE SET withdraw_wallets = excluded.withdraw_wallets").bind(user.id, JSON.stringify(finalWallets)));
   await env.DB.batch(batchStatements);
-  return Response.json({ ok: true, message: changesRequested ? "Richiesta di modifica inviata all'operatore e nuovi indirizzi salvati." : "Indirizzi salvati con successo.", acc: { withdraw_wallets: finalWallets, notifications: true } });
+  return Response.json({ ok: true, message: "Wallet aggiornato dopo verifica OTP.", acc: { withdraw_wallets: finalWallets, notifications: true } });
 }
 
 async function updateSettings(request, env) {
