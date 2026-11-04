@@ -1816,8 +1816,22 @@ async function marketInvest(request, env) {
   if (body.riskAcknowledged !== true) return bad('È necessario confermare di aver compreso i rischi prima di avviare il piano.');
   const riskLevel = typeof body.riskLevel === 'string' ? body.riskLevel : 'balanced';
   const stopLossPct = MARKET_RISK_STOP_LOSS[riskLevel];
-  const allocation = MARKET_PLAN_ALLOCATIONS[months];
-  if (!allocation) return bad("Durata del piano non valida.");
+  const defaultAllocation = MARKET_PLAN_ALLOCATIONS[months];
+  if (!defaultAllocation) return bad("Durata del piano non valida.");
+  let allocation = defaultAllocation;
+  if (body.allocations !== undefined) {
+    if (!Array.isArray(body.allocations) || body.allocations.length < 3 || body.allocations.length > MARKET_CUSTOM_ASSETS.size) return bad('Seleziona almeno 3 asset.');
+    const seen = new Set();
+    allocation = [];
+    for (const item of body.allocations) {
+      const key = Array.isArray(item) ? String(item[0] || '') : String(item?.asset || '');
+      const weight = Number(Array.isArray(item) ? item[1] : item?.weight);
+      if (!MARKET_CUSTOM_ASSETS.has(key) || seen.has(key) || !Number.isFinite(weight) || weight <= 0 || weight > 100) return bad('Asset o percentuale non validi.');
+      seen.add(key);
+      allocation.push([key, weight]);
+    }
+    if (Math.abs(allocation.reduce((sum, item) => sum + item[1], 0) - 100) > 0.01) return bad('Le percentuali degli asset devono sommare esattamente 100%.');
+  }
   if (!Number.isFinite(amount) || amount < 50) return bad("L'importo minimo è 50 USDT.");
   if (!Number.isFinite(stopLossPct)) return bad("Profilo stop-loss non disponibile.");
   const source = body.source === 'earnings' ? 'earnings' : 'deposit';
@@ -1857,7 +1871,7 @@ async function customMarketInvest(request, env) {
   if (!Number.isFinite(stopLossPct) || stopLossPct < 1 || stopLossPct > 90) return bad('Lo stop loss deve essere tra 1% e 90%.');
   const source = body.source === 'earnings' ? 'earnings' : 'deposit';
   const rawAllocations = Array.isArray(body.allocations) ? body.allocations : [];
-  if (rawAllocations.length < 1 || rawAllocations.length > MARKET_CUSTOM_ASSETS.size) return bad('Seleziona almeno un asset.');
+  if (rawAllocations.length < 3 || rawAllocations.length > MARKET_CUSTOM_ASSETS.size) return bad('Seleziona almeno 3 asset.');
   const seen = new Set(), allocations = [];
   for (const item of rawAllocations) {
     const key = Array.isArray(item) ? String(item[0] || '') : String(item?.asset || '');

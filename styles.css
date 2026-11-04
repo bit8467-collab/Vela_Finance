@@ -2797,3 +2797,12 @@ dialog.modal .modal-card div[class*="-card"] {
 @keyframes adminTitlePulse{from{filter:brightness(1);text-shadow:0 0 4px color-mix(in srgb,var(--accent) 50%,transparent)}to{filter:brightness(1.45);text-shadow:0 0 13px color-mix(in srgb,var(--accent) 90%,transparent)}}
 @keyframes adminBadgeFlash{from{filter:brightness(.8);transform:scale(.96)}to{filter:brightness(1.35);transform:scale(1.05)}}
 @media(prefers-reduced-motion:reduce){.admin-request-group>summary:has(.count-pill.has-alert),.admin-request-group .count-pill.has-alert,#support-thread-count.has-alert,#operator-admin-request-count.has-alert,.admin-workspace-link.has-alert .admin-workspace-link-copy b,.admin-workspace-link.has-alert .admin-workspace-nav-badge{animation:none}}
+
+.market-allocation-picker { display:grid; gap:8px; margin:10px 0; padding:10px; border:1px solid var(--line); border-radius:12px; background:color-mix(in srgb,var(--surface-2) 72%,transparent); }
+.market-allocation-fields { grid-template-columns:minmax(0,1fr); }
+.market-allocation-scope { display:flex; flex-wrap:wrap; gap:7px 14px; }
+.market-allocation-scope label { display:flex; align-items:center; gap:5px; color:var(--muted); font-size:9px; }
+.market-allocation-scope input { accent-color:var(--accent); }
+.market-allocation-preview { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:5px; }
+.market-allocation-preview span { display:flex; justify-content:space-between; gap:4px; padding:5px 7px; border:1px solid var(--line); border-radius:7px; color:var(--muted); font-size:8px; }
+.market-allocation-preview b { color:var(--text); white-space:nowrap; }
