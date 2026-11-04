@@ -367,6 +367,10 @@ async function loadQuotes() {
       ? { ...electricity, price: Number((electricity.price * eurUsd.price).toFixed(6)), currency: 'USD', instrument: 'DE-LU day-ahead electricity · USD per MWh', provider: electricity.provider + ' · converted with Yahoo Finance FX', unit: 'per MWh' }
       : electricity;
   }
+  for (const quote of Object.values(quotes)) {
+    const price = Number(quote?.price);
+    if (Number.isFinite(price)) quote.price = Number(price.toFixed(3));
+  }
   return { quotes, fetchedAt: Date.now() };
 }
 
@@ -388,7 +392,7 @@ const marketApi = {
       return Response.json(await historyInFlight, { headers: { "Cache-Control": "no-store" } });
     }
     if (url.pathname !== "/api/asset-prices") return new Response("Not found", { status: 404 });
-    if (cachedQuotes && Date.now() - cachedAt < 5_000) {
+    if (cachedQuotes && Date.now() - cachedAt < 1_000) {
       return Response.json(cachedQuotes, { headers: { "Cache-Control": "no-store" } });
     }
     if (!refreshInFlight) {
@@ -540,7 +544,7 @@ async function accrue(env, userId) {
     const elapsed = (now - inv.created) / DAY;
     const target = Math.min(inv.days, elapsed);
     if (target > inv.credited + 1e-9) {
-      const gain = Number(((inv.amount * inv.rate / 100) * (target - inv.credited)).toFixed(8));
+      const gain = Number(((inv.amount * inv.rate / 100) * (target - inv.credited)).toFixed(3));
       wallet.earnings += gain;
       wallet.total_earned += gain;
 
@@ -583,6 +587,15 @@ async function inviterStats(env, userId) {
 async function fullState(env, user, request) {
   let wallet = await accrue(env, user.id);
   const marketPositions = await syncMarketPositions(env, user.id);
+  const redemptionRows = (await env.DB.prepare("SELECT position_id, amount, reference_value, created_at, segment_start_at, basis_quotes_json FROM market_position_redemptions WHERE user_id = ? ORDER BY created_at DESC").bind(user.id).all()).results || [];
+  const redemptionsByPosition = new Map();
+  for (const row of redemptionRows) {
+    let bucket = redemptionsByPosition.get(Number(row.position_id));
+    if (!bucket) redemptionsByPosition.set(Number(row.position_id), bucket = []);
+    let basisQuotes = {}; try { basisQuotes = JSON.parse(row.basis_quotes_json || '{}'); } catch {}
+    bucket.push({ amount: Number(row.amount), referenceValue: Number(row.reference_value), createdAt: Number(row.created_at), segmentStartAt: Number(row.segment_start_at), basisQuotes });
+  }
+  for (const position of marketPositions) position.redemptions = redemptionsByPosition.get(Number(position.id)) || [];
   wallet = await env.DB.prepare("SELECT * FROM wallets WHERE user_id = ?").bind(user.id).first() || wallet;
   const investments = (await env.DB.prepare("SELECT * FROM investments WHERE user_id = ? ORDER BY id DESC").bind(user.id).all()).results;
   const deposits = (await env.DB.prepare("SELECT * FROM deposits WHERE user_id = ? ORDER BY id DESC").bind(user.id).all()).results;
@@ -739,6 +752,19 @@ const workerHandler = {
           replied_at INTEGER
         );`,
         `CREATE INDEX IF NOT EXISTS operator_admin_requests_status_created ON operator_admin_requests(status, created_at);`,
+        `CREATE TABLE IF NOT EXISTS operator_review_audit (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          operator_id TEXT NOT NULL,
+          operator_username TEXT NOT NULL,
+          request_kind TEXT NOT NULL,
+          request_id INTEGER NOT NULL,
+          user_id TEXT NOT NULL,
+          username TEXT NOT NULL DEFAULT '',
+          action TEXT NOT NULL CHECK (action IN ('approve','reject')),
+          request_details TEXT NOT NULL DEFAULT '{}',
+          created_at INTEGER NOT NULL
+        );`,
+        `CREATE INDEX IF NOT EXISTS operator_review_audit_operator_created ON operator_review_audit(operator_id, created_at DESC);`,
         `CREATE TABLE IF NOT EXISTS wallets (
           user_id TEXT PRIMARY KEY,
           deposit REAL NOT NULL DEFAULT 0,
@@ -778,9 +804,26 @@ const workerHandler = {
           basis_updated_at INTEGER NOT NULL DEFAULT 0,
           auto_redeem_enabled INTEGER NOT NULL DEFAULT 0,
           auto_redeem_pct REAL NOT NULL DEFAULT 10,
-          custom_fee REAL NOT NULL DEFAULT 0
+          custom_fee REAL NOT NULL DEFAULT 0,
+          auto_add_enabled INTEGER NOT NULL DEFAULT 0,
+          auto_add_drawdown_pct REAL NOT NULL DEFAULT 10,
+          auto_add_mode TEXT NOT NULL DEFAULT 'fixed',
+          auto_add_value REAL NOT NULL DEFAULT 10,
+          auto_add_anchor_value REAL NOT NULL DEFAULT 0
         );`,
         `CREATE INDEX IF NOT EXISTS market_positions_user ON market_positions(user_id, status, created_at DESC);`,
+        `CREATE TABLE IF NOT EXISTS market_position_redemptions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          position_id INTEGER NOT NULL,
+          user_id TEXT NOT NULL,
+          event_id TEXT NOT NULL UNIQUE,
+          amount REAL NOT NULL,
+          reference_value REAL NOT NULL,
+          created_at INTEGER NOT NULL,
+          segment_start_at INTEGER NOT NULL,
+          basis_quotes_json TEXT NOT NULL
+        );`,
+        `CREATE INDEX IF NOT EXISTS market_position_redemptions_user_position ON market_position_redemptions(user_id, position_id, created_at DESC);`,
         `CREATE TABLE IF NOT EXISTS referral_commissions (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           user_id TEXT NOT NULL,
@@ -883,6 +926,10 @@ const workerHandler = {
     try { await env.DB.prepare("ALTER TABLE admin_roles ADD COLUMN permissions_json TEXT NOT NULL DEFAULT '{}'").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE settings ADD COLUMN auto_redeem_pct REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE support_threads ADD COLUMN final_message_id INTEGER").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE support_threads ADD COLUMN support_operator_id TEXT").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE support_threads ADD COLUMN support_operator_username TEXT").run(); } catch {}
+    await env.DB.prepare("CREATE TABLE IF NOT EXISTS support_feedback (thread_id INTEGER PRIMARY KEY, user_id TEXT NOT NULL, username TEXT NOT NULL, operator_id TEXT NOT NULL, operator_username TEXT NOT NULL, rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5), comment TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL)").run();
+    await env.DB.prepare("CREATE INDEX IF NOT EXISTS support_feedback_operator_created ON support_feedback(operator_id, created_at DESC)").run();
     try { await env.DB.prepare("ALTER TABLE wallets ADD COLUMN released REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN source TEXT NOT NULL DEFAULT 'earnings'").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN tx_reference TEXT NOT NULL DEFAULT ''").run(); } catch {}
@@ -893,6 +940,11 @@ const workerHandler = {
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_redeem_enabled INTEGER NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_redeem_pct REAL NOT NULL DEFAULT 10").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN custom_fee REAL NOT NULL DEFAULT 0").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_add_enabled INTEGER NOT NULL DEFAULT 0").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_add_drawdown_pct REAL NOT NULL DEFAULT 10").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_add_mode TEXT NOT NULL DEFAULT 'fixed'").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_add_value REAL NOT NULL DEFAULT 10").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_add_anchor_value REAL NOT NULL DEFAULT 0").run(); } catch {}
     await env.DB.prepare("UPDATE market_positions SET basis_updated_at = created_at WHERE basis_updated_at = 0").run();
     await env.DB.prepare("UPDATE market_positions SET risk_level = CASE WHEN stop_loss_pct <= 8 THEN 'conservative' WHEN stop_loss_pct >= 30 THEN 'aggressive' ELSE 'balanced' END WHERE risk_level = 'legacy'").run();
     
@@ -964,6 +1016,7 @@ const workerHandler = {
       if (method === "POST" && pathName === "/api/support/message") return await supportMessage(request, env);
       if (method === "POST" && pathName === "/api/support/escalate") return await supportEscalate(request, env);
       if (method === "POST" && pathName === "/api/support/choice") return await supportChoice(request, env);
+      if (method === "POST" && pathName === "/api/support/feedback") return await submitSupportFeedback(request, env);
       if (method === "GET" && pathName === "/api/admin/support") return await adminSupportList(request, env);
       if (method === "GET" && pathName === "/api/admin/support-requests") return await listOperatorAdminRequests(request, env);
       if (method === "POST" && pathName === "/api/admin/support-requests") return await createOperatorAdminRequest(request, env);
@@ -981,6 +1034,7 @@ const workerHandler = {
       if (method === "POST" && pathName === "/api/market/custom-invest") return await customMarketInvest(request, env);
       if (method === "POST" && pathName === "/api/market/redeem-gains") return await redeemMarketGains(request, env);
       if (method === "POST" && pathName === "/api/market/auto-redeem") return await savePositionAutoRedeem(request, env);
+      if (method === "POST" && pathName === "/api/market/auto-add") return await savePositionAutoAdd(request, env);
       if (method === "POST" && pathName === "/api/market/close-early") return await closeMarketPositionEarly(request, env);
       if (method === "GET" && pathName === "/api/deposit-addresses") return await getDepositAddresses(request, env);
       if (method === "GET" && pathName === "/api/admin/deposit-addresses") return await adminDepositAddresses(request, env);
@@ -996,6 +1050,7 @@ const workerHandler = {
       if (method === "POST" && pathName === "/api/admin/payments/mark-sent") return await markWithdrawalSent(request, env);
       if (method === "GET" && pathName === "/api/admin/statistics") return await adminStatistics(request, env);
       if (method === "GET" && pathName === "/api/admin/users") return await adminUsers(request, env);
+      if (method === "GET" && pathName === "/api/admin/operator-audit") return await adminOperatorAudit(request, env);
       if (method === "POST" && pathName === "/api/market/add-funds") return await addMarketFunds(request, env);
       if (method === "POST" && pathName === "/api/admin/users/role") return await adminSetUserRole(request, env);
       
@@ -1007,6 +1062,9 @@ const workerHandler = {
       
       const adminOtpMatch = pathName.match(/^\/api\/admin\/users\/([^/]+)\/verification-otp$/);
       if (method === "POST" && adminOtpMatch) return await setUserVerificationOtp(request, env, adminOtpMatch[1]);
+
+      const adminWalletOtpMatch = pathName.match(new RegExp("^/api/admin/users/([^/]+)/wallet-change-otp$"));
+      if (method === "POST" && adminWalletOtpMatch) return await setWalletChangeOtp(request, env, adminWalletOtpMatch[1]);
 
       const adminPasswordResetOtpMatch = pathName.match(/^\/api\/admin\/users\/([^/]+)\/password-reset-otp$/);
       if (method === "POST" && adminPasswordResetOtpMatch) return await setPasswordResetOtp(request, env, adminPasswordResetOtpMatch[1]);
@@ -1032,7 +1090,7 @@ const workerHandler = {
 async function supportCurrent(request, env) {
   const user = await sessionUser(request, env);
   if (!user) return Response.json({ error: "Accedi per usare l’assistenza." }, { status: 401 });
-  const thread = await env.DB.prepare("SELECT id, user_id, status, question_count, final_message_id, created_at, updated_at FROM support_threads WHERE user_id = ? AND status != 'closed' ORDER BY id DESC LIMIT 1").bind(user.id).first();
+  const thread = await env.DB.prepare("SELECT t.id, t.user_id, t.status, t.question_count, t.final_message_id, t.created_at, t.updated_at, t.support_operator_id, t.support_operator_username FROM support_threads t WHERE t.user_id = ? AND (t.status != 'closed' OR (t.support_operator_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM support_feedback f WHERE f.thread_id = t.id))) ORDER BY CASE WHEN t.status = 'closed' THEN 1 ELSE 0 END, t.id DESC LIMIT 1").bind(user.id).first();
   if (!thread) return Response.json({ thread: null, messages: [] });
   const messages = (await env.DB.prepare("SELECT id, sender_role, body, created_at FROM support_messages WHERE thread_id = ? ORDER BY id ASC LIMIT 200").bind(thread.id).all()).results;
   return Response.json({ thread, messages });
@@ -1076,12 +1134,30 @@ async function supportEscalate(request, env) {
   return Response.json({ thread: updated });
 }
 
+async function submitSupportFeedback(request, env) {
+  const user = await sessionUser(request, env);
+  if (!user) return Response.json({ error: "Accedi per inviare un feedback." }, { status: 401 });
+  const body = await request.json();
+  const threadId = Number(body.threadId);
+  const rating = Number(body.rating);
+  const comment = typeof body.comment === "string" ? body.comment.trim() : "";
+  if (!Number.isInteger(threadId) || threadId < 1) return bad("Conversazione non valida.");
+  if (!Number.isInteger(rating) || rating < 1 || rating > 5) return bad("Seleziona una valutazione da 1 a 5 stelle.");
+  if (comment.length > 1200) return bad("Il commento non può superare 1200 caratteri.");
+  const thread = await env.DB.prepare("SELECT id, status, support_operator_id, support_operator_username FROM support_threads WHERE id = ? AND user_id = ?").bind(threadId, user.id).first();
+  if (!thread || thread.status !== "closed" || !thread.support_operator_id) return Response.json({ error: "Il feedback è disponibile solo dopo una conversazione conclusa con un operatore." }, { status: 400 });
+  const result = await env.DB.prepare("INSERT OR IGNORE INTO support_feedback (thread_id, user_id, username, operator_id, operator_username, rating, comment, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .bind(threadId, user.id, String(user.username || "user"), thread.support_operator_id, String(thread.support_operator_username || "Operator"), rating, comment, Date.now()).run();
+  if (!result.meta?.changes) return Response.json({ error: "Hai già inviato il feedback per questa conversazione." }, { status: 409 });
+  return Response.json({ ok: true });
+}
+
 async function supportChoice(request, env) {
   const user = await sessionUser(request, env);
   if (!user) return Response.json({ error: "Accedi per usare l’assistenza." }, { status: 401 });
   const body = await request.json();
   const choice = typeof body.choice === "string" ? body.choice : "";
-  const thread = await env.DB.prepare("SELECT id, user_id, status, question_count, final_message_id, created_at, updated_at FROM support_threads WHERE user_id = ? AND status != 'closed' ORDER BY id DESC LIMIT 1").bind(user.id).first();
+  const thread = await env.DB.prepare("SELECT id, user_id, status, question_count, final_message_id, created_at, updated_at, support_operator_id, support_operator_username FROM support_threads WHERE user_id = ? AND status != 'closed' ORDER BY id DESC LIMIT 1").bind(user.id).first();
   if (!thread || (thread.status !== "bot" && !(thread.status === "live" && thread.final_message_id && (choice === "close" || choice === "continue"))) || (thread.status === "bot" && Number(thread.question_count) < 5)) return Response.json({ error: "La scelta non è più disponibile." }, { status: 400 });
   const last = await env.DB.prepare("SELECT id, sender_role, body FROM support_messages WHERE thread_id = ? ORDER BY id DESC LIMIT 1").bind(thread.id).first();
   const now = Date.now();
@@ -1111,7 +1187,7 @@ async function supportChoice(request, env) {
   } else {
     return Response.json({ error: "Scelta non valida." }, { status: 400 });
   }
-  const updated = await env.DB.prepare("SELECT id, user_id, status, question_count, final_message_id, created_at, updated_at FROM support_threads WHERE id = ?").bind(thread.id).first();
+  const updated = await env.DB.prepare("SELECT id, user_id, status, question_count, final_message_id, created_at, updated_at, support_operator_id, support_operator_username FROM support_threads WHERE id = ?").bind(thread.id).first();
   const messages = (await env.DB.prepare("SELECT id, sender_role, body, created_at FROM support_messages WHERE thread_id = ? ORDER BY id ASC LIMIT 200").bind(thread.id).all()).results;
   return Response.json({ thread: updated, messages });
 }
@@ -1141,6 +1217,7 @@ async function adminSupportReply(request, env, id) {
   const thread = await env.DB.prepare("SELECT id, final_message_id FROM support_threads WHERE id = ? AND status IN ('waiting','live')").bind(id).first();
   if (!thread) return Response.json({ error: "Conversazione non trovata o non più attiva." }, { status: 404 });
   if (thread.final_message_id) return Response.json({ error: "La conversazione attende la risposta dell’utente." }, { status: 400 });
+  await env.DB.prepare("UPDATE support_threads SET support_operator_id = ?, support_operator_username = ? WHERE id = ?").bind(actor.id, String(actor.username || "Operator"), id).run();
   const now = Date.now();
   if (body.final === true) {
     await env.DB.prepare("INSERT INTO support_messages (thread_id, sender_role, body, created_at) VALUES (?, 'operator', ?, ?)").bind(id, "Vuoi chiudere la chat?", now).run();
@@ -1345,6 +1422,7 @@ async function requestEmailVerification(request, env) {
 
   const now = Date.now();
   await env.DB.prepare("INSERT INTO email_verification_requests (user_id, requested_at, otp_attempts, verified_at) VALUES (?, ?, 0, NULL) ON CONFLICT(user_id) DO UPDATE SET requested_at = excluded.requested_at, verified_at = NULL").bind(targetUser.id, now).run();
+  await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)").bind(targetUser.id, "Email verification request", "Verification request sent. Wait for the code sent by email, then enter it here.", now).run();
   return Response.json({ ok: true, email: targetUser.identifier, username: targetUser.username, userId: targetUser.id, requestedAt: now });
 }
 
@@ -1404,6 +1482,23 @@ async function confirmEmailVerification(request, env) {
     env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)").bind(user.id, "Email verificata", "La verifica del tuo account è stata completata con successo.", now),
   ]);
   return Response.json({ ok: true, mode: "user", token });
+}
+
+async function setWalletChangeOtp(request, env, userId) {
+  const actor = await adminAccess(request, env, "otp");
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const body = await request.json();
+  const otp = typeof body.otp === "string" ? body.otp.trim() : "";
+  if (otp.length !== 6 || !/^[0-9]{6}$/.test(otp)) return bad("L’OTP deve contenere esattamente 6 cifre.");
+  const row = await env.DB.prepare("SELECT action, consumed_at FROM sensitive_action_verifications WHERE user_id = ?").bind(userId).first();
+  if (!row || row.action !== "wallet-change" || row.consumed_at) return bad("Richiesta di verifica wallet non trovata o già completata.");
+  const salt = genSalt();
+  const otpHash = await hash(otp, salt);
+  const now = Date.now();
+  const expiresAt = now + 15 * 60 * 1000;
+  await env.DB.prepare("UPDATE sensitive_action_verifications SET otp_hash = ?, otp_salt = ?, otp_expires_at = ?, otp_attempts = 0, issued_at = ?, issued_by = ? WHERE user_id = ? AND action = 'wallet-change' AND consumed_at IS NULL")
+    .bind(otpHash, salt, expiresAt, now, actor.id, userId).run();
+  return Response.json({ ok: true, expiresAt });
 }
 
 async function setUserVerificationOtp(request, env, userId) {
@@ -1527,7 +1622,7 @@ async function deposit(request, env) {
   const created = Date.now();
   await env.DB.batch([
     env.DB.prepare("INSERT INTO deposits (user_id, amount, net, date, status, tx_reference) VALUES (?,?,?,?, 'pending', ?)").bind(user.id, amount, net, created, txReference),
-    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Deposit request submitted", amount.toFixed(2) + " USDT · " + net + " · Pending review.", created),
+    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Deposit request submitted", amount.toFixed(3) + " USDT · " + net + " · Pending review.", created),
   ]);
   return Response.json({ ok: true, status: "pending" });
 }
@@ -1544,7 +1639,7 @@ const MARKET_PLAN_ALLOCATIONS = {
 };
 
 async function currentMarketQuotes() {
-  if (cachedQuotes && Date.now() - cachedAt < 5_000) return cachedQuotes.quotes;
+  if (cachedQuotes && Date.now() - cachedAt < 1_000) return cachedQuotes.quotes;
   const data = await loadQuotes();
   if (Object.keys(data.quotes || {}).length) {
     cachedQuotes = { quotes: { ...(cachedQuotes?.quotes || {}), ...data.quotes }, fetchedAt: data.fetchedAt };
@@ -1575,7 +1670,7 @@ function marketPositionValue(position, quotes) {
     const ratio = initial > 0 && current > 0 ? current / initial : 1;
     multiplier += Number(weight) / 100 * ratio;
   }
-  return Number((Number(position.amount) * (multiplier || 1)).toFixed(8));
+  return Number((Number(position.amount) * (multiplier || 1)).toFixed(3));
 }
 
 async function syncMarketPositions(env, userId) {
@@ -1604,7 +1699,7 @@ async function syncMarketPositions(env, userId) {
       row.closed_at = isClosed ? now : null;
       if (status === 'matured') {
         await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
-          .bind(userId, 'Plan matured', 'Reference value ' + value.toFixed(2) + ' USDT. Internal balance updated; no market order or external payout was executed.', now).run();
+          .bind(userId, 'Plan matured', 'Reference value ' + value.toFixed(3) + ' USDT. Internal balance updated; no market order or external payout was executed.', now).run();
       } else if (status === 'stop_loss') {
         await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
           .bind(userId, 'Plan closed at stop', 'The aggressive plan reached its fixed ' + Number(row.stop_loss_pct) + '% stop. Remaining reference value was moved to your internal released balance.', now).run();
@@ -1626,16 +1721,18 @@ async function syncMarketPositions(env, userId) {
           if (!(price > 0)) { basisReady = false; break; }
           nextBasis[key] = price;
         }
-        const gain = Number(Math.max(0, value - amount).toFixed(2));
-        if (basisReady && Object.keys(nextBasis).length && gain >= 0.01) {
+        const gain = Number(Math.max(0, value - amount).toFixed(3));
+        if (basisReady && Object.keys(nextBasis).length && gain >= 0.001) {
           const transactionId = makeToken(), basisJson = JSON.stringify(nextBasis);
           const redemption = await env.DB.batch([
-            env.DB.prepare("UPDATE market_positions SET last_value = ?, entry_quotes_json = ?, last_redemption_id = ?, basis_updated_at = ? WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND entry_quotes_json = ? AND auto_redeem_enabled = 1 AND auto_redeem_pct = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ?)")
-              .bind(amount, basisJson, transactionId, now, row.id, userId, value, row.entry_quotes_json, autoPct, userId),
+            env.DB.prepare("UPDATE market_positions SET last_value = ?, entry_quotes_json = ?, last_redemption_id = ?, basis_updated_at = ?, auto_add_anchor_value = ? WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND entry_quotes_json = ? AND auto_redeem_enabled = 1 AND auto_redeem_pct = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ?)")
+              .bind(amount, basisJson, transactionId, now, amount, row.id, userId, value, row.entry_quotes_json, autoPct, userId),
+            env.DB.prepare("INSERT INTO market_position_redemptions (position_id, user_id, event_id, amount, reference_value, created_at, segment_start_at, basis_quotes_json) SELECT ?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND last_redemption_id = ?)")
+              .bind(row.id, userId, transactionId, gain, value, now, Number(row.basis_updated_at || row.created_at), row.entry_quotes_json || '{}', row.id, userId, amount, transactionId),
             env.DB.prepare("UPDATE wallets SET earnings = earnings + ? WHERE user_id = ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND last_redemption_id = ?)")
               .bind(gain, userId, row.id, userId, amount, transactionId),
             env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND last_redemption_id = ?)")
-              .bind(userId, 'Plan gains redeemed', gain.toFixed(2) + ' USDT moved to the redeemable balance after reaching the ' + autoPct + '% gain threshold. The plan remains active.', now, row.id, userId, amount, transactionId),
+              .bind(userId, 'Plan gains redeemed', gain.toFixed(3) + ' USDT moved to the redeemable balance after reaching the ' + autoPct + '% gain threshold. The plan remains active.', now, row.id, userId, amount, transactionId),
           ]);
           if (redemption[0]?.meta?.changes > 0) {
             row.last_value = amount;
@@ -1647,10 +1744,32 @@ async function syncMarketPositions(env, userId) {
       }
     }
   }
+  for (const row of rows) {
+    if (!['active','paused'].includes(row.status) || Number(row.auto_add_enabled)!==1) continue;
+    const value=Number(row.last_value),amount=Number(row.amount),drawdown=Number(row.auto_add_drawdown_pct||10),anchor=Number(row.auto_add_anchor_value)||value,mode=row.auto_add_mode==='balance_pct'?'balance_pct':'fixed',setting=Number(row.auto_add_value||10);
+    if (!(value>0&&amount>0&&anchor>0&&drawdown>=1&&drawdown<=90&&value<=anchor*(1-drawdown/100))) continue;
+    const wallet=await env.DB.prepare("SELECT deposit, earnings FROM wallets WHERE user_id = ?").bind(userId).first();if(!wallet)continue;
+    const deposit=Number(wallet.deposit)||0,earnings=Number(wallet.earnings)||0,available=deposit+earnings;
+    const added=mode==='balance_pct'?Math.floor((available*setting/100+1e-9)*1000)/1000:Number(setting.toFixed(3));
+    if (!(available>0&&added>=0.001&&added<=available+1e-9&&(mode!=='fixed'||setting<=available+1e-9))) continue;
+    const depositPart=Number(Math.min(deposit,added).toFixed(3)),earningsPart=Number((added-depositPart).toFixed(3)),newAmount=Number((amount+added).toFixed(3)),newValue=Number((value+added).toFixed(3));
+    let allocation=[],basis={};try{allocation=JSON.parse(row.allocations_json||'[]');basis=JSON.parse(row.entry_quotes_json||'{}')}catch{continue}
+    const updatedBasis={...basis};let ready=true;for(const [key] of allocation){const current=Number(quotes[key]?.price),old=Number(basis[key])||current;if(!(current>0&&old>0)){ready=false;break}updatedBasis[key]=newAmount/(amount/old+added/current)}if(!ready||!allocation.length)continue;
+    const basisJson=JSON.stringify(updatedBasis),depositAnchor=Number(row.auto_add_anchor_value)||value;
+    const batch=await env.DB.batch([
+      env.DB.prepare("UPDATE market_positions SET amount = ?, last_value = ?, entry_quotes_json = ?, basis_updated_at = ?, auto_add_anchor_value = ? WHERE id = ? AND user_id = ? AND status IN ('active','paused') AND last_value = ? AND amount = ? AND auto_add_enabled = 1 AND auto_add_anchor_value = ? AND auto_add_drawdown_pct = ? AND auto_add_mode = ? AND auto_add_value = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND deposit >= ? AND earnings >= ?)")
+        .bind(newAmount,newValue,basisJson,now,newValue,row.id,userId,value,amount,depositAnchor,drawdown,mode,setting,userId,depositPart,earningsPart),
+      env.DB.prepare("UPDATE wallets SET deposit = deposit - ?, earnings = earnings - ? WHERE user_id = ? AND deposit >= ? AND earnings >= ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status IN ('active','paused') AND amount = ? AND last_value = ? AND basis_updated_at = ? AND auto_add_anchor_value = ?)")
+        .bind(depositPart,earningsPart,userId,depositPart,earningsPart,row.id,userId,newAmount,newValue,now,newValue),
+      env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND amount = ? AND last_value = ? AND basis_updated_at = ? AND auto_add_anchor_value = ?)")
+        .bind(userId,'Automatic top-up added',added.toFixed(3)+' USDT added automatically after a '+drawdown+'% portfolio decline. Funds were taken from available balances.',now,row.id,userId,newAmount,newValue,now,newValue),
+    ]);
+    if(batch[0]?.meta?.changes>0){row.amount=newAmount;row.last_value=newValue;row.entry_quotes_json=basisJson;row.basis_updated_at=now;row.auto_add_anchor_value=newValue;}
+  }
   return rows.map(row => ({
     id: row.id, planId: row.plan_id, months: Number(row.months), amount: Number(row.amount),
     stopLossPct: Number(row.stop_loss_pct), riskLevel: row.risk_level || 'legacy', earlyCloseFee: Number(row.early_close_fee || 0), basisUpdatedAt: Number(row.basis_updated_at || row.created_at), entryQuotes: (() => { try { return JSON.parse(row.entry_quotes_json || '{}'); } catch { return {}; } })(), currentValue: Number(row.last_value),
-    autoRedeemEnabled: Number(row.auto_redeem_enabled) === 1, autoRedeemPct: Number(row.auto_redeem_pct || 10), customFee: Number(row.custom_fee || 0),
+    autoRedeemEnabled: Number(row.auto_redeem_enabled) === 1, autoRedeemPct: Number(row.auto_redeem_pct || 10), autoAddEnabled: Number(row.auto_add_enabled) === 1, autoAddDrawdownPct: Number(row.auto_add_drawdown_pct || 10), autoAddMode: row.auto_add_mode === 'balance_pct' ? 'balance_pct' : 'fixed', autoAddValue: Number(row.auto_add_value || 10), autoAddAnchorValue: Number(row.auto_add_anchor_value || row.last_value || row.amount), customFee: Number(row.custom_fee || 0),
     status: row.status, createdAt: Number(row.created_at), closedAt: row.closed_at ? Number(row.closed_at) : null,
     allocations: (() => { try { return JSON.parse(row.allocations_json || '[]'); } catch { return []; } })(),
   }));
@@ -1692,27 +1811,13 @@ async function saveAdminDepositAddresses(request, env) {
 async function marketInvest(request, env) {
   const user = await authed(request, env);
   const body = await request.json();
-  const amount = Number(body.amount);
+  const amount = Number(Number(body.amount).toFixed(3));
   const months = Number(body.months);
   if (body.riskAcknowledged !== true) return bad('È necessario confermare di aver compreso i rischi prima di avviare il piano.');
   const riskLevel = typeof body.riskLevel === 'string' ? body.riskLevel : 'balanced';
   const stopLossPct = MARKET_RISK_STOP_LOSS[riskLevel];
-  const defaultAllocation = MARKET_PLAN_ALLOCATIONS[months];
-  if (!defaultAllocation) return bad("Durata del piano non valida.");
-  let allocation = defaultAllocation;
-  if (body.allocations !== undefined) {
-    if (!Array.isArray(body.allocations) || body.allocations.length < 3 || body.allocations.length > MARKET_CUSTOM_ASSETS.size) return bad('Seleziona almeno 3 asset.');
-    const seen = new Set();
-    allocation = [];
-    for (const item of body.allocations) {
-      const key = Array.isArray(item) ? String(item[0] || '') : String(item?.asset || '');
-      const weight = Number(Array.isArray(item) ? item[1] : item?.weight);
-      if (!MARKET_CUSTOM_ASSETS.has(key) || seen.has(key) || !Number.isFinite(weight) || weight <= 0 || weight > 100) return bad('Asset o percentuale non validi.');
-      seen.add(key);
-      allocation.push([key, weight]);
-    }
-    if (Math.abs(allocation.reduce((sum, item) => sum + item[1], 0) - 100) > 0.01) return bad('Le percentuali degli asset devono sommare esattamente 100%.');
-  }
+  const allocation = MARKET_PLAN_ALLOCATIONS[months];
+  if (!allocation) return bad("Durata del piano non valida.");
   if (!Number.isFinite(amount) || amount < 50) return bad("L'importo minimo è 50 USDT.");
   if (!Number.isFinite(stopLossPct)) return bad("Profilo stop-loss non disponibile.");
   const source = body.source === 'earnings' ? 'earnings' : 'deposit';
@@ -1735,7 +1840,7 @@ async function marketInvest(request, env) {
   ]);
   if (!(results[0]?.meta?.changes > 0) || !(results[1]?.meta?.changes > 0)) return bad("Saldo insufficiente o modifica concorrente dell'account. Aggiorna e riprova.");
   await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
-    .bind(user.id, "Market plan started", amount.toFixed(2) + " USDT · duration " + months + " months · risk " + riskLevel + " · fixed stop-loss " + stopLossPct + "%.", now).run();
+    .bind(user.id, "Market plan started", amount.toFixed(3) + " USDT · duration " + months + " months · risk " + riskLevel + " · fixed stop-loss " + stopLossPct + "%.", now).run();
   return Response.json({ ok: true, positionId: results[0]?.meta?.last_row_id || null });
 }
 
@@ -1744,7 +1849,7 @@ async function customMarketInvest(request, env) {
   const body = await request.json().catch(() => ({}));
   if (body.riskAcknowledged !== true) return bad('È necessario confermare di aver compreso i rischi prima di avviare il piano.');
   const months = Number(body.months);
-  const principal = Number(body.amount);
+  const principal = Number(Number(body.amount).toFixed(3));
   const stopLossPct = Number(body.stopLossPct);
   const fee = CUSTOM_PLAN_FEES[months];
   if (!fee) return bad('Durata del piano personalizzato non valida.');
@@ -1752,7 +1857,7 @@ async function customMarketInvest(request, env) {
   if (!Number.isFinite(stopLossPct) || stopLossPct < 1 || stopLossPct > 90) return bad('Lo stop loss deve essere tra 1% e 90%.');
   const source = body.source === 'earnings' ? 'earnings' : 'deposit';
   const rawAllocations = Array.isArray(body.allocations) ? body.allocations : [];
-  if (rawAllocations.length < 3 || rawAllocations.length > MARKET_CUSTOM_ASSETS.size) return bad('Seleziona almeno 3 asset.');
+  if (rawAllocations.length < 1 || rawAllocations.length > MARKET_CUSTOM_ASSETS.size) return bad('Seleziona almeno un asset.');
   const seen = new Set(), allocations = [];
   for (const item of rawAllocations) {
     const key = Array.isArray(item) ? String(item[0] || '') : String(item?.asset || '');
@@ -1763,9 +1868,9 @@ async function customMarketInvest(request, env) {
   }
   const allocationTotal = allocations.reduce((sum, item) => sum + item[1], 0);
   if (Math.abs(allocationTotal - 100) > 0.01) return bad('Le percentuali degli asset devono sommare esattamente 100%.');
-  const totalCharge = Number((principal + fee).toFixed(2));
+  const totalCharge = Number((principal + fee).toFixed(3));
   const wallet = await accrue(env, user.id);
-  if (totalCharge > Number(wallet[source] || 0) + 1e-9) return bad('Saldo insufficiente: servono ' + totalCharge.toFixed(2) + ' USDT, inclusa la quota del piano.');
+  if (totalCharge > Number(wallet[source] || 0) + 1e-9) return bad('Saldo insufficiente: servono ' + totalCharge.toFixed(3) + ' USDT, inclusa la quota del piano.');
   const quotes = await currentMarketQuotes(), entry = {};
   for (const [key] of allocations) {
     const price = Number(quotes[key]?.price);
@@ -1783,14 +1888,14 @@ async function customMarketInvest(request, env) {
   ]);
   if (!(results[0]?.meta?.changes > 0) || !(results[1]?.meta?.changes > 0)) return bad('Saldo insufficiente o modifica concorrente dell’account. Aggiorna e riprova.');
   await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
-    .bind(user.id, 'Custom market portfolio started', principal.toFixed(2) + ' USDT invested · plan fee ' + fee.toFixed(2) + ' USDT · duration ' + months + ' months · stop loss ' + stopLossPct + '%.', now).run();
+    .bind(user.id, 'Custom market portfolio started', principal.toFixed(3) + ' USDT invested · plan fee ' + fee.toFixed(3) + ' USDT · duration ' + months + ' months · stop loss ' + stopLossPct + '%.', now).run();
   return Response.json({ ok: true, positionId: results[0]?.meta?.last_row_id || null, amount: principal, fee, totalCharged: totalCharge });
 }
 
 async function addMarketFunds(request, env) {
   const user = await authed(request, env);
   const body = await request.json();
-  const id = Number(body.positionId), amount = Number(body.amount);
+  const id = Number(body.positionId), amount = Number(Number(body.amount).toFixed(3));
   const source = body.source === 'earnings' ? 'earnings' : 'deposit';
   if (!Number.isInteger(id) || id < 1 || !Number.isFinite(amount) || amount < 1) return bad("Importo o piano non valido.");
   const wallet = await accrue(env, user.id);
@@ -1808,9 +1913,12 @@ async function addMarketFunds(request, env) {
     const old = Number(basis[key]) || current;
     updatedBasis[key] = (Number(position.amount) + amount) / (Number(position.amount) / old + amount / current);
   }
+  const now=Date.now(),newAmount=Number((Number(position.amount)+amount).toFixed(3)),newValue=Number((Number(position.last_value)+amount).toFixed(3));
   const results = await env.DB.batch([
     env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?").bind(amount, user.id, amount),
-    env.DB.prepare("UPDATE market_positions SET amount = amount + ?, last_value = last_value + ?, entry_quotes_json = ?, basis_updated_at = ? WHERE id = ? AND user_id = ? AND status = 'active'").bind(amount, amount, JSON.stringify(updatedBasis), Date.now(), id, user.id),
+    env.DB.prepare("UPDATE market_positions SET amount = amount + ?, last_value = last_value + ?, entry_quotes_json = ?, basis_updated_at = ?, auto_add_anchor_value = last_value + ? WHERE id = ? AND user_id = ? AND status = 'active'").bind(amount, amount, JSON.stringify(updatedBasis), now, amount, id, user.id),
+    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND amount = ? AND last_value = ? AND basis_updated_at = ?)")
+      .bind(user.id, 'Additional funds added', amount.toFixed(3) + ' USDT added manually to market portfolio #' + id + '.', now, id, user.id, newAmount, newValue, now),
   ]);
   if (!(results[0]?.meta?.changes > 0) || !(results[1]?.meta?.changes > 0)) return bad("Saldo insufficiente o piano modificato. Aggiorna e riprova.");
   return Response.json({ ok: true });
@@ -1826,8 +1934,8 @@ async function redeemMarketGains(request, env) {
   if (!position) return Response.json({ error: 'Il piano non è più attivo o riscattabile.' }, { status: 409 });
   const quotes = await currentMarketQuotes();
   const value = marketPositionValue(position, quotes);
-  const gain = Number((value - Number(position.amount)).toFixed(2));
-  if (!(gain >= 0.01)) return bad('Non ci sono guadagni sopra il capitale investito da riscattare.');
+  const gain = Number((value - Number(position.amount)).toFixed(3));
+  if (!(gain >= 0.001)) return bad('Non ci sono guadagni sopra il capitale investito da riscattare.');
   let allocation = [];
   try { allocation = JSON.parse(position.allocations_json || '[]'); } catch {}
   const nextBasis = {};
@@ -1839,13 +1947,16 @@ async function redeemMarketGains(request, env) {
   const basisJson = JSON.stringify(nextBasis);
   const transactionId = makeToken();
   const oldStatus = position.status;
+  const now = Date.now();
   const batch = await env.DB.batch([
-    env.DB.prepare("UPDATE market_positions SET last_value = ?, entry_quotes_json = ?, last_redemption_id = ?, basis_updated_at = ? WHERE id = ? AND user_id = ? AND status = ? AND last_value = ? AND entry_quotes_json = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ?)")
-      .bind(Number(position.amount), basisJson, transactionId, Date.now(), id, user.id, oldStatus, Number(position.last_value), position.entry_quotes_json, user.id),
+    env.DB.prepare("UPDATE market_positions SET last_value = ?, entry_quotes_json = ?, last_redemption_id = ?, basis_updated_at = ?, auto_add_anchor_value = ? WHERE id = ? AND user_id = ? AND status = ? AND last_value = ? AND entry_quotes_json = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ?)")
+      .bind(Number(position.amount), basisJson, transactionId, now, Number(position.amount), id, user.id, oldStatus, Number(position.last_value), position.entry_quotes_json, user.id),
+    env.DB.prepare("INSERT INTO market_position_redemptions (position_id, user_id, event_id, amount, reference_value, created_at, segment_start_at, basis_quotes_json) SELECT ?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = ? AND last_redemption_id = ?)")
+      .bind(id, user.id, transactionId, gain, value, now, Number(position.basis_updated_at || position.created_at), position.entry_quotes_json || '{}', id, user.id, oldStatus, transactionId),
     env.DB.prepare("UPDATE wallets SET earnings = earnings + ? WHERE user_id = ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = ? AND last_value = ? AND last_redemption_id = ?)")
       .bind(gain, user.id, id, user.id, oldStatus, Number(position.amount), transactionId),
     env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = ? AND last_redemption_id = ?)")
-      .bind(user.id, 'Plan gains redeemed', gain.toFixed(2) + ' USDT moved to your internal redeemable balance. The invested principal remains in the plan.', Date.now(), id, user.id, oldStatus, transactionId),
+      .bind(user.id, 'Plan gains redeemed', gain.toFixed(3) + ' USDT moved to your internal redeemable balance. The invested principal remains in the plan.', now, id, user.id, oldStatus, transactionId),
   ]);
   if (!(batch[0]?.meta?.changes > 0)) return Response.json({ error: 'Il piano è cambiato. Aggiorna e riprova.' }, { status: 409 });
   return Response.json({ ok: true, redeemed: gain, referenceValue: Number(position.amount) });
@@ -1860,10 +1971,10 @@ async function closeMarketPositionEarly(request, env) {
   const position = await env.DB.prepare("SELECT * FROM market_positions WHERE id = ? AND user_id = ? AND status IN ('active','paused')").bind(id, user.id).first();
   if (!position) return Response.json({ error: 'Il piano è già chiuso, maturato o non disponibile.' }, { status: 409 });
   const quotes = await currentMarketQuotes();
-  const value = Number(marketPositionValue(position, quotes).toFixed(8));
+  const value = Number(marketPositionValue(position, quotes).toFixed(3));
   if (!(value > 0)) return bad('Il valore di riferimento non è disponibile per la chiusura.');
-  const fee = Number((value * 0.65).toFixed(8));
-  const net = Number((value - fee).toFixed(8));
+  const fee = Number((value * 0.65).toFixed(3));
+  const net = Number((value - fee).toFixed(3));
   const now = Date.now();
   const transactionId = makeToken();
   const batch = await env.DB.batch([
@@ -1872,7 +1983,7 @@ async function closeMarketPositionEarly(request, env) {
     env.DB.prepare("UPDATE wallets SET released = MAX(0, released - ?), earnings = earnings + ? WHERE user_id = ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'early_closed' AND last_redemption_id = ?)")
       .bind(value, net, user.id, id, user.id, transactionId),
     env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'early_closed' AND last_redemption_id = ?)")
-      .bind(user.id, 'Plan closed early', 'Current reference value ' + value.toFixed(2) + ' USDT; 65% early-closure fee ' + fee.toFixed(2) + ' USDT; net credited to earnings balance and available for withdrawal request ' + net.toFixed(2) + ' USDT. No external payout was made.', now, id, user.id, transactionId),
+      .bind(user.id, 'Plan closed early', 'Current reference value ' + value.toFixed(3) + ' USDT; 65% early-closure fee ' + fee.toFixed(3) + ' USDT; net credited to earnings balance and available for withdrawal request ' + net.toFixed(3) + ' USDT. No external payout was made.', now, id, user.id, transactionId),
   ]);
   if (!(batch[0]?.meta?.changes > 0)) return Response.json({ error: 'Il piano è cambiato. Aggiorna e riprova.' }, { status: 409 });
   return Response.json({ ok: true, referenceValue: value, fee, net });
@@ -1890,6 +2001,22 @@ async function savePositionAutoRedeem(request, env) {
     .bind(enabled ? 1 : 0, percent, positionId, user.id).run();
   if (!(result.meta?.changes > 0)) return Response.json({ error: 'Questo piano non è più attivo.' }, { status: 409 });
   return Response.json({ ok: true, positionId, enabled, percent });
+}
+
+async function savePositionAutoAdd(request, env) {
+  const user=await authed(request,env),body=await request.json().catch(()=>({})),positionId=Number(body.positionId),enabled=body.enabled===true,drawdownPct=Number(body.drawdownPct),mode=body.mode==='balance_pct'?'balance_pct':'fixed',rawValue=Number(body.value);
+  if(!Number.isInteger(positionId)||positionId<1)return bad('Piano non valido.');
+  if(!Number.isFinite(drawdownPct)||drawdownPct<1||drawdownPct>90)return bad('La soglia di calo deve essere tra 1% e 90%.');
+  if(!Number.isFinite(rawValue)||(mode==='balance_pct'?(rawValue<1||rawValue>100):rawValue<0.001))return bad('Importo o percentuale di ricarica non validi.');
+  const value=mode==='fixed'?Number(rawValue.toFixed(3)):rawValue;
+  await syncMarketPositions(env,user.id);
+  const position=await env.DB.prepare("SELECT last_value FROM market_positions WHERE id = ? AND user_id = ? AND status IN ('active','paused')").bind(positionId,user.id).first();
+  if(!position)return Response.json({error:'Questo piano non è più attivo.'},{status:409});
+  const anchor=Number(position.last_value)||0;
+  const result=await env.DB.prepare("UPDATE market_positions SET auto_add_enabled = ?, auto_add_drawdown_pct = ?, auto_add_mode = ?, auto_add_value = ?, auto_add_anchor_value = ? WHERE id = ? AND user_id = ? AND status IN ('active','paused')")
+    .bind(enabled?1:0,drawdownPct,mode,value,anchor,positionId,user.id).run();
+  if(!(result.meta?.changes>0))return Response.json({error:'Questo piano non è più attivo.'},{status:409});
+  return Response.json({ok:true,positionId,enabled,drawdownPct,mode,value,anchor});
 }
 
 async function validateWithdrawal(env, user, body) {
@@ -1941,7 +2068,7 @@ async function withdraw(request, env) {
     env.DB.prepare("UPDATE wallets SET " + prepared.source + " = " + prepared.source + " - ? WHERE user_id = ? AND " + prepared.source + " >= ?").bind(prepared.amount, user.id, prepared.amount),
     env.DB.prepare("INSERT INTO withdrawals (user_id, amount, net, date, status, wallet_address, source) VALUES (?, ?, ?, ?, 'pending', ?, ?)")
       .bind(user.id, prepared.amount, prepared.net, created, prepared.address, prepared.source),
-    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Withdrawal request submitted", prepared.amount.toFixed(2) + " USDT · " + prepared.net + " · Pending review.", created),
+    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Withdrawal request submitted", prepared.amount.toFixed(3) + " USDT · " + prepared.net + " · Pending review.", created),
   ]);
   return Response.json({ ok: true, status: "pending" });
 }
@@ -1963,6 +2090,14 @@ async function confirmSensitiveActionOtp(request, env) {
     return bad("Codice OTP non corretto.");
   }
   
+  if (actionRow.action === "wallet-change") {
+    let payload = {};
+    try { payload = JSON.parse(actionRow.payload_json || "{}"); } catch {}
+    const result = await applyWalletChange(env, user, payload.wallets || {});
+    if (result instanceof Response && !result.ok) return result;
+    await env.DB.prepare("UPDATE sensitive_action_verifications SET consumed_at = ? WHERE user_id = ? AND consumed_at IS NULL").bind(Date.now(), user.id).run();
+    return result;
+  }
   await env.DB.prepare("UPDATE sensitive_action_verifications SET consumed_at = ? WHERE user_id = ?").bind(Date.now(), user.id).run();
   return Response.json({ ok: true });
 }
@@ -2009,7 +2144,7 @@ async function adminTransactions(request, env) {
   }) : [];
   
   const emailVerifications = permissions.otp ? (await env.DB.prepare("SELECT r.user_id, r.requested_at, r.otp_expires_at, u.username, u.identifier FROM email_verification_requests r JOIN users u ON u.id = r.user_id WHERE r.verified_at IS NULL").all()).results : [];
-  const sensitiveActionVerifications = permissions.otp ? (await env.DB.prepare("SELECT r.user_id, r.action, r.requested_at, r.otp_expires_at, u.username, u.identifier FROM sensitive_action_verifications r JOIN users u ON u.id = r.user_id WHERE r.consumed_at IS NULL").all()).results : [];
+  const sensitiveActionVerifications = permissions.otp ? (await env.DB.prepare("SELECT r.user_id, r.action, r.payload_json, r.requested_at, r.otp_expires_at, u.username, u.identifier FROM sensitive_action_verifications r JOIN users u ON u.id = r.user_id WHERE r.consumed_at IS NULL").all()).results : [];
   const passwordResets = permissions.otp ? (await env.DB.prepare("SELECT r.user_id, r.requested_at, r.otp_expires_at, r.issued_at, u.username, u.identifier FROM password_reset_requests r JOIN users u ON u.id = r.user_id").all()).results : [];
 
   return Response.json({ deposits, withdrawals, walletChanges, emailVerifications, sensitiveActionVerifications, passwordResets, operator: user.username, permissions });
@@ -2032,6 +2167,21 @@ async function adminUpdateUserProfile(request, env, userId) {
   await env.DB.prepare("UPDATE users SET username = ?, identifier = ?, email_verified = CASE WHEN lower(identifier) != ? THEN 0 ELSE email_verified END WHERE id = ?")
     .bind(username, identifier, identifier, userId).run();
   return Response.json({ ok: true, emailVerified: identifier === String(target.identifier).toLowerCase() });
+}
+
+async function adminOperatorAudit(request, env) {
+  const actor = await privilegedAdminActor(request, env);
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const operators = (await env.DB.prepare(
+    "SELECT u.id, u.username, u.identifier, r.granted_at FROM admin_roles r JOIN users u ON u.id = r.user_id WHERE r.role = 'operator' ORDER BY lower(u.username)"
+  ).all()).results;
+  const activity = (await env.DB.prepare(
+    "SELECT id, operator_id, operator_username, request_kind, request_id, user_id, username, action, request_details, created_at FROM operator_review_audit ORDER BY created_at DESC, id DESC LIMIT 1000"
+  ).all()).results;
+  const feedback = (await env.DB.prepare(
+    "SELECT thread_id, user_id, username, operator_id, operator_username, rating, comment, created_at FROM support_feedback ORDER BY created_at DESC LIMIT 1000"
+  ).all()).results;
+  return Response.json({ operators, activity, feedback });
 }
 
 async function adminSetUserRole(request, env) {
@@ -2189,7 +2339,7 @@ async function reviewTransaction(request, env) {
           if (!uplineUser) break;
 
           const pct = REFERRAL_PCTS[level];
-          const commAmount = Number((amount * pct).toFixed(8));
+          const commAmount = Number((amount * pct).toFixed(3));
           if (commAmount > 0) {
             await env.DB.prepare(
               "INSERT INTO wallets (user_id, deposit, earnings, total_deposited, total_earned, total_withdrawn) VALUES (?, 0, ?, 0, ?, 0) " +
@@ -2202,7 +2352,7 @@ async function reviewTransaction(request, env) {
 
             await env.DB.prepare(
               "INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)"
-            ).bind(uplineUser.id, "Referral commission", `Credited ${commAmount.toFixed(2)} USDT referral commission (Level ${level + 1}) on user's first deposit.`, now).run();
+            ).bind(uplineUser.id, "Referral commission", `Credited ${commAmount.toFixed(3)} USDT referral commission (Level ${level + 1}) on user's first deposit.`, now).run();
           }
 
           const nextParent = await env.DB.prepare("SELECT referred_by FROM users WHERE id = ?").bind(currentReferrerId).first();
@@ -2268,15 +2418,27 @@ async function reviewTransaction(request, env) {
     return bad("Tipo di transazione non valido.");
   }
 
+  const actorRole = await env.DB.prepare("SELECT role FROM admin_roles WHERE user_id = ?").bind(operator.id).first();
+  if (actorRole?.role === "operator" && (action === "approve" || action === "reject")) {
+    const reviewedUser = await env.DB.prepare("SELECT username FROM users WHERE id = ?").bind(userId).first();
+    const requestDetails = JSON.stringify({
+      amount: Number(amount) || 0,
+      network: String(net || ""),
+      transactionReference: kind === "withdrawal" && action === "approve" ? transactionReference : ""
+    });
+    await env.DB.prepare("INSERT INTO operator_review_audit (operator_id, operator_username, request_kind, request_id, user_id, username, action, request_details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .bind(operator.id, String(operator.username || "Operator"), kind, id, String(userId || ""), String(reviewedUser?.username || "user"), action, requestDetails, Date.now()).run();
+  }
+
   if (userId) {
     const now = Date.now();
     const statusLabel = action === "approve" ? "approved" : "rejected";
     const transactionLabel = kind === "deposit" ? "Deposit" : kind === "withdrawal" ? "Withdrawal" : "Wallet change request";
     let message = "";
     if (kind === "deposit") {
-      message = `${amount.toFixed(2)} USDT · ${net} · Request ${statusLabel}${action === "approve" ? ". Amount successfully credited to wallet." : ". Amount was not credited."}`;
+      message = `${amount.toFixed(3)} USDT · ${net} · Request ${statusLabel}${action === "approve" ? ". Amount successfully credited to wallet." : ". Amount was not credited."}`;
     } else if (kind === "withdrawal") {
-      message = `${amount.toFixed(2)} USDT · ${net} · Request ${statusLabel}${action === "reject" ? ". Amount refunded to wallet successfully." : ". Operation completed. TX: " + transactionReference}`;
+      message = `${amount.toFixed(3)} USDT · ${net} · Request ${statusLabel}${action === "reject" ? ". Amount refunded to wallet successfully." : ". Operation completed. TX: " + transactionReference}`;
     } else {
       message = action === "approve"
         ? `Network ${net} · Address change request successfully approved.`
@@ -2380,130 +2542,74 @@ async function adminLogout(request, env) {
 
 async function saveWallet(request, env) {
   const user = await authed(request, env);
-  
-  const existingAddrs = await env.DB.prepare("SELECT COUNT(*) as cnt FROM user_withdrawal_addresses WHERE user_id = ?").bind(user.id).first();
-  const isFirstTime = !existingAddrs || existingAddrs.cnt === 0;
-  if (isFirstTime && !user.email_verified) {
-    return Response.json({ error: "Verifica l’email prima di salvare l’indirizzo di prelievo per la prima volta.", verificationRequired: true, email: user.identifier }, { status: 403 });
-  }
-
   const body = await request.json();
-  const wallets = body.wallets || {};
-
-  const currentSettings = await env.DB.prepare("SELECT withdraw_wallets FROM settings WHERE user_id = ?").bind(user.id).first();
-  let currentWallets = {};
-  try { currentWallets = JSON.parse(currentSettings?.withdraw_wallets || "{}"); } catch {}
-
-  for (const [net, addr] of Object.entries(wallets)) {
-    const trimmedAddr = String(addr || "").trim();
-    if (trimmedAddr !== "") {
-      if (currentWallets[net] && currentWallets[net].trim().toLowerCase() !== trimmedAddr.toLowerCase()) {
-        return bad(`Hai già un indirizzo registrato per la rete ${net}. Non puoi modificarlo direttamente; utilizza la funzione di richiesta modifica.`);
-      }
-
-      const existing = await env.DB.prepare("SELECT user_id FROM user_withdrawal_addresses WHERE net = ? AND lower(address) = ? AND user_id != ?").bind(net, trimmedAddr.toLowerCase(), user.id).first();
-      if (existing) {
-        return bad(`Questo indirizzo per la rete ${net} è già registrato su un altro account.`);
-      }
-    }
-  }
-
-  const finalWallets = { ...currentWallets };
-  const now = Date.now();
-  const batchStatements = [];
-
-  for (const [net, addr] of Object.entries(wallets)) {
-    const trimmedAddr = String(addr || "").trim();
-    if (trimmedAddr !== "") {
-      finalWallets[net] = trimmedAddr;
-      batchStatements.push(
-        env.DB.prepare("INSERT INTO user_withdrawal_addresses (user_id, net, address, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, net, address) DO NOTHING")
-          .bind(user.id, net, trimmedAddr, now)
-      );
-    }
-  }
-
-  batchStatements.unshift(
-    env.DB.prepare("INSERT INTO settings (user_id, withdraw_wallets, notifications) VALUES (?, ?, 1) ON CONFLICT(user_id) DO UPDATE SET withdraw_wallets = excluded.withdraw_wallets")
-      .bind(user.id, JSON.stringify(finalWallets))
-  );
-
-  await env.DB.batch(batchStatements);
-  return Response.json({ ok: true, acc: { withdraw_wallets: finalWallets, notifications: true } });
+  return await createWalletChangeOtpRequest(env, user, body.wallets || {});
 }
 
 async function requestWalletChange(request, env) {
   const user = await authed(request, env);
   const body = await request.json();
-  
+  const wallets = { ...(body.wallets || {}) };
+  if (body.net && body.newAddress) wallets[body.net] = body.newAddress;
+  return await createWalletChangeOtpRequest(env, user, wallets);
+}
+
+async function createWalletChangeOtpRequest(env, user, wallets) {
+  const allowedNetworks = ["BNB", "TRC20", "BTC", "USDC"];
+  const requestedWallets = {};
+  if (!wallets || typeof wallets !== "object" || Array.isArray(wallets)) return bad("Indirizzi wallet non validi.");
+  for (const [net, addr] of Object.entries(wallets)) {
+    const value = String(addr || "").trim();
+    if (!allowedNetworks.includes(net) || !value || value.length > 256) continue;
+    requestedWallets[net] = value;
+  }
+  if (!Object.keys(requestedWallets).length) return bad("Nessuna modifica o nuovo indirizzo valido specificato.");
+  const existingAddrs = await env.DB.prepare("SELECT COUNT(*) as cnt FROM user_withdrawal_addresses WHERE user_id = ?").bind(user.id).first();
+  if ((!existingAddrs || existingAddrs.cnt === 0) && !user.email_verified) return Response.json({ error: "Verifica l’email prima di salvare l’indirizzo di prelievo per la prima volta.", verificationRequired: true, email: user.identifier }, { status: 403 });
   const currentSettings = await env.DB.prepare("SELECT withdraw_wallets FROM settings WHERE user_id = ?").bind(user.id).first();
   let currentWallets = {};
   try { currentWallets = JSON.parse(currentSettings?.withdraw_wallets || "{}"); } catch {}
+  const changes = Object.entries(requestedWallets).filter(([net, address]) => String(currentWallets[net] || "").toLowerCase() !== address.toLowerCase()).map(([net, newAddress]) => ({ net, oldAddress: currentWallets[net] || "", newAddress }));
+  if (!changes.length) return bad("Nessuna modifica wallet da applicare.");
+  const pending = await env.DB.prepare("SELECT action, otp_expires_at FROM sensitive_action_verifications WHERE user_id = ? AND consumed_at IS NULL").bind(user.id).first();
+  if (pending && pending.action !== "wallet-change") return bad("Completa prima la verifica OTP già in corso.");
+  const now = Date.now();
+  await env.DB.prepare("INSERT INTO sensitive_action_verifications (user_id, action, payload_json, requested_at, otp_hash, otp_salt, otp_expires_at, otp_attempts, issued_at, issued_by, consumed_at) VALUES (?, 'wallet-change', ?, ?, NULL, NULL, NULL, 0, NULL, NULL, NULL) ON CONFLICT(user_id) DO UPDATE SET action = excluded.action, payload_json = excluded.payload_json, requested_at = excluded.requested_at, otp_hash = NULL, otp_salt = NULL, otp_expires_at = NULL, otp_attempts = 0, issued_at = NULL, issued_by = NULL, consumed_at = NULL")
+    .bind(user.id, JSON.stringify({ wallets: requestedWallets, changes }), now).run();
+  await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)")
+    .bind(user.id, "Wallet change verification", "Wallet change requested. Ask the operator to issue a six-digit verification code.", now).run();
+  return Response.json({ ok: true, otpRequired: true, message: "Richiesta OTP wallet inviata all’operatore. Inserisci il codice dopo averlo ricevuto." });
+}
 
-  const inputWallets = body.wallets || {};
-  if (body.net && body.newAddress) {
-    inputWallets[body.net] = body.newAddress;
-  }
-
+async function applyWalletChange(env, user, inputWallets) {
+  const currentSettings = await env.DB.prepare("SELECT withdraw_wallets FROM settings WHERE user_id = ?").bind(user.id).first();
+  let currentWallets = {};
+  try { currentWallets = JSON.parse(currentSettings?.withdraw_wallets || "{}"); } catch {}
+  const allowedNetworks = ["BNB", "TRC20", "BTC", "USDC"];
   const finalWallets = { ...currentWallets };
   const now = Date.now();
   const batchStatements = [];
-  let changesRequested = false;
-
-  for (const [net, addr] of Object.entries(inputWallets)) {
+  for (const [net, addr] of Object.entries(inputWallets || {})) {
     const trimmedAddr = String(addr || "").trim();
-    if (trimmedAddr === "" || !["BNB", "TRC20", "BTC", "USDC"].includes(net)) continue;
-
+    if (!trimmedAddr || trimmedAddr.length > 256 || !allowedNetworks.includes(net)) continue;
     const oldAddr = currentWallets[net] || "";
-
     if (!oldAddr) {
       const existingGlobal = await env.DB.prepare("SELECT user_id FROM user_withdrawal_addresses WHERE net = ? AND lower(address) = ? AND user_id != ?").bind(net, trimmedAddr.toLowerCase(), user.id).first();
-      if (existingGlobal) {
-        return bad(`Questo indirizzo per la rete ${net} è già registrato su un altro account.`);
-      }
+      if (existingGlobal) return bad("Questo indirizzo per la rete " + net + " è già registrato su un altro account.");
       finalWallets[net] = trimmedAddr;
-      batchStatements.push(
-        env.DB.prepare("INSERT INTO user_withdrawal_addresses (user_id, net, address, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, net, address) DO NOTHING")
-          .bind(user.id, net, trimmedAddr, now)
-      );
+      batchStatements.push(env.DB.prepare("INSERT INTO user_withdrawal_addresses (user_id, net, address, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, net, address) DO NOTHING").bind(user.id, net, trimmedAddr, now));
     } else if (oldAddr.toLowerCase() !== trimmedAddr.toLowerCase()) {
       const existingGlobal = await env.DB.prepare("SELECT user_id FROM user_withdrawal_addresses WHERE net = ? AND lower(address) = ? AND user_id != ?").bind(net, trimmedAddr.toLowerCase(), user.id).first();
-      if (existingGlobal) {
-        return bad(`Il nuovo indirizzo per la rete ${net} è già registrato su un altro account.`);
-      }
-
-      const pending = await env.DB.prepare("SELECT id FROM wallet_change_requests WHERE user_id = ? AND net = ? AND status = 'pending'").bind(user.id, net).first();
-      if (pending) {
-        return bad(`Esiste già una richiesta di modifica in attesa di approvazione per la rete ${net}.`);
-      }
-
-      batchStatements.push(
-        env.DB.prepare("INSERT INTO wallet_change_requests (user_id, net, old_address, new_address, created_at, status) VALUES (?, ?, ?, ?, ?, 'pending')")
-          .bind(user.id, net, oldAddr, trimmedAddr, now)
-      );
-      batchStatements.push(
-        env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
-          .bind(user.id, "Wallet change request", `Address change request for network ${net} sent to operator pending approval.`, now)
-      );
-      changesRequested = true;
+      if (existingGlobal) return bad("Il nuovo indirizzo per la rete " + net + " è già registrato su un altro account.");
+      finalWallets[net] = trimmedAddr;
+      batchStatements.push(env.DB.prepare("INSERT INTO user_withdrawal_addresses (user_id, net, address, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, net, address) DO NOTHING").bind(user.id, net, trimmedAddr, now));
+      batchStatements.push(env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)").bind(user.id, "Wallet address updated", "Your wallet address for " + net + " was updated after OTP verification.", now));
     }
   }
-
-  if (batchStatements.length === 0) {
-    return bad("Nessuna modifica o nuovo indirizzo valido specificato.");
-  }
-
-  batchStatements.unshift(
-    env.DB.prepare("INSERT INTO settings (user_id, withdraw_wallets, notifications) VALUES (?, ?, 1) ON CONFLICT(user_id) DO UPDATE SET withdraw_wallets = excluded.withdraw_wallets")
-      .bind(user.id, JSON.stringify(finalWallets))
-  );
-
+  if (batchStatements.length === 0) return bad("Nessuna modifica o nuovo indirizzo valido specificato.");
+  batchStatements.unshift(env.DB.prepare("INSERT INTO settings (user_id, withdraw_wallets, notifications) VALUES (?, ?, 1) ON CONFLICT(user_id) DO UPDATE SET withdraw_wallets = excluded.withdraw_wallets").bind(user.id, JSON.stringify(finalWallets)));
   await env.DB.batch(batchStatements);
-  return Response.json({ 
-    ok: true, 
-    message: changesRequested ? "Richiesta di modifica inviata all'operatore e nuovi indirizzi salvati." : "Indirizzi salvati con successo.",
-    acc: { withdraw_wallets: finalWallets, notifications: true } 
-  });
+  return Response.json({ ok: true, message: "Wallet aggiornato dopo verifica OTP.", acc: { withdraw_wallets: finalWallets, notifications: true } });
 }
 
 async function updateSettings(request, env) {
