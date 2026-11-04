@@ -2825,3 +2825,68 @@ dialog.modal .modal-card div[class*="-card"] {
   border-color: #a8a5ff;
   box-shadow: 0 0 0 1px #a8a5ff66, 0 0 22px #8284ff4d;
 }
+
+
+/* Requested full-screen purchase panels and unmistakable luminous frames. */
+#view-catalog > details.standard-plan-disclosure,
+#view-catalog > details.custom-portfolio-disclosure {
+  border-width: 2px !important;
+  border-style: solid !important;
+  transition: box-shadow .2s ease, border-color .2s ease;
+}
+#view-catalog > details.standard-plan-disclosure {
+  border-color: #72ffd0 !important;
+  box-shadow: 0 0 0 2px #72ffd055, 0 0 18px #49e7ad90, 0 0 36px #49e7ad52 !important;
+}
+#view-catalog > details.custom-portfolio-disclosure {
+  border-color: #aaa5ff !important;
+  box-shadow: 0 0 0 2px #aaa5ff66, 0 0 18px #8582ff99, 0 0 36px #8582ff55 !important;
+}
+#view-catalog > details.catalog-disclosure[open] {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 9999 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  height: 100dvh !important;
+  max-height: 100vh !important;
+  max-height: 100dvh !important;
+  margin: 0 !important;
+  border-radius: 0 !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain;
+  background: var(--bg) !important;
+}
+#view-catalog > details.catalog-disclosure[open] > summary {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  min-height: 60px;
+  padding: 12px 18px;
+  background: var(--surface);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 50%, var(--line));
+}
+#view-catalog > details.standard-plan-disclosure[open] > .custom-plan-card,
+#view-catalog > details.custom-portfolio-disclosure[open] > .custom-portfolio-card {
+  width: min(100%, 960px);
+  margin: 0 auto !important;
+  padding: 20px clamp(16px, 4vw, 34px) !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+#investment-auto-redeem.auto-redeem-panel:not([hidden]) {
+  border: 2px solid #72ffd0 !important;
+  box-shadow: 0 0 0 2px #72ffd055, 0 0 16px #49e7ad90, 0 0 30px #49e7ad50 !important;
+}
+#investment-auto-add.auto-redeem-panel:not([hidden]) {
+  border: 2px solid #aaa5ff !important;
+  box-shadow: 0 0 0 2px #aaa5ff66, 0 0 16px #8582ff99, 0 0 30px #8582ff55 !important;
+}
+
+#view-catalog:has(> details.catalog-disclosure[open]) {
+  animation: none !important;
+  transform: none !important;
+}
