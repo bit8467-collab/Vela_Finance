@@ -2777,3 +2777,23 @@ dialog.modal .modal-card div[class*="-card"] {
   background:transparent!important;
   box-shadow:none!important;
 }
+
+/* Active request indicators: section titles and badges stay visible until reviewed. */
+.admin-request-group>summary:has(.count-pill.has-alert){color:var(--text);text-shadow:0 0 12px color-mix(in srgb,var(--accent) 75%,transparent);animation:adminTitlePulse 1.25s ease-in-out infinite}
+.admin-request-group>summary:has(.count-pill.has-alert)>span:first-child{color:var(--accent);text-shadow:0 0 10px color-mix(in srgb,var(--accent) 85%,transparent)}
+.admin-request-group .count-pill.has-alert,#support-thread-count.has-alert,#operator-admin-request-count.has-alert{color:#fff;background:var(--accent);border-color:var(--accent);box-shadow:0 0 7px var(--accent),0 0 18px color-mix(in srgb,var(--accent) 70%,transparent);animation:adminBadgeFlash .9s ease-in-out infinite alternate}
+.admin-workspace-link.has-alert .admin-workspace-link-copy b{color:var(--accent);text-shadow:0 0 9px color-mix(in srgb,var(--accent) 80%,transparent);animation:adminTitlePulse 1.25s ease-in-out infinite}
+.admin-workspace-link.has-alert .admin-workspace-nav-badge{color:#fff;background:var(--accent);border-color:var(--accent);box-shadow:0 0 8px var(--accent),0 0 20px color-mix(in srgb,var(--accent) 65%,transparent);animation:adminBadgeFlash .9s ease-in-out infinite alternate}
+@keyframes adminTitlePulse{from{filter:brightness(1);text-shadow:0 0 4px color-mix(in srgb,var(--accent) 50%,transparent)}to{filter:brightness(1.45);text-shadow:0 0 13px color-mix(in srgb,var(--accent) 90%,transparent)}}
+@keyframes adminBadgeFlash{from{filter:brightness(.8);transform:scale(.96)}to{filter:brightness(1.35);transform:scale(1.05)}}
+@media(prefers-reduced-motion:reduce){.admin-request-group>summary:has(.count-pill.has-alert),.admin-request-group .count-pill.has-alert,#support-thread-count.has-alert,#operator-admin-request-count.has-alert,.admin-workspace-link.has-alert .admin-workspace-link-copy b,.admin-workspace-link.has-alert .admin-workspace-nav-badge{animation:none}}
+
+/* Active request indicators: section titles and badges stay visible until reviewed. */
+.admin-request-group>summary:has(.count-pill.has-alert){color:var(--text);text-shadow:0 0 12px color-mix(in srgb,var(--accent) 75%,transparent);animation:adminTitlePulse 1.25s ease-in-out infinite}
+.admin-request-group>summary:has(.count-pill.has-alert)>span:first-child{color:var(--accent);text-shadow:0 0 10px color-mix(in srgb,var(--accent) 85%,transparent)}
+.admin-request-group .count-pill.has-alert,#support-thread-count.has-alert,#operator-admin-request-count.has-alert{color:#fff;background:var(--accent);border-color:var(--accent);box-shadow:0 0 7px var(--accent),0 0 18px color-mix(in srgb,var(--accent) 70%,transparent);animation:adminBadgeFlash .9s ease-in-out infinite alternate}
+.admin-workspace-link.has-alert .admin-workspace-link-copy b{color:var(--accent);text-shadow:0 0 9px color-mix(in srgb,var(--accent) 80%,transparent);animation:adminTitlePulse 1.25s ease-in-out infinite}
+.admin-workspace-link.has-alert .admin-workspace-nav-badge{color:#fff;background:var(--accent);border-color:var(--accent);box-shadow:0 0 8px var(--accent),0 0 20px color-mix(in srgb,var(--accent) 65%,transparent);animation:adminBadgeFlash .9s ease-in-out infinite alternate}
+@keyframes adminTitlePulse{from{filter:brightness(1);text-shadow:0 0 4px color-mix(in srgb,var(--accent) 50%,transparent)}to{filter:brightness(1.45);text-shadow:0 0 13px color-mix(in srgb,var(--accent) 90%,transparent)}}
+@keyframes adminBadgeFlash{from{filter:brightness(.8);transform:scale(.96)}to{filter:brightness(1.35);transform:scale(1.05)}}
+@media(prefers-reduced-motion:reduce){.admin-request-group>summary:has(.count-pill.has-alert),.admin-request-group .count-pill.has-alert,#support-thread-count.has-alert,#operator-admin-request-count.has-alert,.admin-workspace-link.has-alert .admin-workspace-link-copy b,.admin-workspace-link.has-alert .admin-workspace-nav-badge{animation:none}}

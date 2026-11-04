@@ -386,6 +386,7 @@
             <div class="admin-request-group-content">
               <section class="admin-request-subsection"><h3>Email verification</h3><div class="admin-queue" id="pending-email-verifications"></div><div class="queue-empty" id="email-verification-queue-empty">No email verification requests.</div></section>
               <section class="admin-request-subsection"><h3>Password recovery</h3><div class="admin-queue" id="pending-password-resets"></div><div class="queue-empty" id="password-reset-queue-empty">No password recovery requests.</div></section>
+              <section class="admin-request-subsection"><h3>Wallet change verification</h3><div class="admin-queue" id="pending-wallet-otp"></div><div class="queue-empty" id="wallet-otp-queue-empty">No wallet OTP requests.</div></section>
             </div>
           </details>
           <details class="admin-request-group" id="request-group-wallet">
@@ -616,6 +617,7 @@
         <select id="wallet-network" required><option value="BNB">BNB Chain · BEP-20</option><option value="BTC">Bitcoin</option><option value="TRC20">TRON · TRC-20</option></select>
         <label for="wallet-address">Wallet address</label>
         <input id="wallet-address" type="text" autocomplete="off" placeholder="Enter a wallet address" required>
+        <div id="wallet-otp-wrap" hidden><label for="wallet-otp">Six-digit verification code</label><input id="wallet-otp" class="otp-input" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" autocapitalize="off" spellcheck="false"><p class="form-error" id="wallet-otp-error" role="alert"></p><small>Request the code, then ask the operator to send it to your verified contact address.</small></div>
         <button class="primary-button" id="save-wallet-button" type="submit">Save wallet</button>
         <p class="modal-footnote">Wallet ownership is not verified and saving an address does not send funds.</p>
       </form>
