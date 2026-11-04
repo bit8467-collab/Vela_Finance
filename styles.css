@@ -2806,3 +2806,22 @@ dialog.modal .modal-card div[class*="-card"] {
 .market-allocation-preview { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:5px; }
 .market-allocation-preview span { display:flex; justify-content:space-between; gap:4px; padding:5px 7px; border:1px solid var(--line); border-radius:7px; color:var(--muted); font-size:8px; }
 .market-allocation-preview b { color:var(--text); white-space:nowrap; }
+
+
+/* Focused neon outlines for the plan purchase accordions and active-investment settings. */
+#view-catalog > .standard-plan-disclosure {
+  border-color: #76f0c2;
+  box-shadow: 0 0 0 1px #76f0c255, 0 0 26px #49e7ad40, 0 8px 24px #0005;
+}
+#view-catalog > .custom-portfolio-disclosure {
+  border-color: #a8a5ff;
+  box-shadow: 0 0 0 1px #a8a5ff66, 0 0 26px #8284ff4d, 0 8px 24px #0005;
+}
+#investment-auto-redeem:not([hidden]) {
+  border-color: #76f0c2;
+  box-shadow: 0 0 0 1px #76f0c255, 0 0 22px #49e7ad40;
+}
+#investment-auto-add:not([hidden]) {
+  border-color: #a8a5ff;
+  box-shadow: 0 0 0 1px #a8a5ff66, 0 0 22px #8284ff4d;
+}
