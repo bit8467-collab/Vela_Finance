@@ -797,7 +797,7 @@ const workerHandler = {
           user_id TEXT NOT NULL,
           principal REAL NOT NULL,
           source TEXT NOT NULL CHECK(source IN ('deposit','earnings')),
-          daily_rate REAL NOT NULL DEFAULT 0.0061,
+          daily_rate REAL NOT NULL DEFAULT 0.0027,
           status TEXT NOT NULL DEFAULT 'active',
           created_at INTEGER NOT NULL,
           closed_at INTEGER,
@@ -1854,11 +1854,11 @@ async function simpleEarnInvest(request, env) {
   if (amount > Number(wallet[source] || 0) + 1e-9) return bad("Saldo disponibile insufficiente.");
   const now = Date.now();
   const results = await env.DB.batch([
-    env.DB.prepare("INSERT INTO simple_earn_positions (user_id, principal, source, daily_rate, status, created_at) SELECT ?, ?, ?, 0.0061, 'active', ? WHERE EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + source + " >= ?)").bind(user.id, amount, source, now, user.id, amount),
+    env.DB.prepare("INSERT INTO simple_earn_positions (user_id, principal, source, daily_rate, status, created_at) SELECT ?, ?, ?, 0.0027, 'active', ? WHERE EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + source + " >= ?)").bind(user.id, amount, source, now, user.id, amount),
     env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?").bind(amount, user.id, amount)
   ]);
   if (!(results[0]?.meta?.changes > 0) || !(results[1]?.meta?.changes > 0)) return bad("Saldo insufficiente o account aggiornato. Aggiorna e riprova.");
-  return Response.json({ ok: true, positionId: results[0]?.meta?.last_row_id || null, principal: amount, dailyRate: 0.0061 });
+  return Response.json({ ok: true, positionId: results[0]?.meta?.last_row_id || null, principal: amount, dailyRate: 0.0027 });
 }
 
 async function simpleEarnRedeem(request, env) {
