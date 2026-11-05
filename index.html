@@ -234,6 +234,7 @@
         <div class="action-grid home-actions" aria-label="Account actions">
           <button class="action-tile" type="button" data-open="deposit-dialog"><span class="action-symbol">↓</span><b>Deposit USDT</b></button>
           <button class="action-tile" type="button" data-open="withdraw-dialog"><span class="action-symbol">↑</span><b>Withdraw funds</b></button>
+          <button class="action-tile" type="button" data-open="transfer-dialog"><span class="action-symbol">⇄</span><b>Move deposit to earnings</b></button>
           <button class="action-tile wide-tile" id="redeem-earnings-button" type="button" data-redeem-earnings disabled><span class="action-symbol">↻</span><b>Redeem available gains</b><span class="tile-arrow" aria-hidden="true">→</span></button>
         </div>
         <section class="home-shortcuts" aria-label="Account sections"><button class="home-shortcut" type="button" data-go="transactions"><span class="shortcut-icon">↕</span><span><b>Movements</b><small>Deposits, withdrawals and investments</small></span><i>→</i></button><button class="home-shortcut" type="button" data-go="investments"><span class="shortcut-icon">↗</span><span><b>Investments</b><small>Open and completed positions</small></span><i>→</i></button><button class="home-shortcut" type="button" data-go="catalog"><span class="shortcut-icon">▤</span><span><b>Plans</b><small>Explore investment plans</small></span><i>→</i></button><button class="home-shortcut" type="button" data-go="profile"><span class="shortcut-icon">◉</span><span><b>Profile</b><small>Account details and settings</small></span><i>→</i></button></section>
@@ -522,16 +523,32 @@
         <label for="withdraw-source">Balance</label>
         <select id="withdraw-source" required><option value="earnings">Redeemable balance</option><option value="released">Released capital</option></select>
         <p class="available-line">Available: <b id="withdraw-available">0.00 USDT</b></p>
-        <p class="small-note" id="withdraw-fee-note">Requests are reviewed manually; this form does not send funds.</p>
+        <p class="small-note" id="withdraw-fee-note">The selected balance is debited by the entered amount; the payout is reduced by the commission.</p>
         <label for="withdraw-network">Network</label>
         <select id="withdraw-network" required><option value="BNB">BNB Chain · BEP-20</option><option value="BTC">Bitcoin</option><option value="TRC20">TRON · TRC-20</option></select>
         <label for="withdraw-address">Destination address</label>
         <input id="withdraw-address" type="text" autocomplete="off" placeholder="Destination address" readonly required>
         <label for="withdraw-amount">Amount (USDT)</label>
         <input id="withdraw-amount" type="number" inputmode="decimal" min="50" step="any" placeholder="Amount" required>
+        <p class="available-line">Commission: <b id="withdraw-fee-amount">0.00 USDT</b></p><p class="available-line">Estimated payout: <b id="withdraw-net-amount">0.00 USDT</b></p>
                 <p class="form-error" id="withdraw-error" role="alert"></p>
         <button class="primary-button" type="submit">Submit withdrawal request</button>
         <p class="modal-footnote">Submitting a request does not send a payout or transfer funds.</p>
+      </form>
+    </dialog>
+
+    <dialog class="modal" id="transfer-dialog" aria-labelledby="transfer-title">
+      <form class="modal-card" id="transfer-form">
+        <button class="modal-close" type="button" data-close="transfer-dialog" aria-label="Close">×</button>
+        <p class="eyebrow">INTERNAL TRANSFER</p><h2 id="transfer-title">Move deposit to earnings</h2>
+        <p class="available-line">Deposit balance: <b id="transfer-available">0.00 USDT</b></p>
+        <label for="transfer-amount">Amount (USDT)</label>
+        <input id="transfer-amount" type="number" inputmode="decimal" min="0.001" step="0.001" placeholder="Amount" required>
+        <p class="small-note">A 25% commission is deducted. The remaining 75% is credited to your earnings balance.</p>
+        <p class="available-line">Commission (25%): <b id="transfer-fee-amount">0.00 USDT</b></p>
+        <p class="available-line">Amount credited: <b id="transfer-net-amount">0.00 USDT</b></p>
+        <p class="form-error" id="transfer-error" role="alert"></p>
+        <button class="primary-button" type="submit">Confirm transfer</button>
       </form>
     </dialog>
 

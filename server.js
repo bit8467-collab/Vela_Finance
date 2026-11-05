@@ -859,8 +859,18 @@ const workerHandler = {
           status TEXT NOT NULL DEFAULT 'approved',
           wallet_address TEXT NOT NULL DEFAULT '',
           source TEXT NOT NULL DEFAULT 'earnings',
-          tx_reference TEXT NOT NULL DEFAULT ''
+          tx_reference TEXT NOT NULL DEFAULT '',
+          fee_amount REAL NOT NULL DEFAULT 0,
+          charged_amount REAL NOT NULL DEFAULT 0
         );`,
+        `CREATE TABLE IF NOT EXISTS balance_transfers (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          amount REAL NOT NULL,
+          fee_amount REAL NOT NULL,
+          credited_amount REAL NOT NULL,
+          created_at INTEGER NOT NULL
+);`,
         `CREATE TABLE IF NOT EXISTS platform_config (
           config_key TEXT PRIMARY KEY,
           config_value TEXT NOT NULL
@@ -921,10 +931,12 @@ const workerHandler = {
           expires_at INTEGER NOT NULL,
           attempts INTEGER NOT NULL DEFAULT 0
         );`
-      ]);
+      ].join("\n"));
     
     try { await env.DB.prepare("ALTER TABLE admin_roles ADD COLUMN permissions_json TEXT NOT NULL DEFAULT '{}'").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE settings ADD COLUMN auto_redeem_pct REAL NOT NULL DEFAULT 0").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN fee_amount REAL NOT NULL DEFAULT 0").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN charged_amount REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE support_threads ADD COLUMN final_message_id INTEGER").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE support_threads ADD COLUMN support_operator_id TEXT").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE support_threads ADD COLUMN support_operator_username TEXT").run(); } catch {}
@@ -1040,6 +1052,7 @@ const workerHandler = {
       if (method === "GET" && pathName === "/api/admin/deposit-addresses") return await adminDepositAddresses(request, env);
       if (method === "POST" && pathName === "/api/admin/deposit-addresses") return await saveAdminDepositAddresses(request, env);
       if (method === "POST" && pathName === "/api/withdraw") return await withdraw(request, env);
+      if (method === "POST" && pathName === "/api/transfer-deposit-earnings") return await transferDepositToEarnings(request, env);
       if (method === "POST" && pathName === "/api/security/confirm-otp") return await confirmSensitiveActionOtp(request, env);
       if (method === "POST" && pathName === "/api/save-wallet") return await saveWallet(request, env);
       if (method === "POST" && pathName === "/api/wallet-change-request") return await requestWalletChange(request, env);
@@ -2035,6 +2048,31 @@ async function savePositionAutoAdd(request, env) {
   return Response.json({ok:true,positionId,enabled,drawdownPct,mode,value,anchor});
 }
 
+async function transferDepositToEarnings(request, env) {
+  const user = await authed(request, env);
+  const body = await request.json().catch(() => ({}));
+  const amount = Number(Number(body.amount).toFixed(3));
+  if (!Number.isFinite(amount) || amount <= 0) return bad("Inserisci un importo valido.");
+  const wallet = await accrue(env, user.id);
+  if (amount > Number(wallet.deposit || 0) + 1e-9) return bad("Saldo deposito insufficiente.");
+  const feeAmount = Number((amount * 0.25).toFixed(3));
+  const creditedAmount = Number((amount - feeAmount).toFixed(3));
+  if (!(creditedAmount > 0)) return bad("L'importo è troppo piccolo dopo la commissione.");
+  const changed = await env.DB.prepare("UPDATE wallets SET deposit = deposit - ?, earnings = earnings + ? WHERE user_id = ? AND deposit >= ?").bind(amount, creditedAmount, user.id, amount).run();
+  if (!(changed.meta?.changes > 0)) return Response.json({ error: "Saldo deposito insufficiente o aggiornato. Riprova." }, { status: 409 });
+  const created = Date.now();
+  try {
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO balance_transfers (user_id, amount, fee_amount, credited_amount, created_at) VALUES (?, ?, ?, ?, ?)").bind(user.id, amount, feeAmount, creditedAmount, created),
+      env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Deposit balance transferred", amount.toFixed(3) + " USDT moved from deposit balance; 25% commission " + feeAmount.toFixed(3) + " USDT; " + creditedAmount.toFixed(3) + " USDT credited to earnings.", created),
+    ]);
+  } catch (error) {
+    await env.DB.prepare("UPDATE wallets SET deposit = deposit + ?, earnings = MAX(0, earnings - ?) WHERE user_id = ?").bind(amount, creditedAmount, user.id).run();
+    throw error;
+  }
+  return Response.json({ ok: true, amount, fee: feeAmount, credited: creditedAmount });
+}
+
 async function validateWithdrawal(env, user, body) {
   const amount = Number(body.amount);
   const net = String(body.net || "").trim();
@@ -2067,7 +2105,11 @@ async function validateWithdrawal(env, user, body) {
   }
 
   if (!address || address === "Indirizzo non specificato dall'utente") return bad("Collega un indirizzo di prelievo per la rete selezionata nel profilo.");
-  return { amount, net, address, source };
+  const chargedAmount = Number(amount.toFixed(3));
+  const feeRate = source === 'released' ? 0.25 : 0.08;
+  const feeAmount = Number((chargedAmount * feeRate).toFixed(3));
+  const payoutAmount = Number((chargedAmount - feeAmount).toFixed(3));
+  return { amount: payoutAmount, feeAmount, chargedAmount, net, address, source };
 }
 
 async function withdraw(request, env) {
@@ -2078,15 +2120,20 @@ async function withdraw(request, env) {
   const body = await request.json();
   const prepared = await validateWithdrawal(env, user, body);
   if (prepared instanceof Response) return prepared;
-
   const created = Date.now();
-  await env.DB.batch([
-    env.DB.prepare("UPDATE wallets SET " + prepared.source + " = " + prepared.source + " - ? WHERE user_id = ? AND " + prepared.source + " >= ?").bind(prepared.amount, user.id, prepared.amount),
-    env.DB.prepare("INSERT INTO withdrawals (user_id, amount, net, date, status, wallet_address, source) VALUES (?, ?, ?, ?, 'pending', ?, ?)")
-      .bind(user.id, prepared.amount, prepared.net, created, prepared.address, prepared.source),
-    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Withdrawal request submitted", prepared.amount.toFixed(3) + " USDT · " + prepared.net + " · Pending review.", created),
-  ]);
-  return Response.json({ ok: true, status: "pending" });
+  const debited = await env.DB.prepare("UPDATE wallets SET " + prepared.source + " = " + prepared.source + " - ? WHERE user_id = ? AND " + prepared.source + " >= ?").bind(prepared.chargedAmount, user.id, prepared.chargedAmount).run();
+  if (!(debited.meta?.changes > 0)) return Response.json({ error: "Saldo insufficiente o aggiornato. Riprova." }, { status: 409 });
+  try {
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO withdrawals (user_id, amount, net, date, status, wallet_address, source, fee_amount, charged_amount) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)")
+        .bind(user.id, prepared.amount, prepared.net, created, prepared.address, prepared.source, prepared.feeAmount, prepared.chargedAmount),
+      env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Withdrawal request submitted", "Payout " + prepared.amount.toFixed(3) + " USDT · commission " + prepared.feeAmount.toFixed(3) + " USDT · " + prepared.net + " · Pending review.", created),
+    ]);
+  } catch (error) {
+    await env.DB.prepare("UPDATE wallets SET " + prepared.source + " = " + prepared.source + " + ? WHERE user_id = ?").bind(prepared.chargedAmount, user.id).run();
+    throw error;
+  }
+  return Response.json({ ok: true, status: "pending", payout: prepared.amount, fee: prepared.feeAmount, charged: prepared.chargedAmount });
 }
 
 async function confirmSensitiveActionOtp(request, env) {
@@ -2433,7 +2480,8 @@ async function reviewTransaction(request, env) {
     } else {
       await env.DB.prepare("UPDATE withdrawals SET status = 'rejected' WHERE id = ?").bind(id).run();
       const refundSource = wit.source === 'released' ? 'released' : 'earnings';
-      await env.DB.prepare("UPDATE wallets SET " + refundSource + " = " + refundSource + " + ? WHERE user_id = ?").bind(amount, userId).run();
+      const refundAmount = Number(wit.charged_amount) > 0 ? Number(wit.charged_amount) : amount;
+      await env.DB.prepare("UPDATE wallets SET " + refundSource + " = " + refundSource + " + ? WHERE user_id = ?").bind(refundAmount, userId).run();
     }
   } else if (kind === "wallet_change") {
     const reqChange = await env.DB.prepare("SELECT * FROM wallet_change_requests WHERE id = ?").bind(id).first();
