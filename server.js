@@ -412,6 +412,115 @@ const marketApi = {
   },
 };
 
+// Persistent market history survives Render sleep/wake and process restarts.
+// API values are merged by timestamp; new API values replace matching points.
+let marketHistoryTablePromise = null;
+let storedMarketHistory = null;
+let marketHistoryQueue = Promise.resolve();
+
+function emptyStoredMarketHistory() { return { histories: {}, candles: {}, intraday: {} }; }
+function addStoredMarketPoint(target, type, key, row) {
+  if (!target[type][key]) target[type][key] = [];
+  target[type][key].push(row);
+}
+
+async function ensureStoredMarketHistory(env) {
+  if (!marketHistoryTablePromise) {
+    marketHistoryTablePromise = (async () => {
+      await env.DB.exec('CREATE TABLE IF NOT EXISTS market_history_points (asset_key TEXT NOT NULL, series_type TEXT NOT NULL, point_time INTEGER NOT NULL, value REAL, open REAL, high REAL, low REAL, close REAL, PRIMARY KEY (asset_key, series_type, point_time))');
+      const result = await env.DB.prepare('SELECT asset_key, series_type, point_time, value, open, high, low, close FROM market_history_points ORDER BY point_time ASC').all();
+      const loaded = emptyStoredMarketHistory();
+      const cutoff = Date.now() - 2 * 86400000;
+      for (const row of result.results || []) {
+        const time = Number(row.point_time);
+        if (!Number.isFinite(time)) continue;
+        const key = String(row.asset_key);
+        if (row.series_type === 'candles') {
+          const candle = { time, open: Number(row.open), high: Number(row.high), low: Number(row.low), close: Number(row.close) };
+          if ([candle.open, candle.high, candle.low, candle.close].every(Number.isFinite)) addStoredMarketPoint(loaded, 'candles', key, candle);
+        } else if (row.series_type === 'histories' || row.series_type === 'intraday') {
+          if (row.series_type === 'intraday' && time < cutoff) continue;
+          const point = { time, value: Number(row.value) };
+          if (Number.isFinite(point.value)) addStoredMarketPoint(loaded, row.series_type, key, point);
+        }
+      }
+      storedMarketHistory = loaded;
+      return loaded;
+    })().catch((error) => { marketHistoryTablePromise = null; throw error; });
+  }
+  await marketHistoryTablePromise;
+  return storedMarketHistory;
+}
+
+function normalizeMarketHistory(data) {
+  const normalized = emptyStoredMarketHistory();
+  for (const type of ['histories', 'intraday']) {
+    for (const [key, points] of Object.entries(data?.[type] || {})) {
+      if (!Array.isArray(points)) continue;
+      const valid = points.map((point) => ({ time: Number(point?.time), value: Number(point?.value) }))
+        .filter((point) => Number.isFinite(point.time) && Number.isFinite(point.value));
+      if (valid.length) normalized[type][key] = valid;
+    }
+  }
+  for (const [key, candles] of Object.entries(data?.candles || {})) {
+    if (!Array.isArray(candles)) continue;
+    const valid = candles.map((candle) => ({ time: Number(candle?.time), open: Number(candle?.open), high: Number(candle?.high), low: Number(candle?.low), close: Number(candle?.close) }))
+      .filter((candle) => Number.isFinite(candle.time) && [candle.open, candle.high, candle.low, candle.close].every(Number.isFinite));
+    if (valid.length) normalized.candles[key] = valid;
+  }
+  return normalized;
+}
+
+function sameMarketPoint(a, b, type) {
+  if (!a) return false;
+  return type === 'candles' ? a.open === b.open && a.high === b.high && a.low === b.low && a.close === b.close : a.value === b.value;
+}
+
+async function mergeAndStoreMarketHistory(env, apiData) {
+  await ensureStoredMarketHistory(env);
+  const incoming = normalizeMarketHistory(apiData);
+  const merged = emptyStoredMarketHistory();
+  const changedRows = [];
+  const now = Date.now();
+  const cutoff = now - 2 * 86400000;
+  for (const type of ['histories', 'candles', 'intraday']) {
+    const keys = new Set([...Object.keys(storedMarketHistory[type]), ...Object.keys(incoming[type])]);
+    for (const key of keys) {
+      const oldPoints = (storedMarketHistory[type][key] || []).filter((point) => type !== 'intraday' || point.time >= cutoff);
+      const byTime = new Map(oldPoints.map((point) => [point.time, point]));
+      for (const point of incoming[type][key] || []) {
+        if (type === 'intraday' && point.time < cutoff) continue;
+        const previous = byTime.get(point.time);
+        byTime.set(point.time, point);
+        if (!sameMarketPoint(previous, point, type)) changedRows.push({ key, type, point });
+      }
+      const points = [...byTime.values()].sort((a, b) => a.time - b.time);
+      if (points.length) merged[type][key] = points;
+    }
+  }
+  for (let start = 0; start < changedRows.length; start += 80) {
+    const batch = changedRows.slice(start, start + 80);
+    const placeholders = batch.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(',');
+    const args = [];
+    for (const { key, type, point } of batch) args.push(key, type, point.time,
+      type === 'candles' ? null : point.value, type === 'candles' ? point.open : null,
+      type === 'candles' ? point.high : null, type === 'candles' ? point.low : null,
+      type === 'candles' ? point.close : null);
+    const sql = 'INSERT INTO market_history_points (asset_key, series_type, point_time, value, open, high, low, close) VALUES ' + placeholders +
+      ' ON CONFLICT(asset_key, series_type, point_time) DO UPDATE SET value=excluded.value, open=excluded.open, high=excluded.high, low=excluded.low, close=excluded.close';
+    await env.DB.prepare(sql).bind(...args).run();
+  }
+  await env.DB.prepare("DELETE FROM market_history_points WHERE series_type = 'intraday' AND point_time < ?").bind(cutoff).run();
+  storedMarketHistory = merged;
+  return { ...merged, fetchedAt: Number(apiData?.fetchedAt) || now };
+}
+
+function persistMarketHistory(env, data) {
+  const task = marketHistoryQueue.then(() => mergeAndStoreMarketHistory(env, data));
+  marketHistoryQueue = task.catch(() => {});
+  return task;
+}
+
 const DAY = 86400000;
 const PLANS = [
   { days: 10, rate: 1.0, min: 50 },
@@ -660,7 +769,19 @@ let schemaPromise;
 const workerHandler = {
   async fetch(request, env) {
     const apiPath = new URL(request.url).pathname;
-    if (request.method === 'GET' && (apiPath === '/api/asset-prices' || apiPath === '/api/asset-history')) {
+    if (request.method === 'GET' && apiPath === '/api/asset-history') {
+      const response = await marketApi.fetch(request);
+      if (!response.ok) return response;
+      const apiData = await response.json();
+      try {
+        const completeHistory = await persistMarketHistory(env, apiData);
+        return Response.json(completeHistory, { headers: { 'Cache-Control': 'no-store' } });
+      } catch (error) {
+        console.error('Market history persistence failed:', error);
+        return Response.json(apiData, { headers: { 'Cache-Control': 'no-store' } });
+      }
+    }
+    if (request.method === 'GET' && apiPath === '/api/asset-prices') {
       return marketApi.fetch(request);
     }
     if (!schemaPromise) schemaPromise = (async () => {
@@ -1411,7 +1532,7 @@ async function confirmPasswordReset(request, env) {
 }
 
 async function setPasswordResetOtp(request, env, userId) {
-  const actor = await adminAccess(request, env, "otp");
+  const actor = await adminActor(request, env);
   if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
   const body = await request.json();
   const otp = typeof body.otp === "string" ? body.otp.trim() : "";
@@ -1849,16 +1970,17 @@ async function simpleEarnInvest(request, env) {
   const body = await request.json().catch(() => ({}));
   const amount = Number(Number(body.amount).toFixed(3));
   const source = body.source === "earnings" ? "earnings" : "deposit";
-  if (!Number.isFinite(amount) || amount < 500 || amount > 1e12) return bad("L'investimento minimo per Simple Earn è 500 USDT.");
+  if (!Number.isFinite(amount) || amount < 200 || amount > 1e12) return bad("L'investimento minimo per Simple Earn è 200 USDT.");
   const wallet = await accrue(env, user.id);
   if (amount > Number(wallet[source] || 0) + 1e-9) return bad("Saldo disponibile insufficiente.");
+  const dailyRate = amount <= 500 ? 0.0019 : amount <= 1000 ? 0.0024 : amount <= 2500 ? 0.0029 : 0.0036;
   const now = Date.now();
   const results = await env.DB.batch([
-    env.DB.prepare("INSERT INTO simple_earn_positions (user_id, principal, source, daily_rate, status, created_at) SELECT ?, ?, ?, 0.0027, 'active', ? WHERE EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + source + " >= ?)").bind(user.id, amount, source, now, user.id, amount),
+    env.DB.prepare("INSERT INTO simple_earn_positions (user_id, principal, source, daily_rate, status, created_at) SELECT ?, ?, ?, ?, 'active', ? WHERE EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + source + " >= ?)").bind(user.id, amount, source, dailyRate, now, user.id, amount),
     env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?").bind(amount, user.id, amount)
   ]);
   if (!(results[0]?.meta?.changes > 0) || !(results[1]?.meta?.changes > 0)) return bad("Saldo insufficiente o account aggiornato. Aggiorna e riprova.");
-  return Response.json({ ok: true, positionId: results[0]?.meta?.last_row_id || null, principal: amount, dailyRate: 0.0027 });
+  return Response.json({ ok: true, positionId: results[0]?.meta?.last_row_id || null, principal: amount, dailyRate });
 }
 
 async function simpleEarnRedeem(request, env) {
@@ -1983,8 +2105,9 @@ async function addMarketFunds(request, env) {
   if (!Number.isInteger(id) || id < 1 || !Number.isFinite(amount) || amount < 1) return bad("Importo o piano non valido.");
   const wallet = await accrue(env, user.id);
   if (amount > Number(wallet[source] || 0) + 1e-9) return bad("Saldo disponibile insufficiente.");
-  const position = await env.DB.prepare("SELECT * FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active'").bind(id, user.id).first();
-  if (!position) return bad("Piano attivo non trovato.");
+  await syncMarketPositions(env, user.id);
+  const position = await env.DB.prepare("SELECT * FROM market_positions WHERE id = ? AND user_id = ? AND status IN ('active','paused')").bind(id, user.id).first();
+  if (!position) return bad("Piano attivo o sospeso non trovato.");
   const quotes = await currentMarketQuotes();
   let basis = {};
   try { basis = JSON.parse(position.entry_quotes_json || '{}'); } catch {}
@@ -1996,10 +2119,10 @@ async function addMarketFunds(request, env) {
     const old = Number(basis[key]) || current;
     updatedBasis[key] = (Number(position.amount) + amount) / (Number(position.amount) / old + amount / current);
   }
-  const now=Date.now(),newAmount=Number((Number(position.amount)+amount).toFixed(3)),newValue=Number((Number(position.last_value)+amount).toFixed(3));
+  const now=Date.now(),currentValue=marketPositionValue(position,quotes),newAmount=Number((Number(position.amount)+amount).toFixed(3)),newValue=Number((currentValue+amount).toFixed(3));if(!Number.isFinite(currentValue)||currentValue<=0)return bad("Valore di mercato non disponibile.");
   const results = await env.DB.batch([
     env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?").bind(amount, user.id, amount),
-    env.DB.prepare("UPDATE market_positions SET amount = amount + ?, last_value = last_value + ?, entry_quotes_json = ?, basis_updated_at = ?, auto_add_anchor_value = last_value + ? WHERE id = ? AND user_id = ? AND status = 'active'").bind(amount, amount, JSON.stringify(updatedBasis), now, amount, id, user.id),
+    env.DB.prepare("UPDATE market_positions SET amount = ?, last_value = ?, entry_quotes_json = ?, basis_updated_at = ?, auto_add_anchor_value = ?, status = 'active', closed_at = NULL WHERE id = ? AND user_id = ? AND status IN ('active','paused') AND amount = ? AND last_value = ?").bind(newAmount, newValue, JSON.stringify(updatedBasis), now, newValue, id, user.id, Number(position.amount), Number(position.last_value)),
     env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND amount = ? AND last_value = ? AND basis_updated_at = ?)")
       .bind(user.id, 'Additional funds added', amount.toFixed(3) + ' USDT added manually to market portfolio #' + id + '.', now, id, user.id, newAmount, newValue, now),
   ]);
@@ -2227,7 +2350,7 @@ async function adminPermissions(request, env) {
 }
 
 async function listPasswordResetRequests(request, env) {
-  const actor = await adminAccess(request, env, "otp");
+  const actor = await adminActor(request, env);
   if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
   const requests = (await env.DB.prepare("SELECT r.user_id, r.requested_at, r.otp_expires_at, r.issued_at, u.username, u.identifier FROM password_reset_requests r JOIN users u ON u.id = r.user_id ORDER BY r.requested_at DESC").all()).results;
   return Response.json({ requests });
@@ -2269,7 +2392,7 @@ async function adminTransactions(request, env) {
   
   const emailVerifications = permissions.otp ? (await env.DB.prepare("SELECT r.user_id, r.requested_at, r.otp_expires_at, u.username, u.identifier FROM email_verification_requests r JOIN users u ON u.id = r.user_id WHERE r.verified_at IS NULL").all()).results : [];
   const sensitiveActionVerifications = permissions.otp ? (await env.DB.prepare("SELECT r.user_id, r.action, r.payload_json, r.requested_at, r.otp_expires_at, u.username, u.identifier FROM sensitive_action_verifications r JOIN users u ON u.id = r.user_id WHERE r.consumed_at IS NULL").all()).results : [];
-  const passwordResets = permissions.otp ? (await env.DB.prepare("SELECT r.user_id, r.requested_at, r.otp_expires_at, r.issued_at, u.username, u.identifier FROM password_reset_requests r JOIN users u ON u.id = r.user_id ORDER BY r.requested_at DESC").all()).results : [];
+  const passwordResets = (await env.DB.prepare("SELECT r.user_id, r.requested_at, r.otp_expires_at, r.issued_at, u.username, u.identifier FROM password_reset_requests r JOIN users u ON u.id = r.user_id ORDER BY r.requested_at DESC").all()).results;
 
   return Response.json({ deposits, withdrawals, walletChanges, emailVerifications, sensitiveActionVerifications, passwordResets, operator: user.username, permissions });
 }
@@ -2377,12 +2500,11 @@ async function adminUserDetails(request, env, userId) {
   const marketPositions = await syncMarketPositions(env, target.id);
   const deposits = (await env.DB.prepare("SELECT id, amount, net, date, status, tx_reference FROM deposits WHERE user_id = ? ORDER BY date DESC LIMIT 100").bind(target.id).all()).results;
   const withdrawals = (await env.DB.prepare("SELECT id, amount, net, date, status, wallet_address, source FROM withdrawals WHERE user_id = ? ORDER BY date DESC LIMIT 100").bind(target.id).all()).results;
-  const permissions = await readAdminPermissions(actor, env);
-  const verificationRequest = permissions.otp ? await env.DB.prepare("SELECT requested_at, otp_expires_at, verified_at FROM email_verification_requests WHERE user_id = ?").bind(target.id).first() : null;
-  const actionVerification = permissions.otp ? await env.DB.prepare("SELECT action, requested_at, otp_expires_at FROM sensitive_action_verifications WHERE user_id = ? AND consumed_at IS NULL").bind(target.id).first() : null;
-  const passwordResetRequest = permissions.otp ? await env.DB.prepare("SELECT requested_at, otp_expires_at, issued_at FROM password_reset_requests WHERE user_id = ?").bind(target.id).first() : null;
+  const verificationRequest = await env.DB.prepare("SELECT requested_at, otp_expires_at, verified_at FROM email_verification_requests WHERE user_id = ?").bind(target.id).first();
+  const actionVerification = await env.DB.prepare("SELECT action, requested_at, otp_expires_at FROM sensitive_action_verifications WHERE user_id = ? AND consumed_at IS NULL").bind(target.id).first();
+  const passwordResetRequest = await env.DB.prepare("SELECT requested_at, otp_expires_at, issued_at FROM password_reset_requests WHERE user_id = ?").bind(target.id).first();
   const settings = await env.DB.prepare("SELECT withdraw_wallets FROM settings WHERE user_id = ?").bind(target.id).first();
-  const actorRole = isPrimaryAdmin(actor) || permissions.allAdmin ? "admin" : "operator";
+  const actorRole = isPrimaryAdmin(actor) || (await readAdminPermissions(actor, env)).allAdmin ? "admin" : "operator";
   const targetPermissions = (() => { try { return JSON.parse(target.permissions_json || "{}"); } catch { return {}; } })();
   const invitedCount = await env.DB.prepare("SELECT COUNT(*) AS count FROM users WHERE referred_by = ?").bind(target.id).first();
   return Response.json({ user: target, wallet, investments, marketPositions, deposits, withdrawals, settings, verificationRequest, actionVerification, passwordResetRequest, invitedCount: Number(invitedCount?.count || 0), actorRole, permissions: targetPermissions });
