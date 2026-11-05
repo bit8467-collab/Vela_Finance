@@ -1047,6 +1047,7 @@ const workerHandler = {
       if (method === "POST" && pathName === "/api/change-password") return await changePassword(request, env);
       if (method === "GET" && pathName === "/api/admin/permissions") return await adminPermissions(request, env);
       if (method === "GET" && pathName === "/api/admin/transactions") return await adminTransactions(request, env);
+      if (method === "GET" && pathName === "/api/admin/ledger") return await adminGlobalLedger(request, env);
        if (method === "GET" && pathName === "/api/admin/password-reset-requests") return await listPasswordResetRequests(request, env);
       if (method === "POST" && pathName === "/api/admin/payments/mark-sent") return await markWithdrawalSent(request, env);
       if (method === "GET" && pathName === "/api/admin/statistics") return await adminStatistics(request, env);
@@ -2170,6 +2171,29 @@ async function adminTransactions(request, env) {
   const passwordResets = (await env.DB.prepare("SELECT r.user_id, r.requested_at, r.otp_expires_at, r.issued_at, u.username, u.identifier FROM password_reset_requests r JOIN users u ON u.id = r.user_id ORDER BY r.requested_at DESC").all()).results;
 
   return Response.json({ deposits, withdrawals, walletChanges, emailVerifications, sensitiveActionVerifications, passwordResets, operator: user.username, permissions });
+}
+
+async function adminGlobalLedger(request, env) {
+  const actor = await adminAccess(request, env, "fullPanel");
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const url = new URL(request.url);
+  const rawOffset = Number(url.searchParams.get("offset") || 0);
+  const offset = Number.isSafeInteger(rawOffset) && rawOffset >= 0 ? Math.min(rawOffset, 100000) : 0;
+  const limit = 100;
+  const result = await env.DB.prepare([
+    "WITH ledger AS (",
+    "SELECT 'deposit:' || d.id AS event_id, d.date AS occurred_at, u.id AS user_id, u.username AS username, 'Deposit' AS activity, ABS(d.amount) AS amount, d.status AS status, COALESCE(NULLIF(d.tx_reference, ''), d.net) AS reference FROM deposits d JOIN users u ON u.id = d.user_id",
+    "UNION ALL SELECT 'withdrawal:' || w.id, w.date, u.id, u.username, 'Withdrawal', -ABS(w.amount), w.status, COALESCE(NULLIF(w.tx_reference, ''), w.source || ' · ' || w.net) FROM withdrawals w JOIN users u ON u.id = w.user_id",
+    "UNION ALL SELECT 'investment:' || i.id, i.created, u.id, u.username, 'Investment', -ABS(i.amount), CASE WHEN i.active = 1 THEN 'active' ELSE 'completed' END, 'Investment · ' || i.days || ' days · ' || i.rate || '%' FROM investments i JOIN users u ON u.id = i.user_id",
+    "UNION ALL SELECT 'position:' || m.id, m.created_at, u.id, u.username, 'Market position', -ABS(m.amount), m.status, m.plan_id || ' · ' || m.months || ' months' FROM market_positions m JOIN users u ON u.id = m.user_id",
+    "UNION ALL SELECT 'redemption:' || r.id, r.created_at, u.id, u.username, 'Investment redemption', ABS(r.amount), 'completed', r.event_id || ' · reference value ' || printf('%.3f', r.reference_value) FROM market_position_redemptions r JOIN users u ON u.id = r.user_id",
+    "UNION ALL SELECT 'commission:' || c.id, c.created_at, u.id, u.username, 'Referral commission', ABS(c.amount), 'credited', 'Level ' || c.level || ' · from @' || COALESCE(source.username, 'user') FROM referral_commissions c JOIN users u ON u.id = c.user_id LEFT JOIN users source ON source.id = c.source_user_id",
+    ") SELECT event_id, occurred_at, user_id, username, activity, amount, status, reference FROM ledger ORDER BY occurred_at DESC, event_id DESC LIMIT ? OFFSET ?"
+  ].join("\n")).bind(limit + 1, offset).all();
+  const rows = result.results || [];
+  const hasMore = rows.length > limit;
+  const entries = rows.slice(0, limit);
+  return Response.json({ entries, hasMore, nextOffset: offset + entries.length });
 }
 
 async function adminUpdateUserProfile(request, env, userId) {

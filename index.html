@@ -203,7 +203,7 @@
 
     <main class="app-shell" id="app-shell" hidden>
       <header class="topbar">
-        <a class="brand" id="home-link" href="#home" aria-label="You Invest, home"><span class="brand-mark">YI</span><span>YOU <b>INVEST</b></span></a>
+        <a class="brand" id="home-link" href="#home" aria-label="You Invest, home"><span class="brand-mark">YI</span><span>YOU <b>INVEST</b></span><span class="admin-brand-tag">ADMIN</span></a>
         <div class="topbar-actions"><span class="user-chip" id="user-chip">—</span><button class="icon-button" id="refresh-account" type="button" aria-label="Refresh account" title="Refresh"><svg class="refresh-chart-symbol" viewBox="0 0 24 24" aria-hidden="true"><path class="refresh-chart-axis" d="M4 4v16h16"/><path class="refresh-chart-red" d="M6 10l3-3 3 4 3-3 3 2 2-3"/><path class="refresh-chart-green" d="M6 15l3 2 3-4 3 2 3-4 2 1"/></svg></button><button class="icon-button notification-button" id="open-notifications" type="button" aria-label="Notifications" title="Notifications"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H8l-5 3V7a2 2 0 0 1 1-2m1 3v1l7 5 7-5V8l-7 5z"/></svg><i id="notification-dot" hidden></i><span class="notification-count" id="notification-count" hidden></span></button><button class="topbar-logout" id="topbar-logout-button" type="button" aria-label="Log out" title="Log out"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17l5-5-5-5v3H3v4h7v3zm10-14H9a2 2 0 0 0-2 2v3h2V5h11v14H9v-3H7v3a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"/></svg></button></div>
       </header>
 
@@ -360,6 +360,12 @@
             <article class="admin-stat-card"><span>Active investments</span><b id="global-active-count">—</b><small id="global-active-total">—</small></article>
           </div><div class="admin-stats-breakdown" id="global-stats-breakdown"></div>
         </div>
+        <div class="admin-section admin-global-ledger" id="admin-global-ledger" hidden>
+          <div class="section-heading"><div><p class="eyebrow">GLOBAL LEDGER</p><h2>All user movements</h2></div><div class="admin-ledger-actions"><button type="button" id="admin-global-ledger-refresh">Refresh</button></div></div>
+          <div class="admin-ledger-scroll"><table class="admin-ledger-table"><thead><tr><th>Date</th><th>User</th><th>Movement</th><th>Amount</th><th>Status</th><th>Reference</th></tr></thead><tbody id="admin-global-ledger-rows"></tbody></table></div>
+          <p class="admin-ledger-empty" id="admin-global-ledger-empty" hidden>No recorded movements yet.</p>
+          <div class="admin-ledger-footer"><span id="admin-global-ledger-count">0 movements</span><button type="button" id="admin-global-ledger-more" hidden>Load older movements</button></div>
+        </div>
         <div class="admin-section admin-referral-overview" id="admin-referral-overview">
           <details class="admin-referral-panel">
             <summary class="section-heading"><div><p class="eyebrow">INVITATION NETWORK</p><h2>Referral statistics</h2></div><span class="admin-referral-toggle-label">Open</span></summary>
@@ -381,11 +387,11 @@
         </div>
         <div class="admin-section admin-request-hub" id="admin-request-hub">
           <div class="section-heading"><div><p class="eyebrow">REQUEST CENTER</p><h2>Requests</h2></div><span class="admin-hub-note">Open a section to review</span></div>
+          <section class="admin-request-subsection admin-password-reset-requests"><h3>Password recovery <span class="count-pill" id="password-reset-count">0</span></h3><div class="admin-queue" id="pending-password-resets"></div><div class="queue-empty" id="password-reset-queue-empty">No password recovery requests.</div></section>
           <details class="admin-request-group" id="request-group-otp">
             <summary><span>OTP &amp; account verification</span><span class="count-pill" id="pending-otp-count">0</span></summary>
             <div class="admin-request-group-content">
               <section class="admin-request-subsection"><h3>Email verification</h3><div class="admin-queue" id="pending-email-verifications"></div><div class="queue-empty" id="email-verification-queue-empty">No email verification requests.</div></section>
-              <section class="admin-request-subsection"><h3>Password recovery</h3><div class="admin-queue" id="pending-password-resets"></div><div class="queue-empty" id="password-reset-queue-empty">No password recovery requests.</div></section>
               <section class="admin-request-subsection"><h3>Wallet change verification</h3><div class="admin-queue" id="pending-wallet-otp"></div><div class="queue-empty" id="wallet-otp-queue-empty">No wallet OTP requests.</div></section>
             </div>
           </details>
@@ -431,7 +437,6 @@
           <div class="section-heading"><div><p class="eyebrow">OPERATOR ESCALATIONS</p><h2>Requests for admin</h2></div><span class="count-pill" id="operator-admin-request-count">0</span></div>
           <div class="admin-queue" id="operator-admin-requests"></div><div class="queue-empty" id="operator-admin-requests-empty">No open operator requests.</div>
         </div>
-        <button class="outline-wide" type="button" data-go="profile">Back to profile</button>
       </section>
       <section class="payment-desk-screen" id="admin-payment-desk" aria-labelledby="payment-desk-title" hidden>
         <header class="payment-desk-header">
