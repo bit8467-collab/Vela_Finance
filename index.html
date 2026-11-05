@@ -401,12 +401,12 @@
         </div>
         <div class="admin-section admin-request-hub" id="admin-request-hub">
           <div class="section-heading"><div><p class="eyebrow">REQUEST CENTER</p><h2>Requests</h2></div><span class="admin-hub-note">Open a section to review</span></div>
-          <section class="admin-request-subsection admin-password-reset-requests"><h3>Password recovery <span class="count-pill" id="password-reset-count">0</span></h3><div class="admin-queue" id="pending-password-resets"></div><div class="queue-empty" id="password-reset-queue-empty">No password recovery requests.</div></section>
+          <details class="admin-request-subsection admin-password-reset-requests"><summary>Password recovery <span class="count-pill" id="password-reset-count">0</span></summary><div class="admin-queue" id="pending-password-resets"></div><div class="queue-empty" id="password-reset-queue-empty">No password recovery requests.</div></details>
           <details class="admin-request-group" id="request-group-otp">
             <summary><span>OTP &amp; account verification</span><span class="count-pill" id="pending-otp-count">0</span></summary>
             <div class="admin-request-group-content">
-              <section class="admin-request-subsection"><h3>Email verification</h3><div class="admin-queue" id="pending-email-verifications"></div><div class="queue-empty" id="email-verification-queue-empty">No email verification requests.</div></section>
-              <section class="admin-request-subsection"><h3>Wallet change verification</h3><div class="admin-queue" id="pending-wallet-otp"></div><div class="queue-empty" id="wallet-otp-queue-empty">No wallet OTP requests.</div></section>
+              <details class="admin-request-subsection"><summary>Email verification</summary><div class="admin-queue" id="pending-email-verifications"></div><div class="queue-empty" id="email-verification-queue-empty">No email verification requests.</div></details>
+              <details class="admin-request-subsection"><summary>Wallet change verification</summary><div class="admin-queue" id="pending-wallet-otp"></div><div class="queue-empty" id="wallet-otp-queue-empty">No wallet OTP requests.</div></details>
             </div>
           </details>
           <details class="admin-request-group" id="request-group-wallet">

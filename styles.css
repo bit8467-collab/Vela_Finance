@@ -2939,3 +2939,14 @@ body:has(#view-admin.active) .admin-brand-tag { display:inline-flex; align-items
 
 .admin-ledger-category[open]>summary .admin-ledger-chevron { font-size:0; }
 .admin-ledger-category[open]>summary .admin-ledger-chevron::after { content:'−'; font-size:17px; }
+/* Keep admin request categories as a tidy, expandable vertical list. */
+@media (min-width:900px) {
+  #view-admin .admin-workspace-stage>.admin-request-hub>.admin-workspace-content { grid-template-columns:minmax(0,1fr)!important; }
+}
+.admin-request-subsection { min-width:0; padding-top:0; border:1px solid var(--line); border-radius:10px; background:color-mix(in srgb,var(--surface) 88%,transparent); overflow:hidden; }
+.admin-request-subsection>summary { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:44px; padding:10px 13px; cursor:pointer; list-style:none; font-size:12px; font-weight:750; }
+.admin-request-subsection>summary::-webkit-details-marker { display:none; }
+.admin-request-subsection>summary::after { content:'＋'; color:var(--muted); font-size:16px; }
+.admin-request-subsection[open]>summary::after { content:'−'; }
+.admin-request-subsection>summary:hover { background:color-mix(in srgb,var(--accent) 7%,transparent); }
+.admin-request-subsection>.admin-queue,.admin-request-subsection>.queue-empty { margin:0 12px 12px; }
