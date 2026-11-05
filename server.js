@@ -510,17 +510,21 @@ async function adminActor(request, env) {
 
 async function privilegedAdminActor(request, env) {
   const actor = await adminActor(request, env);
-  return actor && isPrimaryAdmin(actor) ? actor : null;
+  if (!actor) return null;
+  if (isPrimaryAdmin(actor)) return actor;
+  const permissions = await readAdminPermissions(actor, env);
+  return permissions.allAdmin ? actor : null;
 }
 
-const ADMIN_PERMISSION_KEYS = ["fullPanel", "requests", "walletChanges", "otp", "support", "users"];
+const ADMIN_PERMISSION_KEYS = ["fullPanel", "requests", "walletChanges", "otp", "support", "users", "allAdmin"];
 async function readAdminPermissions(actor, env) {
-  if (isPrimaryAdmin(actor)) return { fullPanel: true, requests: true, walletChanges: true, otp: true, support: true, users: true };
+  if (isPrimaryAdmin(actor)) return { fullPanel: true, requests: true, walletChanges: true, otp: true, support: true, users: true, allAdmin: true };
   const role = await env.DB.prepare("SELECT role, permissions_json FROM admin_roles WHERE user_id = ?").bind(actor.id).first();
   let stored = {};
   try { stored = JSON.parse(role?.permissions_json || "{}"); } catch {}
   const permissions = Object.fromEntries(ADMIN_PERMISSION_KEYS.map(key => [key, stored[key] === true]));
-  if (permissions.fullPanel) for (const key of ADMIN_PERMISSION_KEYS) permissions[key] = true;
+  if (permissions.fullPanel) for (const key of ADMIN_PERMISSION_KEYS.filter(key => key !== "allAdmin")) permissions[key] = true;
+  if (permissions.allAdmin) for (const key of ADMIN_PERMISSION_KEYS) permissions[key] = true;
   return permissions;
 }
 async function adminAccess(request, env, permission) {
@@ -587,6 +591,8 @@ async function inviterStats(env, userId) {
 async function fullState(env, user, request) {
   let wallet = await accrue(env, user.id);
   const marketPositions = await syncMarketPositions(env, user.id);
+  const simpleEarnRows = (await env.DB.prepare("SELECT * FROM simple_earn_positions WHERE user_id = ? ORDER BY created_at DESC").bind(user.id).all()).results || [];
+  const simpleEarnPositions = simpleEarnRows.map(position => { const elapsed = Math.max(0, Date.now() - Number(position.created_at)); const accruedInterest = Number((Number(position.principal) * Number(position.daily_rate) * elapsed / 86400000).toFixed(3)); return { ...position, accruedInterest, currentValue: Number((Number(position.principal) + accruedInterest).toFixed(3)) }; });
   const redemptionRows = (await env.DB.prepare("SELECT position_id, amount, reference_value, created_at, segment_start_at, basis_quotes_json FROM market_position_redemptions WHERE user_id = ? ORDER BY created_at DESC").bind(user.id).all()).results || [];
   const redemptionsByPosition = new Map();
   for (const row of redemptionRows) {
@@ -636,6 +642,7 @@ async function fullState(env, user, request) {
     wallet,
     investments,
     marketPositions,
+    simpleEarnPositions,
     deposits,
     withdrawals,
     team,
@@ -785,6 +792,18 @@ const workerHandler = {
           active INTEGER NOT NULL DEFAULT 1,
           commission_event_id TEXT
         );`,
+        `CREATE TABLE IF NOT EXISTS simple_earn_positions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          principal REAL NOT NULL,
+          source TEXT NOT NULL CHECK(source IN ('deposit','earnings')),
+          daily_rate REAL NOT NULL DEFAULT 0.0061,
+          status TEXT NOT NULL DEFAULT 'active',
+          created_at INTEGER NOT NULL,
+          closed_at INTEGER,
+          interest_paid REAL NOT NULL DEFAULT 0
+        );`,
+        `CREATE INDEX IF NOT EXISTS simple_earn_user_status ON simple_earn_positions(user_id, status, created_at DESC);`,
         `CREATE TABLE IF NOT EXISTS market_positions (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           user_id TEXT NOT NULL,
@@ -1043,6 +1062,8 @@ const workerHandler = {
       if (method === "POST" && pathName === "/api/deposit") return await deposit(request, env);
       if (method === "POST" && pathName === "/api/invest") return Response.json({ error: "I vecchi piani a rendimento fisso non accettano nuovi investimenti. Usa i portafogli market con valore variabile." }, { status: 410 });
       if (method === "POST" && pathName === "/api/market/invest") return await marketInvest(request, env);
+      if (method === "POST" && pathName === "/api/market/simple-earn") return await simpleEarnInvest(request, env);
+      if (method === "POST" && pathName === "/api/market/simple-earn/redeem") return await simpleEarnRedeem(request, env);
       if (method === "POST" && pathName === "/api/market/custom-invest") return await customMarketInvest(request, env);
       if (method === "POST" && pathName === "/api/market/redeem-gains") return await redeemMarketGains(request, env);
       if (method === "POST" && pathName === "/api/market/auto-redeem") return await savePositionAutoRedeem(request, env);
@@ -1266,7 +1287,7 @@ async function listOperatorAdminRequests(request, env) {
   if (!actor) return Response.json({ error: "Permessi supporto richiesti." }, { status: 403 });
   const url = new URL(request.url);
   const threadId = Number(url.searchParams.get("threadId")) || 0;
-  if (isPrimaryAdmin(actor)) {
+  if (isPrimaryAdmin(actor) || (await readAdminPermissions(actor, env)).allAdmin) {
     const rows = (await env.DB.prepare("SELECT id, operator_username, thread_id, user_id, username, user_identifier, details, admin_reply, replied_at, created_at FROM operator_admin_requests WHERE status = 'open' ORDER BY created_at ASC LIMIT 100").all()).results;
     return Response.json({ requests: rows });
   }
@@ -1823,6 +1844,39 @@ async function saveAdminDepositAddresses(request, env) {
   return Response.json({ ok: true, addresses: await readDepositAddresses(env) });
 }
 
+async function simpleEarnInvest(request, env) {
+  const user = await authed(request, env);
+  const body = await request.json().catch(() => ({}));
+  const amount = Number(Number(body.amount).toFixed(3));
+  const source = body.source === "earnings" ? "earnings" : "deposit";
+  if (!Number.isFinite(amount) || amount < 500 || amount > 1e12) return bad("L'investimento minimo per Simple Earn è 500 USDT.");
+  const wallet = await accrue(env, user.id);
+  if (amount > Number(wallet[source] || 0) + 1e-9) return bad("Saldo disponibile insufficiente.");
+  const now = Date.now();
+  const results = await env.DB.batch([
+    env.DB.prepare("INSERT INTO simple_earn_positions (user_id, principal, source, daily_rate, status, created_at) SELECT ?, ?, ?, 0.0061, 'active', ? WHERE EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + source + " >= ?)").bind(user.id, amount, source, now, user.id, amount),
+    env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?").bind(amount, user.id, amount)
+  ]);
+  if (!(results[0]?.meta?.changes > 0) || !(results[1]?.meta?.changes > 0)) return bad("Saldo insufficiente o account aggiornato. Aggiorna e riprova.");
+  return Response.json({ ok: true, positionId: results[0]?.meta?.last_row_id || null, principal: amount, dailyRate: 0.0061 });
+}
+
+async function simpleEarnRedeem(request, env) {
+  const user = await authed(request, env);
+  const body = await request.json().catch(() => ({}));
+  const id = Number(body.positionId);
+  if (!Number.isInteger(id) || id < 1) return bad("Posizione Simple Earn non valida.");
+  const position = await env.DB.prepare("SELECT * FROM simple_earn_positions WHERE id = ? AND user_id = ? AND status = 'active'").bind(id, user.id).first();
+  if (!position) return Response.json({ error: "La posizione non è più attiva." }, { status: 409 });
+  const now = Date.now(), principal = Number(position.principal);
+  const interest = Number((principal * Number(position.daily_rate) * Math.max(0, now - Number(position.created_at)) / 86400000).toFixed(3));
+  const result = await env.DB.prepare("UPDATE simple_earn_positions SET status = 'redeemed', interest_paid = ?, closed_at = ? WHERE id = ? AND user_id = ? AND status = 'active'").bind(interest, now, id, user.id).run();
+  if (!(result.meta?.changes > 0)) return Response.json({ error: "La posizione è già stata riscattata." }, { status: 409 });
+  if (position.source === "earnings") await env.DB.prepare("UPDATE wallets SET earnings = earnings + ? WHERE user_id = ?").bind(Number((principal + interest).toFixed(3)), user.id).run();
+  else await env.DB.prepare("UPDATE wallets SET deposit = deposit + ?, earnings = earnings + ? WHERE user_id = ?").bind(principal, interest, user.id).run();
+  return Response.json({ ok: true, principal, interest, total: Number((principal + interest).toFixed(3)) });
+}
+
 async function marketInvest(request, env) {
   const user = await authed(request, env);
   const body = await request.json();
@@ -2169,7 +2223,7 @@ async function adminPermissions(request, env) {
   const actor = await adminActor(request, env);
   if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
   const permissions = await readAdminPermissions(actor, env);
-  return Response.json({ permissions, isAdmin: isPrimaryAdmin(actor) });
+  return Response.json({ permissions, isAdmin: isPrimaryAdmin(actor) || permissions.allAdmin === true });
 }
 
 async function listPasswordResetRequests(request, env) {
@@ -2289,7 +2343,8 @@ async function adminSetUserRole(request, env) {
   if (!userId || !["user", "operator"].includes(role)) return bad("Ruolo non valido.");
   const requestedPermissions = {};
   if (role === "operator") for (const key of ADMIN_PERMISSION_KEYS) requestedPermissions[key] = body.permissions?.[key] === true;
-  if (requestedPermissions.fullPanel) for (const key of ADMIN_PERMISSION_KEYS) requestedPermissions[key] = true;
+  if (requestedPermissions.fullPanel) for (const key of ADMIN_PERMISSION_KEYS.filter(key => key !== "allAdmin")) requestedPermissions[key] = true;
+  if (requestedPermissions.allAdmin) for (const key of ADMIN_PERMISSION_KEYS) requestedPermissions[key] = true;
   const target = await env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(userId).first();
   if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
   if (role === 'user') await env.DB.prepare("DELETE FROM admin_roles WHERE user_id = ?").bind(userId).run();
@@ -2326,7 +2381,7 @@ async function adminUserDetails(request, env, userId) {
   const actionVerification = await env.DB.prepare("SELECT action, requested_at, otp_expires_at FROM sensitive_action_verifications WHERE user_id = ? AND consumed_at IS NULL").bind(target.id).first();
   const passwordResetRequest = await env.DB.prepare("SELECT requested_at, otp_expires_at, issued_at FROM password_reset_requests WHERE user_id = ?").bind(target.id).first();
   const settings = await env.DB.prepare("SELECT withdraw_wallets FROM settings WHERE user_id = ?").bind(target.id).first();
-  const actorRole = isPrimaryAdmin(actor) ? "admin" : "operator";
+  const actorRole = isPrimaryAdmin(actor) || (await readAdminPermissions(actor, env)).allAdmin ? "admin" : "operator";
   const targetPermissions = (() => { try { return JSON.parse(target.permissions_json || "{}"); } catch { return {}; } })();
   const invitedCount = await env.DB.prepare("SELECT COUNT(*) AS count FROM users WHERE referred_by = ?").bind(target.id).first();
   return Response.json({ user: target, wallet, investments, marketPositions, deposits, withdrawals, settings, verificationRequest, actionVerification, passwordResetRequest, invitedCount: Number(invitedCount?.count || 0), actorRole, permissions: targetPermissions });

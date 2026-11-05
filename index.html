@@ -279,6 +279,14 @@
           <div class="custom-portfolio-card" id="custom-portfolio-section"></div>
         </details>
         <div class="plan-list" id="catalog-plans"></div>
+        <section class="simple-earn-card" aria-labelledby="simple-earn-title">
+          <div class="simple-earn-header"><div><p class="eyebrow">FLEXIBLE · USDT</p><h2 id="simple-earn-title">Simple Earn</h2></div><span class="simple-earn-rate">0,61% <small>al giorno</small></span></div>
+          <p class="simple-earn-copy">Deposita almeno 500 USDT e maturi interessi giornalieri in modo semplice sul capitale. Puoi riscattare in qualsiasi momento l’intero capitale insieme agli interessi maturati.</p>
+          <div class="simple-earn-facts"><span>Minimo <b>500 USDT</b></span><span>Flessibile <b>riscatto in ogni momento</b></span></div>
+          <form id="simple-earn-form" class="simple-earn-form"><label>Importo (USDT)<input id="simple-earn-amount" type="number" min="500" step="0.001" value="500" required></label><label>Investi da<select id="simple-earn-source"><option value="deposit">Saldo disponibile</option><option value="earnings">Saldo riscattabile</option></select></label><button class="primary-button" type="submit">Attiva Simple Earn</button></form>
+          <p class="simple-earn-disclaimer">Interessi calcolati in modo semplice al tasso indicato. Il saldo è interno alla piattaforma: Simple Earn qui non è un prodotto Binance o di un exchange esterno e il rendimento non è garantito.</p>
+          <p class="form-error" id="simple-earn-error" role="alert"></p>
+        </section>
       </section>
 
       <section class="view" id="view-transactions" aria-labelledby="transactions-title">
@@ -293,6 +301,8 @@
         <div class="page-heading"><div><p class="eyebrow">CAPITAL LOCKED UNTIL MATURITY</p><h1 id="investments-title">My investments</h1></div></div>
         <p class="page-intro investment-redeem-note">Redeeming moves gains above each plan’s invested principal to your internal redeemable balance. External withdrawal requests are reviewed manually; no crypto transfer is executed by this project.</p>
         <div class="investment-summary"><div><span>Locked capital</span><b id="locked-total">0.00 USDT</b></div><div><span>Released capital</span><b id="released-total">0.00 USDT</b></div><div><span>Redeemable balance</span><b class="green" id="credited-total">0.00 USDT</b></div></div>
+        <section class="simple-earn-account" aria-labelledby="simple-earn-account-title"><div class="section-heading"><div><p class="eyebrow">FLESSIBILE · USDT</p><h2 id="simple-earn-account-title">Simple Earn</h2></div><button class="text-link" type="button" data-go="catalog">Aggiungi fondi <span>→</span></button></div><div id="simple-earn-positions" class="simple-earn-positions"></div><div id="simple-earn-empty" class="empty-card compact-empty" hidden><b>Nessuna posizione attiva</b><p>Attiva Simple Earn dai Piani per iniziare.</p><button class="primary-button compact-button" type="button" data-go="catalog">Vai ai piani</button></div></section>
+        
         <button class="primary-button redeem-button" type="button" data-redeem-earnings disabled>Redeem available gains</button>
         <div class="section-heading"><div><p class="eyebrow">IN PROGRESS</p><h2>Active &amp; paused</h2></div></div>
         <p class="page-intro">Conservative and balanced plans pause at their fixed stop and resume when a later quote refresh is above it. Aggressive plans close at the stop. Stop checks run when market data refreshes, not continuously.</p>
@@ -386,6 +396,7 @@
             <summary class="section-heading"><div><p class="eyebrow">INVITATION NETWORK</p><h2>Referral statistics</h2></div><span class="admin-referral-toggle-label">Open</span></summary>
             <div class="admin-referral-content">
               <div class="admin-users-toolbar"><span>Invited users with deposits, withdrawals and investments</span><select id="admin-referral-level-filter" aria-label="Filter referral level"><option value="all">All levels</option><option value="1">Level 1</option><option value="2">Level 2</option><option value="3">Level 3</option></select></div>
+              <div class="admin-referral-summary" id="admin-referral-summary"></div>
               <div class="admin-referral-list" id="admin-referral-list"></div><div class="queue-empty" id="admin-referral-empty" hidden>No invited users recorded.</div>
             </div>
           </details>
