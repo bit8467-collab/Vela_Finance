@@ -2177,19 +2177,24 @@ async function adminGlobalLedger(request, env) {
   const actor = await adminAccess(request, env, "fullPanel");
   if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
   const url = new URL(request.url);
+  const requestedCategory = String(url.searchParams.get("category") || "all");
+  const categories = new Set(["all", "deposits", "withdrawals", "investments", "redemptions", "referrals"]);
+  if (!categories.has(requestedCategory)) return Response.json({ error: "Categoria non valida." }, { status: 400 });
+  const category = requestedCategory === "all" ? "" : requestedCategory;
+  const user = String(url.searchParams.get("user") || "").trim().slice(0, 100);
   const rawOffset = Number(url.searchParams.get("offset") || 0);
   const offset = Number.isSafeInteger(rawOffset) && rawOffset >= 0 ? Math.min(rawOffset, 100000) : 0;
   const limit = 100;
   const result = await env.DB.prepare([
     "WITH ledger AS (",
-    "SELECT 'deposit:' || d.id AS event_id, d.date AS occurred_at, u.id AS user_id, u.username AS username, 'Deposit' AS activity, ABS(d.amount) AS amount, d.status AS status, COALESCE(NULLIF(d.tx_reference, ''), d.net) AS reference FROM deposits d JOIN users u ON u.id = d.user_id",
-    "UNION ALL SELECT 'withdrawal:' || w.id, w.date, u.id, u.username, 'Withdrawal', -ABS(w.amount), w.status, COALESCE(NULLIF(w.tx_reference, ''), w.source || ' · ' || w.net) FROM withdrawals w JOIN users u ON u.id = w.user_id",
-    "UNION ALL SELECT 'investment:' || i.id, i.created, u.id, u.username, 'Investment', -ABS(i.amount), CASE WHEN i.active = 1 THEN 'active' ELSE 'completed' END, 'Investment · ' || i.days || ' days · ' || i.rate || '%' FROM investments i JOIN users u ON u.id = i.user_id",
-    "UNION ALL SELECT 'position:' || m.id, m.created_at, u.id, u.username, 'Market position', -ABS(m.amount), m.status, m.plan_id || ' · ' || m.months || ' months' FROM market_positions m JOIN users u ON u.id = m.user_id",
-    "UNION ALL SELECT 'redemption:' || r.id, r.created_at, u.id, u.username, 'Investment redemption', ABS(r.amount), 'completed', r.event_id || ' · reference value ' || printf('%.3f', r.reference_value) FROM market_position_redemptions r JOIN users u ON u.id = r.user_id",
-    "UNION ALL SELECT 'commission:' || c.id, c.created_at, u.id, u.username, 'Referral commission', ABS(c.amount), 'credited', 'Level ' || c.level || ' · from @' || COALESCE(source.username, 'user') FROM referral_commissions c JOIN users u ON u.id = c.user_id LEFT JOIN users source ON source.id = c.source_user_id",
-    ") SELECT event_id, occurred_at, user_id, username, activity, amount, status, reference FROM ledger ORDER BY occurred_at DESC, event_id DESC LIMIT ? OFFSET ?"
-  ].join("\n")).bind(limit + 1, offset).all();
+    "SELECT 'deposit:' || d.id AS event_id, d.date AS occurred_at, u.id AS user_id, u.username AS username, 'Deposit' AS activity, 'deposits' AS category, ABS(d.amount) AS amount, d.status AS status, COALESCE(NULLIF(d.tx_reference, ''), d.net) AS reference FROM deposits d JOIN users u ON u.id = d.user_id",
+    "UNION ALL SELECT 'withdrawal:' || w.id, w.date, u.id, u.username, 'Withdrawal', 'withdrawals', -ABS(w.amount), w.status, COALESCE(NULLIF(w.tx_reference, ''), w.source || ' · ' || w.net) FROM withdrawals w JOIN users u ON u.id = w.user_id",
+    "UNION ALL SELECT 'investment:' || i.id, i.created, u.id, u.username, 'Investment', 'investments', -ABS(i.amount), CASE WHEN i.active = 1 THEN 'active' ELSE 'completed' END, 'Investment · ' || i.days || ' days · ' || i.rate || '%' FROM investments i JOIN users u ON u.id = i.user_id",
+    "UNION ALL SELECT 'position:' || m.id, m.created_at, u.id, u.username, 'Market position', 'investments', -ABS(m.amount), m.status, m.plan_id || ' · ' || m.months || ' months' FROM market_positions m JOIN users u ON u.id = m.user_id",
+    "UNION ALL SELECT 'redemption:' || r.id, r.created_at, u.id, u.username, 'Investment redemption', 'redemptions', ABS(r.amount), 'completed', r.event_id || ' · reference value ' || printf('%.3f', r.reference_value) FROM market_position_redemptions r JOIN users u ON u.id = r.user_id",
+    "UNION ALL SELECT 'commission:' || c.id, c.created_at, u.id, u.username, 'Referral commission', 'referrals', ABS(c.amount), 'credited', 'Level ' || c.level || ' · from @' || COALESCE(source.username, 'user') FROM referral_commissions c JOIN users u ON u.id = c.user_id LEFT JOIN users source ON source.id = c.source_user_id",
+    ") SELECT event_id, occurred_at, user_id, username, activity, category, amount, status, reference FROM ledger WHERE (? = '' OR category = ?) AND (? = '' OR instr(lower(username), lower(?)) > 0 OR instr(lower(user_id), lower(?)) > 0) ORDER BY occurred_at DESC, event_id DESC LIMIT ? OFFSET ?"
+  ].join("\n")).bind(category, category, user, user, user, limit + 1, offset).all();
   const rows = result.results || [];
   const hasMore = rows.length > limit;
   const entries = rows.slice(0, limit);
