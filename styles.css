@@ -2956,3 +2956,193 @@ body:has(#view-admin.active) .admin-brand-tag { display:inline-flex; align-items
 @media(max-width:720px){.simple-earn-form{grid-template-columns:1fr 1fr}.simple-earn-form .primary-button{grid-column:1/-1}.simple-earn-position{grid-template-columns:repeat(2,minmax(0,1fr))}.simple-earn-position button{grid-column:1/-1}.admin-referral-summary{grid-template-columns:repeat(2,minmax(0,1fr))}}
 
 .admin-role-permissions .admin-all-permissions{grid-column:1/-1;border-color:color-mix(in srgb,var(--accent) 52%,var(--line));background:color-mix(in srgb,var(--accent) 10%,var(--surface-2));font-weight:750}
+
+
+/* You Invest · white and blue operator desk */
+body:has(#view-admin.active) {
+  color-scheme: light;
+  --bg: #f4f8ff;
+  --surface: #ffffff;
+  --surface-2: #edf4ff;
+  --line: #cbd9eb;
+  --text: #10243e;
+  --muted: #4d6480;
+  --accent: #1769d2;
+  --green: #087b59;
+  --red: #bd304d;
+  --amber: #8b5a00;
+  background:
+    radial-gradient(720px 380px at 92% 0%, #dcecff 0, transparent 68%),
+    linear-gradient(180deg, #f8fbff 0%, #f1f6fd 100%) !important;
+  color: var(--text);
+}
+body:has(#view-admin.active) .app-shell,
+body:has(#view-admin.active) #view-admin {
+  color: var(--text);
+}
+body:has(#view-admin.active) .app-shell {
+  background: transparent !important;
+}
+body:has(#view-admin.active) .topbar {
+  border-color: var(--line) !important;
+  background: rgb(255 255 255 / 94%) !important;
+  box-shadow: 0 5px 22px rgb(25 61 105 / 7%);
+  color: var(--text);
+  backdrop-filter: blur(16px);
+}
+body:has(#view-admin.active) .brand,
+body:has(#view-admin.active) .topbar button,
+body:has(#view-admin.active) .admin-brand-tag {
+  color: var(--text);
+}
+body:has(#view-admin.active) .brand-mark {
+  background: linear-gradient(145deg, #2f86ed, #1459b5);
+  color: #fff;
+  box-shadow: 0 5px 14px rgb(23 105 210 / 24%);
+}
+body:has(#view-admin.active) .admin-brand-tag {
+  border-color: #b9d3f3;
+  background: #edf5ff;
+  color: #145bb2;
+}
+#app-shell:has(#view-admin.active) #view-admin > .admin-section {
+  border-color: #d4e1f1 !important;
+  border-radius: 16px;
+  background: linear-gradient(145deg, #fff 0%, #fafdff 100%) !important;
+  box-shadow: 0 9px 28px rgb(27 67 116 / 7%) !important;
+  color: var(--text);
+}
+#app-shell:has(#view-admin.active) #view-admin > .admin-section:hover {
+  border-color: #a9c8ed !important;
+  box-shadow: 0 12px 30px rgb(27 67 116 / 11%) !important;
+}
+#view-admin .admin-workspace-nav,
+#view-admin .admin-request-group,
+#view-admin .admin-request-subsection,
+#view-admin .admin-table-wrap,
+#view-admin .admin-ledger-category,
+#view-admin .admin-ledger-search,
+#view-admin .admin-ledger-search-results,
+#view-admin .admin-referral-metric {
+  border-color: var(--line) !important;
+  background: #fff !important;
+  color: var(--text);
+}
+#view-admin .admin-workspace-nav {
+  box-shadow: 0 8px 24px rgb(27 67 116 / 8%);
+}
+#view-admin .admin-workspace-summary,
+#view-admin .admin-referral-overview .admin-referral-panel > summary,
+#view-admin .admin-request-group > summary,
+#view-admin .admin-request-subsection > summary {
+  color: var(--text);
+}
+#view-admin .admin-workspace-link { color: var(--text); }
+#view-admin .admin-workspace-link.is-active {
+  border-color: #b7d1f1;
+  background: linear-gradient(100deg, #e6f1ff, #f5f9ff);
+  box-shadow: inset 3px 0 0 #1769d2;
+}
+#view-admin .admin-workspace-link-copy small,
+#view-admin .admin-hub-note,
+#view-admin .admin-stat-card small,
+#view-admin .admin-stats-breakdown small {
+  color: var(--muted);
+}
+#view-admin .admin-stat-card {
+  border-color: #d3e2f4;
+  background: linear-gradient(150deg, #fff, #f4f8ff);
+  box-shadow: 0 4px 14px rgb(27 67 116 / 5%);
+}
+#view-admin .admin-stat-card b { color: #124d91; }
+#view-admin .admin-request,
+#view-admin .queue-card,
+#view-admin .admin-ledger-category-content,
+#view-admin .admin-referral-content {
+  border-color: #d6e2f0;
+  background: #fff !important;
+  color: var(--text);
+  box-shadow: 0 4px 14px rgb(27 67 116 / 5%);
+}
+#view-admin .admin-request > span,
+#view-admin .admin-tx-field input,
+#view-admin .deposit-address-settings input,
+#view-admin .admin-users-toolbar input,
+#view-admin .admin-users-toolbar select,
+#view-admin .admin-ledger-search-controls input,
+#view-admin .admin-workspace-content input,
+#view-admin .admin-workspace-content select,
+#view-admin .admin-workspace-content textarea {
+  border-color: #c5d6eb !important;
+  background: #fff !important;
+  color: var(--text) !important;
+}
+#view-admin input::placeholder,
+#view-admin textarea::placeholder { color: #667d98 !important; opacity: 1; }
+#view-admin .admin-request > span { color: #243b57 !important; }
+#view-admin .queue-empty,
+#view-admin .table-empty {
+  border-color: #c7d9ee;
+  background: #f5f9ff;
+  color: var(--muted);
+}
+#view-admin .admin-users-table th,
+#view-admin .admin-ledger-table th {
+  border-color: #d5e1ef;
+  background: #eaf2fc !important;
+  color: #34516f;
+}
+#view-admin .admin-users-table td,
+#view-admin .admin-ledger-table td {
+  border-color: #e0e8f2;
+  color: #1a304b;
+}
+#view-admin .admin-users-table tbody tr:nth-child(even) { background: #f7faff; }
+#view-admin .admin-users-table tbody tr:hover { background: #eaf3ff; }
+#view-admin .admin-ledger-category > summary:hover,
+#view-admin .admin-request-subsection > summary:hover { background: #f0f6ff; }
+#view-admin .admin-ledger-status,
+#view-admin .count-pill {
+  border-color: #bfd5f0;
+  background: #eaf3ff;
+  color: #155cae;
+}
+#view-admin .role-admin { color: #6741a5; }
+#view-admin .role-operator,
+#view-admin .verification-pill.verified { color: #087b59; }
+#view-admin .admin-ledger-amount.is-positive { color: #087b59; }
+#view-admin .admin-ledger-amount.is-negative { color: #9a5b00; }
+#view-admin .admin-ledger-reference { color: var(--muted); }
+#view-admin .admin-ledger-actions button,
+#view-admin .admin-ledger-footer button,
+#view-admin .admin-ledger-search-controls button {
+  border-color: #bfd2e9;
+  background: #f5f9ff;
+  color: #173b65;
+}
+#view-admin .admin-ledger-search-controls button[type="submit"] {
+  border-color: #1769d2;
+  background: #1769d2;
+  color: #fff;
+}
+#view-admin .eyebrow { color: #526b88; }
+#view-admin .section-heading .eyebrow { color: #145fb8 !important; }
+#view-admin :is(small, .admin-hub-note, .admin-workspace-link-copy small) {
+  font-size: max(11px, 1em);
+  line-height: 1.45;
+}
+#view-admin .admin-workspace-row-number { font-size: 10px; }
+#view-admin :is(input, select, textarea, button):focus-visible {
+  outline-color: #1769d2;
+  outline-offset: 2px;
+}
+body:has(#view-admin.active) #admin-user-dialog::backdrop { background: rgb(17 39 67 / 48%); }
+body:has(#view-admin.active) #admin-user-dialog .admin-user-card {
+  border-color: var(--line);
+  background: #fff;
+  color: var(--text);
+}
+@media (max-width: 720px) {
+  body:has(#view-admin.active) .app-shell { padding-right: 14px; padding-left: 14px; }
+  body:has(#view-admin.active) .topbar { margin-right: -14px; margin-left: -14px; padding-right: 14px; padding-left: 14px; }
+}
