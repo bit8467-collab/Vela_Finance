@@ -2103,33 +2103,46 @@ async function addMarketFunds(request, env) {
   const id = Number(body.positionId), amount = Number(Number(body.amount).toFixed(3));
   const source = body.source === 'earnings' ? 'earnings' : 'deposit';
   if (!Number.isInteger(id) || id < 1 || !Number.isFinite(amount) || amount < 1) return bad("Importo o piano non valido.");
-  const wallet = await accrue(env, user.id);
-  if (amount > Number(wallet[source] || 0) + 1e-9) return bad("Saldo disponibile insufficiente.");
-  await syncMarketPositions(env, user.id);
-  const position = await env.DB.prepare("SELECT * FROM market_positions WHERE id = ? AND user_id = ? AND status IN ('active','paused')").bind(id, user.id).first();
-  if (!position) return bad("Piano attivo o sospeso non trovato.");
-  const quotes = await currentMarketQuotes();
-  let basis = {};
-  try { basis = JSON.parse(position.entry_quotes_json || '{}'); } catch {}
-  const allocation = JSON.parse(position.allocations_json || '[]');
-  const updatedBasis = { ...basis };
-  for (const [key] of allocation) {
-    const current = Number(quotes[key]?.price);
-    if (!(current > 0)) return bad("Prezzi live temporaneamente non disponibili.");
-    const old = Number(basis[key]) || current;
-    updatedBasis[key] = (Number(position.amount) + amount) / (Number(position.amount) / old + amount / current);
+  const initialPosition = await env.DB.prepare("SELECT status FROM market_positions WHERE id = ? AND user_id = ? AND status IN ('active','paused')").bind(id, user.id).first();
+  if (!initialPosition) return bad("Piano attivo o sospeso non trovato.");
+  if (initialPosition.status === 'active') await syncMarketPositions(env, user.id);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const position = await env.DB.prepare("SELECT * FROM market_positions WHERE id = ? AND user_id = ? AND status IN ('active','paused')").bind(id, user.id).first();
+    if (!position) return bad("Piano attivo o sospeso non trovato.");
+    if (Date.now() >= calendarMaturity(Number(position.created_at), Number(position.months))) return bad("Il piano è scaduto e non accetta fondi aggiuntivi.");
+    const wallet = await accrue(env, user.id);
+    if (amount > Number(wallet[source] || 0) + 1e-9) return bad("Saldo disponibile insufficiente.");
+    const quotes = await currentMarketQuotes();
+    let basis = {};
+    try { basis = JSON.parse(position.entry_quotes_json || '{}'); } catch {}
+    let allocation = [];
+    try { allocation = JSON.parse(position.allocations_json || '[]'); } catch {}
+    const updatedBasis = { ...basis };
+    let quotesReady = true;
+    for (const [key] of allocation) {
+      const current = Number(quotes[key]?.price);
+      if (!(current > 0)) { quotesReady = false; break; }
+      const old = Number(basis[key]) || current;
+      updatedBasis[key] = (Number(position.amount) + amount) / (Number(position.amount) / old + amount / current);
+    }
+    if (!quotesReady || !allocation.length) return bad("Prezzi live temporaneamente non disponibili.");
+    const currentValue = marketPositionValue(position, quotes);
+    if (!Number.isFinite(currentValue) || currentValue <= 0) return bad("Valore di mercato non disponibile.");
+    const now = Date.now(), newAmount = Number((Number(position.amount) + amount).toFixed(3)), newValue = Number((currentValue + amount).toFixed(3));
+    const results = await env.DB.batch([
+      env.DB.prepare("UPDATE market_positions SET amount = ?, last_value = ?, entry_quotes_json = ?, basis_updated_at = ?, auto_add_anchor_value = ?, status = 'active', closed_at = NULL WHERE id = ? AND user_id = ? AND status IN ('active','paused') AND amount = ? AND basis_updated_at = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + source + " >= ?)")
+        .bind(newAmount, newValue, JSON.stringify(updatedBasis), now, newValue, id, user.id, Number(position.amount), Number(position.basis_updated_at || 0), user.id, amount),
+      env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND amount = ? AND last_value = ? AND basis_updated_at = ?)")
+        .bind(amount, user.id, amount, id, user.id, newAmount, newValue, now),
+      env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND amount = ? AND last_value = ? AND basis_updated_at = ?)")
+        .bind(user.id, 'Additional funds added', amount.toFixed(3) + ' USDT added manually to market portfolio #' + id + '.', now, id, user.id, newAmount, newValue, now),
+    ]);
+    if (results[0]?.meta?.changes > 0 && results[1]?.meta?.changes > 0) return Response.json({ ok: true });
+    if (results[0]?.meta?.changes > 0) return bad("L'aggiornamento del saldo non è riuscito; il piano è stato aggiornato, contatta l'assistenza.");
+    const latestWallet = await accrue(env, user.id);
+    if (amount > Number(latestWallet[source] || 0) + 1e-9) return bad("Saldo disponibile insufficiente.");
   }
-  const now=Date.now(),currentValue=marketPositionValue(position,quotes),newAmount=Number((Number(position.amount)+amount).toFixed(3)),newValue=Number((currentValue+amount).toFixed(3));if(!Number.isFinite(currentValue)||currentValue<=0)return bad("Valore di mercato non disponibile.");
-  const results = await env.DB.batch([
-    env.DB.prepare("UPDATE market_positions SET amount = ?, last_value = ?, entry_quotes_json = ?, basis_updated_at = ?, auto_add_anchor_value = ?, status = 'active', closed_at = NULL WHERE id = ? AND user_id = ? AND status IN ('active','paused') AND amount = ? AND COALESCE(entry_quotes_json, '{}') = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + source + " >= ?)")
-      .bind(newAmount, newValue, JSON.stringify(updatedBasis), now, newValue, id, user.id, Number(position.amount), position.entry_quotes_json || '{}', user.id, amount),
-    env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND amount = ? AND last_value = ? AND basis_updated_at = ?)")
-      .bind(amount, user.id, amount, id, user.id, newAmount, newValue, now),
-    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND amount = ? AND last_value = ? AND basis_updated_at = ?)")
-      .bind(user.id, 'Additional funds added', amount.toFixed(3) + ' USDT added manually to market portfolio #' + id + '.', now, id, user.id, newAmount, newValue, now),
-  ]);
-  if (!(results[0]?.meta?.changes > 0) || !(results[1]?.meta?.changes > 0)) return bad("Saldo insufficiente o piano modificato. Aggiorna e riprova.");
-  return Response.json({ ok: true });
+  return bad("Il piano è stato aggiornato da un'altra operazione. Aggiorna e riprova.");
 }
 
 async function redeemMarketGains(request, env) {
