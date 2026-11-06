@@ -1788,7 +1788,7 @@ function redeemedGainsDisclosure(events,lang){
 }
 function marketPositionSeries(p){
   if(!histories||!Array.isArray(p.allocations))return[];
-  const startedAt=Number(p.basisUpdatedAt)||Number(p.createdAt)||Date.now(),now=Date.now(),sets=p.allocations.map(([key,weight])=>{
+  const startedAt=Number(p.createdAt)||Date.now(),now=Date.now(),sets=p.allocations.map(([key,weight])=>{
     const base=Number(p.entryQuotes?.[key]),name=keyNames[key],points=[...(histories.histories?.[key]||[]),...(histories.intraday?.[key]||[])].map(x=>({time:Number(x.time),value:Number(x.value)})).filter(x=>x.time>=startedAt&&x.value>0);
     if(base>0)points.push({time:startedAt,value:base});const live=name&&getMarketQuote(name);if(Number(live?.price)>0)points.push({time:now,value:Number(live.price)});points.sort((a,b)=>a.time-b.time);return{weight:Number(weight),base,points};
   }).filter(set=>set.weight>0&&set.base>0&&set.points.length);
