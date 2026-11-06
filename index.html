@@ -280,17 +280,24 @@
         </details>
         <div class="plan-list" id="catalog-plans"></div>
         <details class="simple-earn-card" aria-labelledby="simple-earn-title">
-          <summary class="simple-earn-summary">
+          <summary class="simple-earn-summary" data-simple-earn-open>
             <div class="simple-earn-header"><div><p class="eyebrow">FLEXIBLE · USDT</p><h2 id="simple-earn-title">Simple Earn</h2></div><span class="simple-earn-rate">0,19% <small>al giorno</small></span></div>
             <p class="simple-earn-copy">Deposita almeno 200 USDT. Il tasso giornaliero dipende dall’importo: 0,19% da 200 a 500 USDT; 0,24% da 501 a 1.000 USDT; 0,29% da 1.001 a 2.500 USDT; 0,36% da 2.501 USDT in su. Puoi riscattare in qualsiasi momento il capitale insieme agli interessi maturati.</p>
           </summary>
-          <div class="simple-earn-details">
-            <div class="simple-earn-facts"><span>200–500 USDT <b>0,19% / giorno</b></span><span>501–1.000 USDT <b>0,24% / giorno</b></span><span>1.001–2.500 USDT <b>0,29% / giorno</b></span><span>A partire da 2.501 USDT <b>0,36% / giorno</b></span><span>Riscatto flessibile <b>in qualsiasi momento</b></span></div>
-            <form id="simple-earn-form" class="simple-earn-form"><label>Importo (USDT)<input id="simple-earn-amount" type="number" min="200" step="0.001" value="200" required></label><label>Investi da<select id="simple-earn-source"><option value="deposit">Saldo disponibile</option><option value="earnings">Saldo riscattabile</option></select></label><button class="primary-button" type="submit">Attiva Simple Earn</button></form>
-            <p class="simple-earn-disclaimer">Interessi calcolati in modo semplice al tasso indicato. Il saldo è interno alla piattaforma: Simple Earn qui non è un prodotto Binance o di un exchange esterno e il rendimento non è garantito.</p>
-            <p class="form-error" id="simple-earn-error" role="alert"></p>
-          </div>
         </details>
+        <dialog class="modal simple-earn-dialog" id="simple-earn-dialog" aria-labelledby="simple-earn-dialog-title">
+          <div class="modal-card simple-earn-dialog-card">
+            <button class="modal-close" type="button" data-close="simple-earn-dialog" aria-label="Close">×</button>
+            <p class="eyebrow">FLEXIBLE · USDT</p><h2 id="simple-earn-dialog-title">Simple Earn</h2>
+            <p class="simple-earn-copy">Deposita almeno 200 USDT. Il tasso giornaliero dipende dall’importo: 0,19% da 200 a 500 USDT; 0,24% da 501 a 1.000 USDT; 0,29% da 1.001 a 2.500 USDT; 0,36% da 2.501 USDT in su. Puoi riscattare in qualsiasi momento il capitale insieme agli interessi maturati.</p>
+            <div class="simple-earn-details">
+              <div class="simple-earn-facts"><span>200–500 USDT <b>0,19% / giorno</b></span><span>501–1.000 USDT <b>0,24% / giorno</b></span><span>1.001–2.500 USDT <b>0,29% / giorno</b></span><span>A partire da 2.501 USDT <b>0,36% / giorno</b></span><span>Riscatto flessibile <b>in qualsiasi momento</b></span></div>
+              <form id="simple-earn-form" class="simple-earn-form"><label>Importo (USDT)<input id="simple-earn-amount" type="number" min="200" step="0.001" value="200" required></label><label>Investi da<select id="simple-earn-source"><option value="deposit">Saldo disponibile</option><option value="earnings">Saldo riscattabile</option></select></label><button class="primary-button" type="submit">Attiva Simple Earn</button></form>
+              <p class="simple-earn-disclaimer">Interessi calcolati in modo semplice al tasso indicato. Il saldo è interno alla piattaforma: Simple Earn qui non è un prodotto Binance o di un exchange esterno e il rendimento non è garantito.</p>
+              <p class="form-error" id="simple-earn-error" role="alert"></p>
+            </div>
+          </div>
+        </dialog>
       </section>
 
       <section class="view" id="view-transactions" aria-labelledby="transactions-title">

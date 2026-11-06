@@ -2967,15 +2967,6 @@ body:has(#view-admin.active) .admin-brand-tag { display:inline-flex; align-items
 .simple-earn-details{padding-top:4px;}
 
 
-/* Focused, full-screen Simple Earn disclosure */
-.simple-earn-card:not([open]){border-color:#76e6b7;box-shadow:0 0 0 1px #76e6b744,0 0 24px #45d79b35,0 14px 38px #2ba97818;transition:box-shadow .2s ease,border-color .2s ease}
-.simple-earn-card:not([open]):hover,.simple-earn-card:not([open]):focus-within{border-color:#a0f4d0;box-shadow:0 0 0 2px #76e6b766,0 0 32px #45d79b55,0 14px 38px #2ba97820}
-.simple-earn-summary{cursor:pointer}
-.simple-earn-card[open]{position:fixed;inset:0;z-index:1200;display:block;overflow-y:auto;overscroll-behavior:contain;box-sizing:border-box;width:100vw;height:100vh;height:100dvh;margin:0;padding:max(18px,env(safe-area-inset-top)) clamp(18px,5vw,64px) max(24px,env(safe-area-inset-bottom));border:0;border-radius:0;background:var(--bg);box-shadow:none}
-.simple-earn-card[open]>.simple-earn-summary{position:sticky;top:0;z-index:1;padding:10px 0 14px;background:var(--bg);border-bottom:1px solid var(--line)}
-.simple-earn-card[open]>.simple-earn-details{max-width:1000px;margin:0 auto;padding:18px 0 28px}
-.simple-earn-card[open] .simple-earn-copy{max-width:900px}
-
 /* Stronger affordance for opening per-asset charts in investment details */
 .investment-asset-history{border-color:color-mix(in srgb,#76e6b7 62%,var(--line));box-shadow:0 0 0 1px #76e6b725,0 8px 24px #45d79b12}
 .investment-asset-history>summary{min-height:68px;padding:12px 16px;background:linear-gradient(100deg,color-mix(in srgb,#45d79b 12%,var(--surface)),var(--surface));cursor:pointer}
@@ -2985,12 +2976,15 @@ body:has(#view-admin.active) .admin-brand-tag { display:inline-flex; align-items
 .investment-asset-history>summary:hover{background:linear-gradient(100deg,#45d79b24,var(--surface))}
 
 
-/* Simple Earn disclosure: override the app view global card reset. */
-#app-shell:has(#view-catalog.active > .simple-earn-card[open]),#view-catalog:has(> .simple-earn-card[open]){transform:none!important}
-#app-shell #view-catalog.active>.simple-earn-card{position:relative!important;display:block!important;grid-column:1/-1!important;box-sizing:border-box!important;width:100%!important;height:auto!important;max-height:none!important;margin:0!important;padding:clamp(18px,3vw,28px)!important;border:1px solid #76e6b7!important;border-radius:20px!important;background:linear-gradient(135deg,color-mix(in srgb,var(--surface) 88%,#43cb94 12%),var(--surface) 70%,color-mix(in srgb,var(--surface) 91%,#78e6c0 9%))!important;box-shadow:0 0 0 1px #76e6b744,0 0 24px #45d79b35,0 14px 38px #2ba97818!important;transition:box-shadow .2s ease,border-color .2s ease!important}
-#app-shell #view-catalog.active>.simple-earn-card:not([open]):hover,#app-shell #view-catalog.active>.simple-earn-card:not([open]):focus-within{border-color:#a0f4d0!important;box-shadow:0 0 0 2px #76e6b766,0 0 32px #45d79b55,0 14px 38px #2ba97820!important}
-#app-shell #view-catalog.active>.simple-earn-card[open]{position:fixed!important;inset:0!important;z-index:10020!important;display:block!important;box-sizing:border-box!important;width:100vw!important;max-width:none!important;height:100vh!important;height:100dvh!important;max-height:100dvh!important;margin:0!important;padding:max(18px,env(safe-area-inset-top)) clamp(18px,5vw,64px) max(24px,env(safe-area-inset-bottom))!important;overflow-x:hidden!important;overflow-y:auto!important;overscroll-behavior:contain!important;border:0!important;border-radius:0!important;background:var(--bg)!important;box-shadow:none!important}
-#app-shell #view-catalog.active>.simple-earn-card>.simple-earn-summary{position:relative!important;display:block!important;min-height:56px;padding-right:42px!important;cursor:pointer!important;list-style:none!important}
-#app-shell #view-catalog.active>.simple-earn-card[open]>.simple-earn-summary{position:sticky!important;top:0!important;z-index:2!important;padding:12px 42px 16px 0!important;background:var(--bg)!important;border-bottom:1px solid var(--line)!important}
-#app-shell #view-catalog.active>.simple-earn-card[open]>.simple-earn-summary::after{content:'×'!important;right:0!important;top:50%!important;display:grid!important;place-items:center!important;width:34px!important;height:34px!important;transform:translateY(-50%)!important;border:1px solid color-mix(in srgb,var(--accent) 60%,var(--line))!important;border-radius:50%!important;background:color-mix(in srgb,var(--accent) 14%,var(--surface))!important;color:var(--accent)!important;font-size:24px!important;line-height:1!important}
-#app-shell #view-catalog.active>.simple-earn-card[open]>.simple-earn-details{max-width:1000px;margin:0 auto;padding:18px 0 28px}
+
+
+/* Simple Earn opens in a top-layer dialog so the page keeps its scroll position. */
+#app-shell #view-catalog.active>.simple-earn-card{display:block!important;grid-column:1/-1!important;box-sizing:border-box!important;width:100%!important;margin:0!important;padding:clamp(18px,3vw,28px)!important;border:1px solid #76e6b7!important;border-radius:20px!important;background:linear-gradient(135deg,color-mix(in srgb,var(--surface) 88%,#43cb94 12%),var(--surface) 70%,color-mix(in srgb,var(--surface) 91%,#78e6c0 9%))!important;box-shadow:0 0 0 1px #76e6b744,0 0 24px #45d79b35,0 14px 38px #2ba97818!important}
+#app-shell #view-catalog.active>.simple-earn-card:hover{border-color:#a0f4d0!important;box-shadow:0 0 0 2px #76e6b766,0 0 32px #45d79b55,0 14px 38px #2ba97820!important}
+#app-shell #view-catalog.active>.simple-earn-card>.simple-earn-summary{display:block!important;min-height:56px;padding-right:38px!important;cursor:pointer!important;list-style:none!important}
+#simple-earn-dialog{position:fixed!important;inset:0!important;box-sizing:border-box!important;width:100vw!important;max-width:none!important;height:100vh!important;height:100dvh!important;max-height:none!important;margin:0!important;padding:0!important;overflow-x:hidden!important;overflow-y:auto!important;border:0!important;border-radius:0!important;background:var(--bg)!important;color:var(--text)!important}
+#simple-earn-dialog::backdrop{background:#07100c}
+#simple-earn-dialog .simple-earn-dialog-card{position:relative;box-sizing:border-box;width:100%;max-width:none;min-height:100%;margin:0;padding:max(24px,env(safe-area-inset-top)) clamp(18px,5vw,64px) max(28px,env(safe-area-inset-bottom));border:0;border-radius:0;background:var(--bg);box-shadow:none}
+#simple-earn-dialog .modal-close{position:fixed;top:max(18px,env(safe-area-inset-top));right:clamp(16px,4vw,42px);z-index:3}
+#simple-earn-dialog .eyebrow,#simple-earn-dialog h2,#simple-earn-dialog>.modal-card>p:not(.eyebrow),#simple-earn-dialog .simple-earn-details{max-width:1000px;margin-left:auto;margin-right:auto}
+#simple-earn-dialog .simple-earn-details{padding:10px 0 28px}
