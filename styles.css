@@ -2956,3 +2956,12 @@ body:has(#view-admin.active) .admin-brand-tag { display:inline-flex; align-items
 @media(max-width:720px){.simple-earn-form{grid-template-columns:1fr 1fr}.simple-earn-form .primary-button{grid-column:1/-1}.simple-earn-position{grid-template-columns:repeat(2,minmax(0,1fr))}.simple-earn-position button{grid-column:1/-1}.admin-referral-summary{grid-template-columns:repeat(2,minmax(0,1fr))}}
 
 .admin-role-permissions .admin-all-permissions{grid-column:1/-1;border-color:color-mix(in srgb,var(--accent) 52%,var(--line));background:color-mix(in srgb,var(--accent) 10%,var(--surface-2));font-weight:750}
+
+/* Simple Earn: keep the overview visible and reveal start controls inside its card. */
+.simple-earn-summary{position:relative;display:block;padding-right:28px;cursor:pointer;list-style:none;border-radius:12px;}
+.simple-earn-summary::-webkit-details-marker{display:none;}
+.simple-earn-summary::after{content:'⌄';position:absolute;right:2px;top:50%;transform:translateY(-50%);color:var(--accent);font-size:21px;font-weight:800;transition:transform .18s ease;}
+.simple-earn-card[open]>.simple-earn-summary::after{transform:translateY(-50%) rotate(180deg);}
+.simple-earn-summary:focus-visible{outline:2px solid var(--accent);outline-offset:5px;}
+.simple-earn-summary .simple-earn-copy{margin-bottom:0;}
+.simple-earn-details{padding-top:4px;}
