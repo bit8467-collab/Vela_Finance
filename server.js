@@ -1480,10 +1480,10 @@ async function requestPasswordReset(request, env) {
   const user = await env.DB.prepare("SELECT id, username, identifier FROM users WHERE lower(identifier) = ?").bind(email).first();
   const now = Date.now();
   if (user) {
-    await env.DB.prepare(
-      "INSERT INTO password_reset_requests (user_id, requested_at, otp_attempts) VALUES (?, ?, 0) " +
-      "ON CONFLICT(user_id) DO UPDATE SET requested_at = excluded.requested_at, otp_hash = NULL, otp_salt = NULL, otp_expires_at = NULL, otp_attempts = 0, issued_at = NULL, issued_by = NULL"
+    const created = await env.DB.prepare(
+      "INSERT INTO password_reset_requests (user_id, requested_at, otp_attempts) VALUES (?, ?, 0) ON CONFLICT(user_id) DO NOTHING"
     ).bind(user.id, now).run();
+    if (!(created.meta?.changes > 0)) return Response.json({ error: "È già presente una richiesta di reimpostazione della password. Completa quella in corso prima di inviarne un'altra." }, { status: 409 });
   }
 
   return Response.json({ 
@@ -2881,11 +2881,14 @@ async function createWalletChangeOtpRequest(env, user, wallets) {
   try { currentWallets = JSON.parse(currentSettings?.withdraw_wallets || "{}"); } catch {}
   const changes = Object.entries(requestedWallets).filter(([net, address]) => String(currentWallets[net] || "").toLowerCase() !== address.toLowerCase()).map(([net, newAddress]) => ({ net, oldAddress: currentWallets[net] || "", newAddress }));
   if (!changes.length) return bad("Nessuna modifica wallet da applicare.");
-  const pending = await env.DB.prepare("SELECT action, otp_expires_at FROM sensitive_action_verifications WHERE user_id = ? AND consumed_at IS NULL").bind(user.id).first();
-  if (pending && pending.action !== "wallet-change") return bad("Completa prima la verifica OTP già in corso.");
+  const openWalletRequest = await env.DB.prepare("SELECT id FROM wallet_change_requests WHERE user_id = ? AND status = 'pending' LIMIT 1").bind(user.id).first();
+  if (openWalletRequest) return Response.json({ error: "È già presente una richiesta di modifica wallet. Completa quella in corso prima di inviarne un'altra." }, { status: 409 });
+  const pending = await env.DB.prepare("SELECT action FROM sensitive_action_verifications WHERE user_id = ? AND consumed_at IS NULL").bind(user.id).first();
+  if (pending) return Response.json({ error: "È già presente una richiesta wallet in corso. Completa quella in corso prima di inviarne un'altra." }, { status: 409 });
   const now = Date.now();
-  await env.DB.prepare("INSERT INTO sensitive_action_verifications (user_id, action, payload_json, requested_at, otp_hash, otp_salt, otp_expires_at, otp_attempts, issued_at, issued_by, consumed_at) VALUES (?, 'wallet-change', ?, ?, NULL, NULL, NULL, 0, NULL, NULL, NULL) ON CONFLICT(user_id) DO UPDATE SET action = excluded.action, payload_json = excluded.payload_json, requested_at = excluded.requested_at, otp_hash = NULL, otp_salt = NULL, otp_expires_at = NULL, otp_attempts = 0, issued_at = NULL, issued_by = NULL, consumed_at = NULL")
-    .bind(user.id, JSON.stringify({ wallets: requestedWallets, changes }), now).run();
+  const created = await env.DB.prepare("INSERT INTO sensitive_action_verifications (user_id, action, payload_json, requested_at, otp_hash, otp_salt, otp_expires_at, otp_attempts, issued_at, issued_by, consumed_at) SELECT ?, 'wallet-change', ?, ?, NULL, NULL, NULL, 0, NULL, NULL, NULL WHERE NOT EXISTS (SELECT 1 FROM sensitive_action_verifications WHERE user_id = ? AND consumed_at IS NULL) AND NOT EXISTS (SELECT 1 FROM wallet_change_requests WHERE user_id = ? AND status = 'pending') ON CONFLICT(user_id) DO UPDATE SET action = excluded.action, payload_json = excluded.payload_json, requested_at = excluded.requested_at, otp_hash = NULL, otp_salt = NULL, otp_expires_at = NULL, otp_attempts = 0, issued_at = NULL, issued_by = NULL, consumed_at = NULL")
+    .bind(user.id, JSON.stringify({ wallets: requestedWallets, changes }), now, user.id, user.id).run();
+  if (!(created.meta?.changes > 0)) return Response.json({ error: "È già presente una richiesta wallet in corso. Completa quella in corso prima di inviarne un'altra." }, { status: 409 });
   await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)")
     .bind(user.id, "Wallet change verification", "Wallet change requested. Ask the operator to issue a six-digit verification code.", now).run();
   return Response.json({ ok: true, otpRequired: true, message: "Richiesta OTP wallet inviata all’operatore. Inserisci il codice dopo averlo ricevuto." });

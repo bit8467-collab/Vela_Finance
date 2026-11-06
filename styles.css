@@ -2965,3 +2965,21 @@ body:has(#view-admin.active) .admin-brand-tag { display:inline-flex; align-items
 .simple-earn-summary:focus-visible{outline:2px solid var(--accent);outline-offset:5px;}
 .simple-earn-summary .simple-earn-copy{margin-bottom:0;}
 .simple-earn-details{padding-top:4px;}
+
+
+/* Focused, full-screen Simple Earn disclosure */
+.simple-earn-card:not([open]){border-color:#76e6b7;box-shadow:0 0 0 1px #76e6b744,0 0 24px #45d79b35,0 14px 38px #2ba97818;transition:box-shadow .2s ease,border-color .2s ease}
+.simple-earn-card:not([open]):hover,.simple-earn-card:not([open]):focus-within{border-color:#a0f4d0;box-shadow:0 0 0 2px #76e6b766,0 0 32px #45d79b55,0 14px 38px #2ba97820}
+.simple-earn-summary{cursor:pointer}
+.simple-earn-card[open]{position:fixed;inset:0;z-index:1200;display:block;overflow-y:auto;overscroll-behavior:contain;box-sizing:border-box;width:100vw;height:100vh;height:100dvh;margin:0;padding:max(18px,env(safe-area-inset-top)) clamp(18px,5vw,64px) max(24px,env(safe-area-inset-bottom));border:0;border-radius:0;background:var(--bg);box-shadow:none}
+.simple-earn-card[open]>.simple-earn-summary{position:sticky;top:0;z-index:1;padding:10px 0 14px;background:var(--bg);border-bottom:1px solid var(--line)}
+.simple-earn-card[open]>.simple-earn-details{max-width:1000px;margin:0 auto;padding:18px 0 28px}
+.simple-earn-card[open] .simple-earn-copy{max-width:900px}
+
+/* Stronger affordance for opening per-asset charts in investment details */
+.investment-asset-history{border-color:color-mix(in srgb,#76e6b7 62%,var(--line));box-shadow:0 0 0 1px #76e6b725,0 8px 24px #45d79b12}
+.investment-asset-history>summary{min-height:68px;padding:12px 16px;background:linear-gradient(100deg,color-mix(in srgb,#45d79b 12%,var(--surface)),var(--surface));cursor:pointer}
+.investment-asset-history>summary b{color:var(--text);font-size:13px}
+.investment-asset-history>summary small{color:color-mix(in srgb,#8decc4 76%,var(--text));font-size:10px}
+.investment-asset-history>summary i{display:grid;place-items:center;flex:0 0 34px;width:34px;height:34px;border:1px solid #76e6b788;border-radius:50%;background:#45d79b18;color:#9af0c9;font-size:18px}
+.investment-asset-history>summary:hover{background:linear-gradient(100deg,#45d79b24,var(--surface))}
