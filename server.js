@@ -2396,7 +2396,8 @@ async function adminTransactions(request, env) {
   const withdrawals = permissions.requests ? (await env.DB.prepare("SELECT w.*, u.username FROM withdrawals w JOIN users u ON u.id = w.user_id WHERE w.status = 'pending' ORDER BY w.date ASC").all()).results : [];
   
   const rawWalletChanges = (await env.DB.prepare(`
-    SELECT r.id, r.user_id, r.net, r.old_address, r.new_address, r.created_at, r.status, u.username, u.identifier 
+    SELECT r.id, r.user_id, r.net, r.old_address, r.new_address, r.created_at, r.status, u.username, u.identifier,
+       EXISTS(SELECT 1 FROM user_withdrawal_addresses a WHERE a.net = r.net AND lower(a.address) = lower(r.new_address) AND a.user_id != r.user_id) AS address_conflict
     FROM wallet_change_requests r 
     JOIN users u ON u.id = r.user_id 
     WHERE r.status = 'pending' 
@@ -2404,7 +2405,7 @@ async function adminTransactions(request, env) {
   `).all()).results;
 
   const walletChanges = permissions.walletChanges ? rawWalletChanges.map(w => {
-    const addressDetails = `Vecchio: ${w.old_address} -> Nuovo: ${w.new_address}`;
+    const addressDetails = "Vecchio: " + w.old_address + " -> Nuovo: " + w.new_address;
     return {
       ...w,
       net: `${w.net} | ${addressDetails}`,
@@ -2704,7 +2705,10 @@ async function reviewTransaction(request, env) {
       const existingGlobal = await env.DB.prepare("SELECT user_id FROM user_withdrawal_addresses WHERE net = ? AND lower(address) = ? AND user_id != ?").bind(net, newAddress.trim().toLowerCase(), userId).first();
       if (existingGlobal) {
         action = "reject";
-        await env.DB.prepare("UPDATE wallet_change_requests SET status = 'rejected' WHERE id = ?").bind(id).run();
+        await env.DB.batch([
+          env.DB.prepare("DELETE FROM wallet_change_requests WHERE id = ?").bind(id),
+          env.DB.prepare("DELETE FROM sensitive_action_verifications WHERE user_id = ? AND action = 'wallet-change' AND consumed_at IS NULL").bind(userId)
+        ]);
       } else {
         await env.DB.prepare("UPDATE wallet_change_requests SET status = 'approved' WHERE id = ?").bind(id).run();
 
@@ -2717,11 +2721,16 @@ async function reviewTransaction(request, env) {
           env.DB.prepare("INSERT INTO settings (user_id, withdraw_wallets, notifications) VALUES (?, ?, 1) ON CONFLICT(user_id) DO UPDATE SET withdraw_wallets = excluded.withdraw_wallets")
             .bind(userId, JSON.stringify(wallets)),
           env.DB.prepare("INSERT INTO user_withdrawal_addresses (user_id, net, address, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, net, address) DO NOTHING")
-            .bind(userId, net, newAddress, Date.now())
+            .bind(userId, net, newAddress, Date.now()),
+          env.DB.prepare("DELETE FROM wallet_change_requests WHERE id = ?").bind(id),
+          env.DB.prepare("DELETE FROM sensitive_action_verifications WHERE user_id = ? AND action = 'wallet-change' AND consumed_at IS NULL").bind(userId)
         ]);
       }
     } else {
-      await env.DB.prepare("UPDATE wallet_change_requests SET status = 'rejected' WHERE id = ?").bind(id).run();
+      await env.DB.batch([
+        env.DB.prepare("DELETE FROM wallet_change_requests WHERE id = ?").bind(id),
+        env.DB.prepare("DELETE FROM sensitive_action_verifications WHERE user_id = ? AND action = 'wallet-change' AND consumed_at IS NULL").bind(userId)
+      ]);
     }
   } else {
     return bad("Tipo di transazione non valido.");
@@ -2893,6 +2902,12 @@ async function createWalletChangeOtpRequest(env, user, wallets) {
   return Response.json({ ok: true, otpRequired: true, message: "Richiesta OTP wallet inviata all’operatore. Inserisci il codice dopo averlo ricevuto." });
 }
 
+async function queueWalletAddressConflict(env, user, net, oldAddress, newAddress) {
+  const now = Date.now();
+  await env.DB.prepare("INSERT INTO wallet_change_requests (user_id, net, old_address, new_address, created_at, status) SELECT ?, ?, ?, ?, ?, 'pending' WHERE NOT EXISTS (SELECT 1 FROM wallet_change_requests WHERE user_id = ? AND net = ? AND lower(new_address) = lower(?) AND status = 'pending')")
+    .bind(user.id, net, oldAddress || "", newAddress, now, user.id, net, newAddress).run();
+}
+
 async function applyWalletChange(env, user, inputWallets) {
   const currentSettings = await env.DB.prepare("SELECT withdraw_wallets FROM settings WHERE user_id = ?").bind(user.id).first();
   let currentWallets = {};
@@ -2907,12 +2922,12 @@ async function applyWalletChange(env, user, inputWallets) {
     const oldAddr = currentWallets[net] || "";
     if (!oldAddr) {
       const existingGlobal = await env.DB.prepare("SELECT user_id FROM user_withdrawal_addresses WHERE net = ? AND lower(address) = ? AND user_id != ?").bind(net, trimmedAddr.toLowerCase(), user.id).first();
-      if (existingGlobal) return bad("Questo indirizzo per la rete " + net + " è già registrato su un altro account.");
+      if (existingGlobal) { await queueWalletAddressConflict(env, user, net, oldAddr, trimmedAddr); return bad("Questo indirizzo per la rete " + net + " è già registrato su un altro account."); }
       finalWallets[net] = trimmedAddr;
       batchStatements.push(env.DB.prepare("INSERT INTO user_withdrawal_addresses (user_id, net, address, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, net, address) DO NOTHING").bind(user.id, net, trimmedAddr, now));
     } else if (oldAddr.toLowerCase() !== trimmedAddr.toLowerCase()) {
       const existingGlobal = await env.DB.prepare("SELECT user_id FROM user_withdrawal_addresses WHERE net = ? AND lower(address) = ? AND user_id != ?").bind(net, trimmedAddr.toLowerCase(), user.id).first();
-      if (existingGlobal) return bad("Il nuovo indirizzo per la rete " + net + " è già registrato su un altro account.");
+      if (existingGlobal) { await queueWalletAddressConflict(env, user, net, oldAddr, trimmedAddr); return bad("Il nuovo indirizzo per la rete " + net + " è già registrato su un altro account."); }
       finalWallets[net] = trimmedAddr;
       batchStatements.push(env.DB.prepare("INSERT INTO user_withdrawal_addresses (user_id, net, address, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, net, address) DO NOTHING").bind(user.id, net, trimmedAddr, now));
       batchStatements.push(env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)").bind(user.id, "Wallet address updated", "Your wallet address for " + net + " was updated after OTP verification.", now));
