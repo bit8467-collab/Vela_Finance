@@ -35,6 +35,8 @@ const env = {
         bind(...args) {
           const params = args.length === 1 && Array.isArray(args[0]) ? args[0] : args;
           return {
+            sql,
+            params,
             async all() {
               const rs = await db.execute({ sql, args: params });
               return { results: rs.rows };
@@ -72,16 +74,19 @@ const env = {
       }
     },
     async batch(statements) {
-      const results = [];
-      for (const stmt of statements) {
-        if (typeof stmt.run === 'function') {
-          results.push(await stmt.run());
-        } else {
-          const rs = await db.execute(stmt);
-          results.push({ meta: { changes: rs.rowsAffected, last_row_id: Number(rs.lastInsertRowid) } });
+      const results = await db.batch(statements.map(stmt => ({ sql: stmt.sql, args: stmt.params })), 'write');
+      const output = [];
+      for (let i = 0; i < results.length; i++) {
+        const result = results[i], stmt = statements[i];
+        if (result.rowsAffected > 0 && /INSERT\s+INTO\s+notifications\b/i.test(stmt.sql) && result.lastInsertRowid != null) {
+          try {
+            const inserted = await db.execute({ sql: "SELECT user_id FROM notifications WHERE id = ?", args: [Number(result.lastInsertRowid)] });
+            if (inserted.rows[0]) publishNotification(inserted.rows[0].user_id, result.lastInsertRowid);
+          } catch (error) { console.warn('Realtime notification dispatch failed', error); }
         }
+        output.push({ meta: { changes: result.rowsAffected, last_row_id: Number(result.lastInsertRowid) } });
       }
-      return results;
+      return output;
     }
   }
 };
@@ -2106,7 +2111,7 @@ async function addMarketFunds(request, env) {
   const initialPosition = await env.DB.prepare("SELECT status FROM market_positions WHERE id = ? AND user_id = ? AND status IN ('active','paused')").bind(id, user.id).first();
   if (!initialPosition) return bad("Piano attivo o sospeso non trovato.");
   if (initialPosition.status === 'active') await syncMarketPositions(env, user.id);
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     const position = await env.DB.prepare("SELECT * FROM market_positions WHERE id = ? AND user_id = ? AND status IN ('active','paused')").bind(id, user.id).first();
     if (!position) return bad("Piano attivo o sospeso non trovato.");
     if (Date.now() >= calendarMaturity(Number(position.created_at), Number(position.months))) return bad("Il piano è scaduto e non accetta fondi aggiuntivi.");
@@ -2130,7 +2135,7 @@ async function addMarketFunds(request, env) {
     if (!Number.isFinite(currentValue) || currentValue <= 0) return bad("Valore di mercato non disponibile.");
     const now = Date.now(), newAmount = Number((Number(position.amount) + amount).toFixed(3)), newValue = Number((currentValue + amount).toFixed(3));
     const results = await env.DB.batch([
-      env.DB.prepare("UPDATE market_positions SET amount = ?, last_value = ?, entry_quotes_json = ?, basis_updated_at = ?, auto_add_anchor_value = ?, status = 'active', closed_at = NULL WHERE id = ? AND user_id = ? AND status IN ('active','paused') AND amount = ? AND basis_updated_at = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + source + " >= ?)")
+      env.DB.prepare("UPDATE market_positions SET amount = ?, last_value = ?, entry_quotes_json = ?, basis_updated_at = ?, auto_add_anchor_value = ?, status = 'active', closed_at = NULL WHERE id = ? AND user_id = ? AND status IN ('active','paused') AND amount = ? AND COALESCE(basis_updated_at, 0) = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + source + " >= ?)")
         .bind(newAmount, newValue, JSON.stringify(updatedBasis), now, newValue, id, user.id, Number(position.amount), Number(position.basis_updated_at || 0), user.id, amount),
       env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND amount = ? AND last_value = ? AND basis_updated_at = ?)")
         .bind(amount, user.id, amount, id, user.id, newAmount, newValue, now),
