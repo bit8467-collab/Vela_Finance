@@ -2121,8 +2121,10 @@ async function addMarketFunds(request, env) {
   }
   const now=Date.now(),currentValue=marketPositionValue(position,quotes),newAmount=Number((Number(position.amount)+amount).toFixed(3)),newValue=Number((currentValue+amount).toFixed(3));if(!Number.isFinite(currentValue)||currentValue<=0)return bad("Valore di mercato non disponibile.");
   const results = await env.DB.batch([
-    env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?").bind(amount, user.id, amount),
-    env.DB.prepare("UPDATE market_positions SET amount = ?, last_value = ?, entry_quotes_json = ?, basis_updated_at = ?, auto_add_anchor_value = ?, status = 'active', closed_at = NULL WHERE id = ? AND user_id = ? AND status IN ('active','paused') AND amount = ? AND last_value = ?").bind(newAmount, newValue, JSON.stringify(updatedBasis), now, newValue, id, user.id, Number(position.amount), Number(position.last_value)),
+    env.DB.prepare("UPDATE market_positions SET amount = ?, last_value = ?, entry_quotes_json = ?, basis_updated_at = ?, auto_add_anchor_value = ?, status = 'active', closed_at = NULL WHERE id = ? AND user_id = ? AND status IN ('active','paused') AND amount = ? AND COALESCE(entry_quotes_json, '{}') = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + source + " >= ?)")
+      .bind(newAmount, newValue, JSON.stringify(updatedBasis), now, newValue, id, user.id, Number(position.amount), position.entry_quotes_json || '{}', user.id, amount),
+    env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND amount = ? AND last_value = ? AND basis_updated_at = ?)")
+      .bind(amount, user.id, amount, id, user.id, newAmount, newValue, now),
     env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND amount = ? AND last_value = ? AND basis_updated_at = ?)")
       .bind(user.id, 'Additional funds added', amount.toFixed(3) + ' USDT added manually to market portfolio #' + id + '.', now, id, user.id, newAmount, newValue, now),
   ]);
