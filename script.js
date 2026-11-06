@@ -1269,7 +1269,12 @@ Object.assign(rows, {
   "Deposita almeno 200 USDT. Il tasso giornaliero dipende dall’importo: 0,19% da 200 a 500 USDT; 0,24% da 501 a 1.000 USDT; 0,29% da 1.001 a 2.500 USDT; 0,36% da 2.501 USDT in su. Puoi riscattare in qualsiasi momento il capitale insieme agli interessi maturati.": ["Deposit at least 200 USDT. The daily rate depends on the amount: 0.19% for 200–500 USDT; 0.24% for 501–1,000 USDT; 0.29% for 1,001–2,500 USDT; 0.36% from 2,501 USDT. You can redeem the principal and accrued interest at any time.", "Déposez au moins 200 USDT. Le taux journalier dépend du montant : 0,19 % de 200 à 500 USDT ; 0,24 % de 501 à 1 000 USDT ; 0,29 % de 1 001 à 2 500 USDT ; 0,36 % dès 2 501 USDT. Vous pouvez récupérer le capital et les intérêts accumulés à tout moment.", "Deposita al menos 200 USDT. La tasa diaria depende del importe: 0,19 % de 200 a 500 USDT; 0,24 % de 501 a 1.000 USDT; 0,29 % de 1.001 a 2.500 USDT; 0,36 % desde 2.501 USDT. Puedes retirar el capital y los intereses acumulados en cualquier momento.", "Zahle mindestens 200 USDT ein. Der tägliche Zinssatz hängt vom Betrag ab: 0,19 % für 200–500 USDT; 0,24 % für 501–1.000 USDT; 0,29 % für 1.001–2.500 USDT; 0,36 % ab 2.501 USDT. Kapital und aufgelaufene Zinsen können jederzeit eingelöst werden.", "Deposite pelo menos 200 USDT. A taxa diária depende do montante: 0,19% de 200 a 500 USDT; 0,24% de 501 a 1.000 USDT; 0,29% de 1.001 a 2.500 USDT; 0,36% a partir de 2.501 USDT. Pode resgatar o capital e os juros acumulados a qualquer momento.", "कम से कम 200 USDT जमा करें। दैनिक दर राशि पर निर्भर है: 200–500 USDT पर 0.19%; 501–1,000 USDT पर 0.24%; 1,001–2,500 USDT पर 0.29%; 2,501 USDT से 0.36%। मूलधन और अर्जित ब्याज किसी भी समय भुनाए जा सकते हैं।", "至少存入 200 USDT。每日利率取决于金额：200–500 USDT 为 0.19%；501–1,000 USDT 为 0.24%；1,001–2,500 USDT 为 0.29%；2,501 USDT 起为 0.36%。您可随时赎回本金和累计利息。", "Deposita almeno 200 USDT. Il tasso giornaliero dipende dall’importo: 0,19% da 200 a 500 USDT; 0,24% da 501 a 1.000 USDT; 0,29% da 1.001 a 2.500 USDT; 0,36% da 2.501 USDT in su. Puoi riscattare in qualsiasi momento il capitale insieme agli interessi maturati."],
   "Minimo": ["Minimum", "Minimum", "Mínimo", "Mindestens", "Mínimo", "न्यूनतम", "最低金额", "Minimo"],
   "Flessibile": ["Flexible", "Flexible", "Flexible", "Flexibel", "Flexível", "लचीला", "灵活", "Flessibile"],
+  "Riscatto flessibile": ["Flexible redemption", "Rachat flexible", "Retiro flexible", "Flexible Rückzahlung", "Resgate flexível", "लचीला रिडेम्प्शन", "灵活赎回", "Riscatto flessibile"],
+  "in qualsiasi momento": ["at any time", "à tout moment", "en cualquier momento", "jederzeit", "a qualquer momento", "किसी भी समय", "随时", "in qualsiasi momento"],
   "riscatto in ogni momento": ["redeem at any time", "récupérable à tout moment", "retiro en cualquier momento", "jederzeit abrufbar", "resgate a qualquer momento", "कभी भी भुनाएँ", "随时赎回", "riscatto in ogni momento"],
+  "Amount (USDT)": ["Amount (USDT)", "Montant (USDT)", "Importe (USDT)", "Betrag (USDT)", "Valor (USDT)", "राशि (USDT)", "金额（USDT）", "Importo (USDT)"],
+  "Flexible redeem at any time": ["Flexible redemption at any time", "Rachat flexible à tout moment", "Retiro flexible en cualquier momento", "Flexible Rückzahlung jederzeit", "Resgate flexível a qualquer momento", "किसी भी समय लचीला रिडेम्प्शन", "随时灵活赎回", "Riscatto flessibile in qualsiasi momento"],
+  "Riscatto flessibile in qualsiasi momento": ["Flexible redemption at any time", "Rachat flexible à tout moment", "Retiro flexible en cualquier momento", "Flexible Rückzahlung jederzeit", "Resgate flexível a qualquer momento", "किसी भी समय लचीला रिडेम्प्शन", "随时灵活赎回", "Riscatto flessibile in qualsiasi momento"],
   "Importo (USDT)": ["Amount (USDT)", "Montant (USDT)", "Importe (USDT)", "Betrag (USDT)", "Montante (USDT)", "राशि (USDT)", "金额（USDT）", "Importo (USDT)"],
   "Investi da": ["Invest from", "Investir depuis", "Invertir desde", "Anlegen aus", "Investir a partir de", "यहाँ से निवेश करें", "投资来源", "Investi da"],
   "Saldo disponibile": ["Available balance", "Solde disponible", "Saldo disponible", "Verfügbares Guthaben", "Saldo disponível", "उपलब्ध बैलेंस", "可用余额", "Saldo disponibile"],
@@ -1295,6 +1300,20 @@ Object.assign(rows, {
 });
 
 const dictionary = new Map();
+// Accurate translations for the Simple Earn tier facts and labels.
+Object.assign(rows, {
+  '0,19% / giorno': ['0.19% / day', '0,19 % / jour', '0,19 % / día', '0,19 % / Tag', '0,19% / dia', '0.19% / दिन', '0.19% / 天', '0,19% / giorno'],
+  '/giorno': ['/day', '/jour', '/día', '/Tag', '/dia', '/दिन', '/天', '/giorno'],
+  'Da 2.501 USDT': ['From 2,501 USDT', 'À partir de 2 501 USDT', 'Desde 2.501 USDT', 'Ab 2.501 USDT', 'A partir de 2.501 USDT', '2,501 USDT से', '2,501 USDT 起', 'Da 2.501 USDT'],
+  '0,24% / giorno': ['0.24% / day', '0,24 % / jour', '0,24 % / día', '0,24 % / Tag', '0,24% / dia', '0.24% / दिन', '0.24% / 天', '0,24% / giorno'],
+  '0,29% / giorno': ['0.29% / day', '0,29 % / jour', '0,29 % / día', '0,29 % / Tag', '0,29% / dia', '0.29% / दिन', '0.29% / 天', '0,29% / giorno'],
+  '0,36% / giorno': ['0.36% / day', '0,36 % / jour', '0,36 % / día', '0,36 % / Tag', '0,36% / dia', '0.36% / दिन', '0.36% / 天', '0,36% / giorno'],
+  'A partire da 2.501 USDT': ['From 2,501 USDT', 'À partir de 2 501 USDT', 'Desde 2.501 USDT', 'Ab 2.501 USDT', 'A partir de 2.501 USDT', '2,501 USDT से', '2,501 USDT 起', 'A partire da 2.501 USDT'],
+  'Flexible redeem at any time': ['Flexible redemption at any time', 'Rachat flexible à tout moment', 'Retiro flexible en cualquier momento', 'Flexible Rücknahme jederzeit', 'Resgate flexível a qualquer momento', 'किसी भी समय लचीली निकासी', '随时灵活赎回', 'Riscatto flessibile in qualsiasi momento'],
+  'Amount (USDT)': ['Amount (USDT)', 'Montant (USDT)', 'Importe (USDT)', 'Betrag (USDT)', 'Montante (USDT)', 'राशि (USDT)', '金额（USDT）', 'Importo (USDT)'],
+  'Importo (USDT)': ['Amount (USDT)', 'Montant (USDT)', 'Importe (USDT)', 'Betrag (USDT)', 'Montante (USDT)', 'राशि (USDT)', '金额（USDT）', 'Importo (USDT)']
+});
+
 const phraseRows = new Map();
 const normalizedPhraseRows = new Map();
 const normalizePhrase = value => String(value ?? "").normalize("NFKC").toLocaleLowerCase().replace(/[’‘]/g, "").replace(/[^\p{L}\p{N}%]+/gu, " ").trim();
