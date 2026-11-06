@@ -108,7 +108,7 @@
 
       <details class="company-info" id="market-infrastructure">
         <summary class="company-info-summary"><span class="company-info-icon" aria-hidden="true">02</span><span class="company-info-copy"><span class="company-info-kicker">INFRASTRUTTURA</span><strong>Terminale e dati di mercato</strong><small>Come funziona la piattaforma attuale</small></span><span class="company-info-toggle" aria-hidden="true"></span></summary>
-        <div class="company-info-content"><section class="company-section compliance-section"><div class="section-label"><span>02</span> DATI E OPERATIVITÀ</div><div class="about-copy"><p class="about-lead">La piattaforma visualizza quotazioni pubbliche e calcola indici di riferimento ponderati per monitorare i piani.</p><p><b>Richieste e saldi.</b> I depositi e i prelievi sono registrati come richieste e sottoposti a revisione manuale. L’invio non trasferisce fondi. Gli eventuali accrediti interni seguono l’esito della revisione.</p><p><b>Aggiornamento.</b> La schermata usa le quotazioni pubbliche disponibili, che possono essere ritardate o mancanti. Le soglie sono controllate all’aggiornamento dei dati e non sono ordini continui su un exchange.</p></div></section></div>
+        <div class="company-info-content"><section class="company-section compliance-section"><div class="section-label"><span>02</span> DATI E OPERATIVITÀ</div><div class="about-copy"><p class="about-lead">La piattaforma visualizza quotazioni pubbliche e calcola indici di riferimento ponderati per monitorare i piani.</p><p><b>Richieste e saldi.</b> I trasferimenti sono reali e vengono gestiti manualmente dopo la verifica e l’approvazione. L’invio del modulo avvia la richiesta, non un trasferimento automatico.</p><p><b>Aggiornamento.</b> La schermata usa le quotazioni pubbliche disponibili, che possono essere ritardate o mancanti. Le soglie sono controllate all’aggiornamento dei dati e non sono ordini continui su un exchange.</p></div></section></div>
       </details>
 
       <details class="company-info" id="user-autonomy">
@@ -259,7 +259,7 @@
 
       <section class="view" id="view-catalog" aria-labelledby="catalog-title">
         <div class="page-heading"><div><p class="eyebrow">PLATFORM PLANS</p><h1 id="catalog-title">Plans</h1></div></div>
-        <p class="page-intro">Reference portfolio values follow public market quotes during fixed 6-month, 1-, 2-, 3- or 5-year periods. These are not purchased or custodied assets. A stop threshold is checked when the platform refreshes; it is not an exchange order.</p>
+        <p class="page-intro">Reference portfolio values follow public market quotes during fixed 6-month, 1-, 2-, 3- or 5-year periods. These are not purchased or custodied assets. Displayed returns are variable and not guaranteed. Plans track reference prices and do not execute market orders. A stop threshold is checked when the platform refreshes; it is not an exchange order.</p>
         <section class="market-history-card" aria-labelledby="plan-history-title">
           <div class="market-history-heading"><div><p class="eyebrow">HISTORICAL PERFORMANCE</p><h2 id="plan-history-title">Plan performance</h2></div><span>Weighted index · base 100</span></div>
           <div class="chart-selectors" id="plan-chart-selectors"></div>
@@ -285,7 +285,7 @@
             <p class="simple-earn-copy">Deposita almeno 200 USDT. Il tasso giornaliero dipende dall’importo: 0,19% da 200 a 500 USDT; 0,24% da 501 a 1.000 USDT; 0,29% da 1.001 a 2.500 USDT; 0,36% da 2.501 USDT in su. Puoi riscattare in qualsiasi momento il capitale insieme agli interessi maturati.</p>
           </summary>
           <div class="simple-earn-details">
-            <div class="simple-earn-facts"><span>200–500 USDT <b>0,19% / giorno</b></span><span>501–1.000 USDT <b>0,24% / giorno</b></span><span>1.001–2.500 USDT <b>0,29% / giorno</b></span><span>Da 2.501 USDT <b>0,36% / giorno</b></span><span>Flessibile <b>riscatto in ogni momento</b></span></div>
+            <div class="simple-earn-facts"><span>200–500 USDT <b>0,19% / giorno</b></span><span>501–1.000 USDT <b>0,24% / giorno</b></span><span>1.001–2.500 USDT <b>0,29% / giorno</b></span><span>A partire da 2.501 USDT <b>0,36% / giorno</b></span><span>Riscatto flessibile <b>in qualsiasi momento</b></span></div>
             <form id="simple-earn-form" class="simple-earn-form"><label>Importo (USDT)<input id="simple-earn-amount" type="number" min="200" step="0.001" value="200" required></label><label>Investi da<select id="simple-earn-source"><option value="deposit">Saldo disponibile</option><option value="earnings">Saldo riscattabile</option></select></label><button class="primary-button" type="submit">Attiva Simple Earn</button></form>
             <p class="simple-earn-disclaimer">Interessi calcolati in modo semplice al tasso indicato. Il saldo è interno alla piattaforma: Simple Earn qui non è un prodotto Binance o di un exchange esterno e il rendimento non è garantito.</p>
             <p class="form-error" id="simple-earn-error" role="alert"></p>
