@@ -1842,15 +1842,14 @@ async function syncMarketPositions(env, userId) {
   const now = Date.now();
   for (const row of rows) {
     if (!['active', 'paused'].includes(row.status)) continue;
-    const value = marketPositionValue(row, quotes);
+    const marketValue = marketPositionValue(row, quotes);
     const amount = Number(row.amount);
     const stop = amount * (1 - Number(row.stop_loss_pct) / 100);
+    const value = Math.max(marketValue, stop);
     const maturity = calendarMaturity(Number(row.created_at), Number(row.months));
-    const riskLevel = row.risk_level || 'legacy';
     let status;
     if (now >= maturity) status = 'matured';
-    else if (riskLevel === 'aggressive') status = value <= stop ? 'stop_loss' : 'active';
-    else status = value <= stop ? 'paused' : 'active';
+    else status = marketValue <= stop ? 'paused' : 'active';
     const previousStatus = row.status;
     const isClosed = status === 'matured' || status === 'stop_loss';
     const updated = await env.DB.prepare("UPDATE market_positions SET last_value = ?, status = ?, closed_at = ? WHERE id = ? AND user_id = ? AND status = ?")
