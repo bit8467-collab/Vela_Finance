@@ -24,7 +24,7 @@ function publishNotification(userId, notificationId) {
 }
 
 const db = createClient({
-  url: process.env.TURSO_DATABASE_URL,
+  url: process.env.TURSO_DATABASE_URL || "libsql://velafin-velazzo.aws-us-east-1.turso.io",
   authToken: process.env.TURSO_AUTH_TOKEN,
 });
 
@@ -3023,6 +3023,11 @@ app.all('/api/*', async (req, res) => {
     response.headers.forEach((val, key) => res.setHeader(key, val));
     res.send(bodyText);
   } catch (err) {
+    const databaseCode = err?.code || err?.cause?.code || err?.cause?.proto?.code;
+    if (databaseCode === 'BLOCKED') {
+      console.error('Turso database reads are blocked by the current database plan:', err);
+      return res.status(503).json({ error: "Il database Turso sta bloccando le letture SQL. Riattiva le letture o aggiorna il piano Turso; il login resterà indisponibile finché il database non le consente." });
+    }
     console.error('API Error:', err);
     res.status(500).json({ error: 'Errore interno del server.' });
   }
