@@ -649,18 +649,26 @@ body {
   margin: 0 auto;
   padding: 0 clamp(22px, 6vw, 88px);
 }
-.landing::before {
+.landing::before,
+.landing::after {
   content: "";
   position: fixed;
-  inset: 0;
+  left: 0;
+  right: 0;
+  height: 50vh;
   z-index: -1;
   pointer-events: none;
-  background-image: linear-gradient(rgba(16,22,20,.18), rgba(16,22,20,.28)), var(--landing-art-one, none), var(--landing-art-two, none);
-  background-size: 100% 100%, cover, cover;
-  background-position: center, 43% center, 57% center;
   background-repeat: no-repeat;
-  background-blend-mode: normal, screen, soft-light;
-  opacity: .88;
+  background-size: cover;
+  background-position: center;
+}
+.landing::before {
+  top: 0;
+  background-image: linear-gradient(rgba(16,22,20,.48), rgba(16,22,20,.58)), var(--landing-art-one, none);
+}
+.landing::after {
+  bottom: 0;
+  background-image: linear-gradient(rgba(16,22,20,.48), rgba(16,22,20,.58)), var(--landing-art-two, none);
 }
 .landing-header {
   height: 82px;
@@ -694,7 +702,7 @@ body {
 .orbit { position: absolute; width: 84%; aspect-ratio: 1; border: 1px solid #79e2d530; border-radius: 50%; transform: rotate(-28deg) scaleY(.7); }
 .orbit-one { box-shadow: 0 0 75px #79e2d50b, inset 0 0 48px #79e2d509; }
 .orbit-two { width: 62%; border-color: #d7efb52a; transform: rotate(48deg) scaleY(.75); }
-.orbit-core { position: relative; width: 38%; aspect-ratio: 1; display: grid; place-items: center; border: 1px solid #d8f0b080; border-radius: 50%; background: radial-gradient(circle at 35% 25%, #486337, #1a271d 72%); background-image: linear-gradient(rgba(26,39,29,.24), rgba(26,39,29,.34)), var(--landing-art-one, none), var(--landing-art-two, none), radial-gradient(circle at 35% 25%, #486337, #1a271d 72%); background-size: 100% 100%, cover, cover, cover; background-position: center, 42% center, 58% center, center; background-repeat: no-repeat; background-blend-mode: normal, screen, soft-light, normal; box-shadow: 0 0 70px #79e2d520, inset 0 0 40px #79e2d519; color: var(--accent); font: 800 45px Manrope, sans-serif; letter-spacing: -4px; }
+.orbit-core { position: relative; width: 38%; aspect-ratio: 1; display: grid; place-items: center; border: 1px solid #d8f0b080; border-radius: 50%; background: radial-gradient(circle at 35% 25%, #486337, #1a271d 72%); box-shadow: 0 0 70px #79e2d520, inset 0 0 40px #79e2d519; color: var(--accent); font: 800 45px Manrope, sans-serif; letter-spacing: -4px; }
 .orbit-core::before, .orbit-core::after { position: absolute; inset: -17px; border: 1px solid #79e2d538; border-radius: 50%; content: ""; }
 .orbit-core::after { inset: 13px; border-color: #ffffff1b; }
 .orbit-core i { position: absolute; top: 11%; right: 7%; width: 9px; height: 9px; border: 2px solid #15200e; border-radius: 50%; background: var(--accent); box-shadow: 0 0 18px var(--accent); }
@@ -2057,6 +2065,13 @@ button[data-redeem-earnings]:disabled { opacity:.55; cursor:not-allowed; }
 .market-trend.flat .market-trend-gauge, .market-trend.neutral .market-trend-gauge { color: #d6b35d; stroke: #d6b35d; filter: drop-shadow(0 0 3px #d6b35d88); }
 
 /* VELA_FINANCE visual guide dialog */
+.brand-story-card {
+  background-color: var(--bg) !important;
+  background-image: linear-gradient(rgba(8,18,27,.70), rgba(8,18,27,.76)), var(--landing-art-one, none), var(--landing-art-two, none) !important;
+  background-size: 100% 100%, 100% 50%, 100% 50% !important;
+  background-position: center, top center, bottom center !important;
+  background-repeat: no-repeat !important;
+}
 .brand-story-card { width: min(920px, calc(100vw - 28px)); max-height: min(90vh, 920px); overflow: auto; }
 .brand-story-card > h2 { margin: 0 0 8px; }
 .brand-story-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin: 16px 0; }
