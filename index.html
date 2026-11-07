@@ -275,7 +275,7 @@
           <section class="custom-plan-card" id="custom-plan-section" aria-labelledby="custom-plan-title"></section>
         </details>
         <details class="catalog-disclosure custom-portfolio-disclosure">
-          <summary><span>Build a custom portfolio</span><small>200–600 USDT fee · 1,000 USDT minimum</small><i aria-hidden="true">⌄</i></summary>
+          <summary><span>Build a custom portfolio</span><small>Custom portfolio · additional fee: 200–600 USDT · 1,000 USDT minimum investment</small><i aria-hidden="true">⌄</i></summary>
           <div class="custom-portfolio-card" id="custom-portfolio-section"></div>
         </details>
         <div class="plan-list" id="catalog-plans"></div>
@@ -765,7 +765,7 @@
       <h1>Ogni passaggio,<br><em>senza sorprese.</em></h1>
       <p>Una guida pratica alle schermate di conto, depositi, piani, investimenti e prelievi. Le anteprime qui sotto sono schemi illustrativi basati sui controlli della piattaforma.</p>
       <nav class="contents" aria-label="Salta alla sezione">
-        <a href="#conto">Conto</a><a href="#deposito">Deposito</a><a href="#piani">Piani</a><a href="#simple-earn-guide">Simple Earn</a><a href="#investimenti">Investimenti</a><a href="#auto-redeem-guide">Riscatto automatico</a><a href="#auto-add-guide">Aggiunta automatica</a><a href="#prelievo">Prelievo</a><a href="#movimenti">Movimenti</a><a href="#verifica-email">Email verification</a><a href="#cambia-password">Change password</a><a href="#password-dimenticata">Forgot password?</a><a href="#wallet-prelievo">Withdrawal wallet</a>
+        <a href="#conto">Conto</a><a href="#deposito">Deposito</a><a href="#piani">Piani</a><a href="#rendimenti">Piani e rendimenti</a><a href="#simple-earn-guide">Simple Earn</a><a href="#investimenti">Investimenti</a><a href="#auto-redeem-guide">Riscatto automatico</a><a href="#auto-add-guide">Aggiunta automatica</a><a href="#prelievo">Prelievo</a><a href="#movimenti">Movimenti</a><a href="#verifica-email">Email verification</a><a href="#cambia-password">Change password</a><a href="#password-dimenticata">Forgot password?</a><a href="#wallet-prelievo">Withdrawal wallet</a>
       </nav>
     </section>
 
@@ -863,6 +863,18 @@
       </div>
       <div class="warning"><span aria-hidden="true">!</span><p><b>Verifica rete e indirizzo prima di salvare.</b> Il salvataggio non invia fondi e non dimostra la proprietà del wallet. Una modifica può restare in attesa di approvazione; controlla lo stato prima di richiedere un prelievo.</p></div>
     </section>
+    
+    <section class="guide-section" id="rendimenti">
+      <div class="section-title"><span class="step-label">14 — PIANI, RENDIMENTI E COSTI</span><h2>Piani, stop-loss e rendimenti</h2><p>Panoramica di piani, stop-loss, Simple Earn e referral. Verifica le condizioni mostrate prima di confermare.</p></div>
+      <div class="steps-copy" style="max-width:820px">
+        <article><b class="step-num">1</b><div><h3>Durata e valori di riferimento</h3><p>I piani durano 6 mesi, 1, 2, 3 o 5 anni e seguono quotazioni pubbliche: non eseguono acquisti né custodia effettiva degli asset. I rendimenti possono variare e non sono garantiti.</p></div></article>
+        <article><b class="step-num">2</b><div><h3>Soglia stop</h3><p>Nel piano semestrale con stop all’8%, un valore iniziale di 100 USDT ha una soglia di 92 USDT. Secondo la logica attuale, al raggiungimento il piano va in pausa e il valore di riferimento registrato non scende sotto 92; alla scadenza il valore calcolato passa al saldo riscattabile interno. Se le quotazioni recuperano, il piano può riprendere. È un limite del calcolo interno, non un ordine di exchange.</p></div></article>
+        <article><b class="step-num">3</b><div><h3>Simple Earn e referral</h3><p>Simple Earn applica un tasso giornaliero in base all’importo, mostrato prima dell’adesione; il saldo è interno e il rendimento non è garantito. Il programma referral prevede commissioni del 10%, 5% e 3% sui depositi iniziali approvati degli utenti invitati, secondo livello e condizioni vigenti.</p></div></article>
+        <article><b class="step-num">4</b><div><h3>Portafoglio personalizzato</h3><p>Prevede una commissione di servizio da 200 a 600 USDT secondo la durata, oltre a un investimento minimo di 1.000 USDT. Il costo è incluso nel totale mostrato prima della conferma. Solo questo portafoglio consente di scegliere un singolo asset e assegnargli il 100%.</p></div></article>
+        <div class="note"><b>Nota</b><span>I valori e i saldi descritti sono interni all’interfaccia: non costituiscono una promessa di rendimento o una garanzia sui risultati di mercato. Leggi termini, costi e rischi prima di aderire.</span></div>
+      </div>
+    </section>
+
     <section class="closing"><p class="eyebrow">PROMEMORIA</p><h2>Prima di confermare</h2><div class="checklist"><p><span>✓</span> Hai verificato rete, asset e indirizzo.</p><p><span>✓</span> Hai letto importi, commissioni, durata e regole del piano.</p><p><span>✓</span> Sai distinguere saldo riscattabile, capitale rilasciato e fondi esterni.</p><p><span>✓</span> Hai compreso che inviare una richiesta non trasferisce fondi. Dopo la verifica e l’approvazione di admin o operatori, i trasferimenti completati sono verificabili da chiunque sulla blockchain della rete tramite TX hash.</p></div><p class="disclaimer-final">Contenuto informativo sull’uso dell’interfaccia, non consulenza finanziaria e non promessa di rendimento. Le condizioni mostrate nella piattaforma al momento dell’operazione fanno fede.</p><a class="return-button" href="#top" data-guide-exit>Torna alla piattaforma <span>↗</span></a></section>
   </main><script>document.addEventListener("click",e=>{const exit=e.target.closest("[data-guide-exit]");if(exit){e.preventDefault();parent.location.hash="top";return}const link=e.target.closest(".contents a");if(!link)return;const href=link.getAttribute("href"),target=href&&href.startsWith("#")?document.getElementById(href.slice(1)):null;if(!target)return;e.preventDefault();document.querySelectorAll(".contents a").forEach(item=>item.removeAttribute("aria-current"));link.setAttribute("aria-current","location");const top=target.getBoundingClientRect().top+window.scrollY-76;window.scrollTo({top:Math.max(0,top),behavior:"smooth"})},true);</script></template>
     <iframe id="guide-frame" title="Guida You Invest" aria-hidden="true"></iframe>

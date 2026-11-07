@@ -2073,7 +2073,7 @@ async function customMarketInvest(request, env) {
   if (!Number.isFinite(stopLossPct) || stopLossPct < 1 || stopLossPct > 90) return bad('Lo stop loss deve essere tra 1% e 90%.');
   const source = body.source === 'earnings' ? 'earnings' : 'deposit';
   const rawAllocations = Array.isArray(body.allocations) ? body.allocations : [];
-  if (rawAllocations.length < 3 || rawAllocations.length > MARKET_CUSTOM_ASSETS.size) return bad('Seleziona almeno 3 asset.');
+  if (rawAllocations.length < 1 || rawAllocations.length > MARKET_CUSTOM_ASSETS.size) return bad('Seleziona almeno 1 asset.');
   const seen = new Set(), allocations = [];
   for (const item of rawAllocations) {
     const key = Array.isArray(item) ? String(item[0] || '') : String(item?.asset || '');
