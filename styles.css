@@ -3014,3 +3014,50 @@ body:has(#view-admin.active) .admin-brand-tag { display:inline-flex; align-items
 #simple-earn-dialog .modal-close{position:fixed;top:max(18px,env(safe-area-inset-top));right:clamp(16px,4vw,42px);z-index:3}
 #simple-earn-dialog .eyebrow,#simple-earn-dialog h2,#simple-earn-dialog>.modal-card>p:not(.eyebrow),#simple-earn-dialog .simple-earn-details{max-width:1000px;margin-left:auto;margin-right:auto}
 #simple-earn-dialog .simple-earn-details{padding:10px 0 28px}
+
+
+/* Focused admin workspace: clearer navigation and readable right-hand panels. */
+#view-admin .admin-workspace-shell{grid-template-columns:minmax(220px,270px) minmax(0,1fr);gap:16px;align-items:start}
+#view-admin .admin-workspace-nav{top:16px;max-height:calc(100dvh - 150px);padding:12px;border-radius:16px;background:var(--surface);box-shadow:0 8px 24px #00000010}
+#view-admin .admin-workspace-nav-heading{padding:8px 9px 12px;font-size:10px;letter-spacing:.14em}
+#view-admin .admin-workspace-nav-list{gap:5px;padding-top:4px}
+#view-admin .admin-workspace-link{min-height:52px;grid-template-columns:28px minmax(0,1fr) auto;gap:10px;padding:8px 10px;border-radius:11px}
+#view-admin .admin-workspace-link-copy small{font-size:8px;letter-spacing:.09em}
+#view-admin .admin-workspace-link-copy b{font-size:12px;line-height:1.3}
+#view-admin .admin-workspace-stage{min-height:460px;max-height:none;overflow:visible;border-radius:16px;background:var(--surface);box-shadow:0 10px 28px #00000012}
+#view-admin .admin-workspace-stage>details.admin-workspace-disclosure>.admin-workspace-summary{position:relative;min-height:76px;padding:16px 20px;border-radius:16px 16px 0 0;background:linear-gradient(100deg,color-mix(in srgb,var(--accent) 8%,var(--surface)),var(--surface))}
+#view-admin .admin-workspace-stage>details.admin-workspace-disclosure>.admin-workspace-summary::after{content:'⌄';font-size:20px;transition:transform .18s ease}
+#view-admin .admin-workspace-stage>details.admin-workspace-disclosure:not([open])>.admin-workspace-summary::after{content:'⌄';transform:rotate(-90deg)}
+#view-admin .admin-workspace-stage>details.admin-workspace-disclosure[open]>.admin-workspace-summary{border-bottom:1px solid var(--line)}
+#view-admin .admin-workspace-stage>.admin-section>.admin-workspace-content{gap:15px;padding:18px}
+#view-admin .admin-workspace-stage .admin-request-group,#view-admin .admin-workspace-stage .admin-referral-panel,#view-admin .admin-workspace-stage details:not(.admin-workspace-disclosure){overflow:hidden;border:1px solid var(--line);border-radius:13px;background:color-mix(in srgb,var(--surface-2) 55%,var(--surface))}
+#view-admin .admin-workspace-stage .admin-request-group>summary,#view-admin .admin-workspace-stage .admin-referral-panel>summary,#view-admin .admin-workspace-stage details:not(.admin-workspace-disclosure)>summary{min-height:56px;padding:13px 16px;font-size:13px;line-height:1.45;font-weight:750;cursor:pointer;list-style:none}
+#view-admin .admin-workspace-stage .admin-request-group>summary::-webkit-details-marker,#view-admin .admin-workspace-stage .admin-referral-panel>summary::-webkit-details-marker,#view-admin .admin-workspace-stage details:not(.admin-workspace-disclosure)>summary::-webkit-details-marker{display:none}
+#view-admin .admin-workspace-stage .admin-request-group>summary::after,#view-admin .admin-workspace-stage .admin-referral-panel>summary::after,#view-admin .admin-workspace-stage details:not(.admin-workspace-disclosure)>summary::after{content:'＋';float:right;margin-left:12px;color:var(--accent);font-size:17px;line-height:1}
+#view-admin .admin-workspace-stage .admin-request-group[open]>summary::after,#view-admin .admin-workspace-stage .admin-referral-panel[open]>summary::after,#view-admin .admin-workspace-stage details:not(.admin-workspace-disclosure)[open]>summary::after{content:'−'}
+#view-admin .admin-workspace-stage .admin-request-group>summary:hover,#view-admin .admin-workspace-stage .admin-referral-panel>summary:hover,#view-admin .admin-workspace-stage details:not(.admin-workspace-disclosure)>summary:hover{background:color-mix(in srgb,var(--accent) 7%,var(--surface))}
+#view-admin .admin-workspace-stage .admin-request-group-content,#view-admin .admin-workspace-stage details:not(.admin-workspace-disclosure)[open]>:not(summary){padding:14px 16px 16px}
+#view-admin .admin-workspace-stage .admin-request-subsection{padding-top:14px}
+#view-admin .admin-workspace-stage .admin-table-wrap{margin-top:10px}
+#view-admin .admin-workspace-stage label{line-height:1.45}
+#view-admin .admin-workspace-stage input,#view-admin .admin-workspace-stage select,#view-admin .admin-workspace-stage textarea{min-height:42px}
+#view-admin .admin-workspace-stage :focus-visible,#view-admin .admin-workspace-nav :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media(max-width:760px){#view-admin .admin-workspace-shell{grid-template-columns:minmax(0,1fr);gap:10px}#view-admin .admin-workspace-nav{position:relative;top:auto;max-height:none}#view-admin .admin-workspace-nav-list{grid-template-columns:repeat(2,minmax(0,1fr))}#view-admin .admin-workspace-stage{min-height:300px}#view-admin .admin-workspace-stage>.admin-section>.admin-workspace-content{padding:12px}#view-admin .admin-workspace-stage .admin-request-group-content{padding:10px}}
+@media(max-width:420px){#view-admin .admin-workspace-nav-list{grid-template-columns:1fr}}
+
+/* Asset catalog accordion and compact market cards. */
+.asset-market-list{display:grid;grid-template-columns:1fr;gap:9px;margin-top:12px}
+.asset-market-group{overflow:hidden;border:1px solid var(--line);border-radius:13px;background:color-mix(in srgb,var(--surface-2) 58%,var(--surface))}
+.asset-market-group>summary{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:48px;padding:11px 14px;cursor:pointer;list-style:none;font-size:11px;font-weight:800;letter-spacing:.025em}
+.asset-market-group>summary::-webkit-details-marker{display:none}
+.asset-market-group>summary::after{content:'＋';color:var(--accent);font-size:16px}
+.asset-market-group[open]>summary::after{content:'−'}
+.asset-market-group>summary small{margin-left:auto;color:var(--muted);font-size:10px}
+.asset-market-group-items{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;padding:0 9px 10px}
+.asset-market-row{min-height:56px;border-radius:11px;padding:9px 10px;transition:border-color .16s ease,background .16s ease,transform .16s ease}
+.asset-market-row:hover{border-color:color-mix(in srgb,var(--accent) 52%,var(--line));background:color-mix(in srgb,var(--accent) 7%,var(--surface-2));transform:translateY(-1px)}
+.electricity-market-control{display:grid;gap:7px;margin:12px 0;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--surface-2);font-size:12px;font-weight:700}
+.electricity-market-control[hidden]{display:none}
+.electricity-market-control select{width:100%;min-height:42px;border:1px solid var(--line);border-radius:9px;background:var(--surface);padding:8px 10px;color:var(--text);font:inherit}
+.electricity-market-control small{color:var(--muted);font-size:10px;font-weight:500;line-height:1.5}
+@media(max-width:520px){.asset-market-group-items{grid-template-columns:1fr}}

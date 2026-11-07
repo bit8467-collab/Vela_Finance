@@ -11,6 +11,10 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 const notificationStreams = new Map();
+const assetPriceStreams = new Set();
+let assetPriceStreamTimer = null;
+let assetPriceStreamPublishPromise = null;
+let lastAssetPriceBroadcastSignature = "";
 
 function publishNotification(userId, notificationId) {
   const clients = notificationStreams.get(String(userId));
@@ -21,6 +25,14 @@ function publishNotification(userId, notificationId) {
     else response.write(event);
   }
   if (!clients.size) notificationStreams.delete(String(userId));
+}
+
+function notificationRecipient(sql, params) {
+  if (!/INSERT\s+INTO\s+notifications\b/i.test(sql)) return null;
+  const columns = String(sql).match(/INSERT\s+INTO\s+notifications\s*\(([^)]+)\)/i)?.[1];
+  if (!columns) return null;
+  const index = columns.split(',').findIndex((column) => column.trim().replace(/["']/g, '').toLowerCase() === 'user_id');
+  return index >= 0 ? params[index] ?? null : null;
 }
 
 const db = createClient({
@@ -47,13 +59,8 @@ const env = {
             },
             async run() {
               const rs = await db.execute({ sql, args: params });
-              if (rs.rowsAffected > 0 && /INSERT\s+INTO\s+notifications\b/i.test(sql) && rs.lastInsertRowid != null) {
-                try {
-                  const inserted = await db.execute({ sql: "SELECT user_id FROM notifications WHERE id = ?", args: [Number(rs.lastInsertRowid)] });
-                  const notification = inserted.rows[0];
-                  if (notification) publishNotification(notification.user_id, rs.lastInsertRowid);
-                } catch (error) { console.warn('Realtime notification dispatch failed', error); }
-              }
+              const recipient = notificationRecipient(sql, params);
+              if (rs.rowsAffected > 0 && recipient != null && rs.lastInsertRowid != null) publishNotification(recipient, rs.lastInsertRowid);
               return { meta: { changes: rs.rowsAffected, last_row_id: Number(rs.lastInsertRowid) } };
             }
           };
@@ -78,12 +85,8 @@ const env = {
       const output = [];
       for (let i = 0; i < results.length; i++) {
         const result = results[i], stmt = statements[i];
-        if (result.rowsAffected > 0 && /INSERT\s+INTO\s+notifications\b/i.test(stmt.sql) && result.lastInsertRowid != null) {
-          try {
-            const inserted = await db.execute({ sql: "SELECT user_id FROM notifications WHERE id = ?", args: [Number(result.lastInsertRowid)] });
-            if (inserted.rows[0]) publishNotification(inserted.rows[0].user_id, result.lastInsertRowid);
-          } catch (error) { console.warn('Realtime notification dispatch failed', error); }
-        }
+        const recipient = notificationRecipient(stmt.sql, stmt.params);
+        if (result.rowsAffected > 0 && recipient != null && result.lastInsertRowid != null) publishNotification(recipient, result.lastInsertRowid);
         output.push({ meta: { changes: result.rowsAffected, last_row_id: Number(result.lastInsertRowid) } });
       }
       return output;
@@ -135,14 +138,25 @@ const yahooInstruments = {
   nasdaq: { symbol: "^IXIC", instrument: "NASDAQ Composite · index points" },
   tesla: { symbol: "TSLA", instrument: "Tesla common stock · USD per share" },
   artificialIntelligence: { symbol: "AIQ", instrument: "Global X AI & Technology ETF · USD per share" },
+  dowJones: { symbol: "^DJI", instrument: "Dow Jones Industrial Average · index points" },
+  russell2000: { symbol: "^RUT", instrument: "Russell 2000 · index points" },
+  silver: { symbol: "SI=F", instrument: "Silver futures · USD per troy ounce" },
+  naturalGas: { symbol: "NG=F", instrument: "Henry Hub natural gas futures · USD per MMBtu" },
+  copper: { symbol: "HG=F", instrument: "Copper futures · USD per pound" },
+  euroUsd: { symbol: "EURUSD=X", instrument: "EUR/USD spot exchange rate" },
 };
+const ELECTRICITY_MARKETS = Object.freeze({ "DE-LU": "Germany–Luxembourg", FR: "France", NL: "Netherlands", BE: "Belgium", AT: "Austria", CH: "Switzerland", DK1: "Denmark West", DK2: "Denmark East" });
+function normalizeElectricityMarket(value) { return Object.prototype.hasOwnProperty.call(ELECTRICITY_MARKETS, value) ? value : "DE-LU"; }
 
 let cachedQuotes = null;
 let cachedAt = 0;
-let refreshInFlight = null;
+let refreshInFlight = new Map();
+let cachedQuotesMarket = "DE-LU";
 let cachedHistory = null;
 let historyAt = 0;
-let historyInFlight = null;
+let historyInFlight = new Map();
+let cachedHistoryMarket = "DE-LU";
+const positionQuoteCache = new Map();
 
 async function fetchJson(url, yahooRequest = false) {
   const controller = new AbortController();
@@ -175,10 +189,10 @@ async function yahooQuote(key, asset) {
   return {
     price,
     currency: "USD",
-    unit: key === "sp500" || key === "nasdaq" ? "index points" : "",
+    unit: ["sp500", "nasdaq", "dowJones", "russell2000"].includes(key) ? "index points" : "",
     instrument: asset.instrument,
     symbol: asset.symbol,
-    provider: "Yahoo Finance",
+    provider: "Yahoo Finance · delay may vary",
     marketAt: Number.isFinite(marketAt) ? marketAt : Date.now(),
   };
 }
@@ -202,10 +216,11 @@ async function cryptoQuotes(now) {
   return quotes;
 }
 
-async function electricityQuote(now) {
+async function electricityQuote(now, selectedMarket = "DE-LU") {
+  const market = normalizeElectricityMarket(selectedMarket);
   const start = new Date(now - 72 * 60 * 60 * 1000).toISOString();
   const end = new Date(now).toISOString();
-  const params = new URLSearchParams({ bzn: "DE-LU", start, end });
+  const params = new URLSearchParams({ bzn: market, start, end });
   const body = await fetchJson("https://api.energy-charts.info/price?" + params);
   if (!Array.isArray(body?.unix_seconds) || !Array.isArray(body?.price)) return null;
   let latest = -1;
@@ -216,15 +231,8 @@ async function electricityQuote(now) {
   }
   if (latest < 0) return null;
   const index = body.unix_seconds.findIndex((timestamp) => Number(timestamp) * 1000 === latest);
-  return {
-    price: Number(body.price[index]),
-    currency: "EUR",
-    unit: "per MWh",
-    instrument: "DE-LU day-ahead electricity · wholesale market",
-    symbol: "DE-LU",
-    provider: "Energy-Charts · Bundesnetzagentur",
-    marketAt: latest,
-  };
+  const marketName = ELECTRICITY_MARKETS[market];
+  return { price: Number(body.price[index]), currency: "EUR", unit: "per MWh", instrument: marketName + " day-ahead electricity · regional wholesale price", symbol: market, marketName, provider: "Energy-Charts · Fraunhofer ISE", marketAt: latest };
 }
 
 function aggregateCandles(points, intervalMs) {
@@ -296,11 +304,12 @@ function electricityUsdHistory(points, fxPoints) {
   });
 }
 
-async function loadAssetHistory() {
+async function loadAssetHistory(selectedMarket = "DE-LU") {
+  const electricityMarket = normalizeElectricityMarket(selectedMarket);
   const now = Date.now();
   const since = Math.floor((now - 365 * 24 * 60 * 60 * 1000) / 1000);
   const electricityParams = new URLSearchParams({
-    bzn: "DE-LU",
+    bzn: electricityMarket,
     start: new Date(now - 365 * 24 * 60 * 60 * 1000).toISOString(),
     end: new Date(now).toISOString(),
   });
@@ -357,71 +366,75 @@ async function loadAssetHistory() {
   return { histories, candles, intraday, fetchedAt: Date.now() };
 }
 
-async function loadQuotes() {
-  const now = Date.now();
-  const [entries, crypto, electricity, eurUsd] = await Promise.all([
+async function loadQuotes(selectedMarket = "DE-LU") {
+  const now = Date.now(), electricityMarket = normalizeElectricityMarket(selectedMarket);
+  const [entries, crypto, electricity] = await Promise.all([
     Promise.all(Object.entries(yahooInstruments).map(async ([key, asset]) => [key, await yahooQuote(key, asset)])),
-    cryptoQuotes(now),
-    electricityQuote(now),
-    yahooQuote('eurusd', { symbol: 'EURUSD=X', instrument: 'EUR/USD exchange rate' }),
+    cryptoQuotes(now), electricityQuote(now, electricityMarket),
   ]);
   const quotes = Object.fromEntries(entries.filter(([, quote]) => quote));
   Object.assign(quotes, crypto);
   if (electricity) {
+    const eurUsd = quotes.euroUsd;
     quotes.electricity = eurUsd
-      ? { ...electricity, price: Number((electricity.price * eurUsd.price).toFixed(6)), currency: 'USD', instrument: 'DE-LU day-ahead electricity · USD per MWh', provider: electricity.provider + ' · converted with Yahoo Finance FX', unit: 'per MWh' }
+      ? { ...electricity, price: Number((electricity.price * eurUsd.price).toFixed(6)), currency: 'USD', instrument: electricity.marketName + ' day-ahead electricity · USD per MWh', provider: electricity.provider + ' · EUR/USD reference conversion', unit: 'per MWh' }
       : electricity;
   }
-  for (const quote of Object.values(quotes)) {
-    const price = Number(quote?.price);
-    if (Number.isFinite(price)) quote.price = Number(price.toFixed(3));
-  }
-  return { quotes, fetchedAt: Date.now() };
+  for (const quote of Object.values(quotes)) { const price = Number(quote?.price); if (Number.isFinite(price)) quote.price = Number(price.toFixed(3)); }
+  return { quotes, electricityMarket, fetchedAt: Date.now() };
 }
 
 const marketApi = {
   async fetch(request) {
     const url = new URL(request.url);
     if (request.method !== "GET") return new Response("Not found", { status: 404 });
+    const selectedMarket = normalizeElectricityMarket(url.searchParams.get("electricity"));
     if (url.pathname === "/api/asset-history") {
-      if (cachedHistory && Date.now() - historyAt < 10_000) {
-        return Response.json(cachedHistory, { headers: { "Cache-Control": "no-store" } });
+      if (cachedHistory && cachedHistoryMarket === selectedMarket && Date.now() - historyAt < 300_000) return Response.json(cachedHistory, { headers: { "Cache-Control": "no-store" } });
+      if (!historyInFlight.has(selectedMarket)) {
+        const task = loadAssetHistory(selectedMarket).then((data) => { cachedHistory = data; cachedHistoryMarket = selectedMarket; historyAt = Date.now(); return data; }).finally(() => historyInFlight.delete(selectedMarket));
+        historyInFlight.set(selectedMarket, task);
       }
-      if (!historyInFlight) {
-        historyInFlight = loadAssetHistory().then((data) => {
-          cachedHistory = data;
-          historyAt = Date.now();
-          return cachedHistory;
-        }).finally(() => { historyInFlight = null; });
-      }
-      return Response.json(await historyInFlight, { headers: { "Cache-Control": "no-store" } });
+      return Response.json(await historyInFlight.get(selectedMarket), { headers: { "Cache-Control": "no-store" } });
     }
     if (url.pathname !== "/api/asset-prices") return new Response("Not found", { status: 404 });
-    if (cachedQuotes && Date.now() - cachedAt < 1_000) {
-      return Response.json(cachedQuotes, { headers: { "Cache-Control": "no-store" } });
+    if (cachedQuotes && cachedQuotesMarket === selectedMarket && Date.now() - cachedAt < 10_000) return Response.json({ ...cachedQuotes, electricityMarket: selectedMarket }, { headers: { "Cache-Control": "no-store" } });
+    if (!refreshInFlight.has(selectedMarket)) {
+      const task = loadQuotes(selectedMarket).then((data) => {
+        if (Object.keys(data.quotes).length) { cachedQuotes = { quotes: { ...(cachedQuotes?.quotes || {}), ...data.quotes }, fetchedAt: data.fetchedAt }; cachedAt = Date.now(); cachedQuotesMarket = selectedMarket; }
+        return { ...(cachedQuotes || data), electricityMarket: selectedMarket };
+      }).finally(() => refreshInFlight.delete(selectedMarket));
+      refreshInFlight.set(selectedMarket, task);
     }
-    if (!refreshInFlight) {
-      refreshInFlight = loadQuotes().then((data) => {
-        if (Object.keys(data.quotes).length) {
-          cachedQuotes = {
-            quotes: { ...(cachedQuotes?.quotes || {}), ...data.quotes },
-            fetchedAt: data.fetchedAt,
-          };
-          cachedAt = Date.now();
-        }
-        return cachedQuotes || data;
-      }).finally(() => { refreshInFlight = null; });
-    }
-    const data = await refreshInFlight;
-    return Response.json(data, { headers: { "Cache-Control": "no-store" } });
+    return Response.json(await refreshInFlight.get(selectedMarket), { headers: { "Cache-Control": "no-store" } });
   },
 };
+
+async function publishAssetPriceUpdate() {
+  if (!assetPriceStreams.size || assetPriceStreamPublishPromise) return assetPriceStreamPublishPromise;
+  assetPriceStreamPublishPromise = (async () => {
+    const response = await marketApi.fetch(new Request('http://localhost/api/asset-prices'));
+    if (!response.ok) return;
+    const data = await response.json();
+    const fetchedAt = Number(data?.fetchedAt) || 0;
+    const signature = JSON.stringify(Object.entries(data?.quotes || {}).map(([key, quote]) => [key, Number(quote?.price)]).sort((a, b) => a[0].localeCompare(b[0])));
+    if (!fetchedAt || !signature || signature === lastAssetPriceBroadcastSignature) return;
+    lastAssetPriceBroadcastSignature = signature;
+    const event = ['event: quotes', 'data: ' + JSON.stringify(data), '', ''].join(String.fromCharCode(10));
+    for (const client of assetPriceStreams) {
+      if (client.writableEnded || client.destroyed) assetPriceStreams.delete(client);
+      else client.write(event);
+    }
+  })().catch((error) => console.warn('Asset price broadcast failed:', error)).finally(() => { assetPriceStreamPublishPromise = null; });
+  return assetPriceStreamPublishPromise;
+}
 
 // Persistent market history survives Render sleep/wake and process restarts.
 // API values are merged by timestamp; new API values replace matching points.
 let marketHistoryTablePromise = null;
 let storedMarketHistory = null;
 let marketHistoryQueue = Promise.resolve();
+let lastMarketHistoryPruneAt = 0;
 
 function emptyStoredMarketHistory() { return { histories: {}, candles: {}, intraday: {} }; }
 function addStoredMarketPoint(target, type, key, row) {
@@ -433,7 +446,9 @@ async function ensureStoredMarketHistory(env) {
   if (!marketHistoryTablePromise) {
     marketHistoryTablePromise = (async () => {
       await env.DB.exec('CREATE TABLE IF NOT EXISTS market_history_points (asset_key TEXT NOT NULL, series_type TEXT NOT NULL, point_time INTEGER NOT NULL, value REAL, open REAL, high REAL, low REAL, close REAL, PRIMARY KEY (asset_key, series_type, point_time))');
-      const result = await env.DB.prepare('SELECT asset_key, series_type, point_time, value, open, high, low, close FROM market_history_points ORDER BY point_time ASC').all();
+      await env.DB.exec(['CREATE INDEX IF NOT EXISTS market_history_point_time ON market_history_points(point_time)', 'CREATE INDEX IF NOT EXISTS market_history_series_time ON market_history_points(series_type, point_time)']);
+      const historyCutoff = Date.now() - 366 * 86400000;
+      const result = await env.DB.prepare('SELECT asset_key, series_type, point_time, value, open, high, low, close FROM market_history_points WHERE point_time >= ? ORDER BY point_time ASC').bind(historyCutoff).all();
       const loaded = emptyStoredMarketHistory();
       const cutoff = Date.now() - 2 * 86400000;
       for (const row of result.results || []) {
@@ -491,7 +506,7 @@ async function mergeAndStoreMarketHistory(env, apiData) {
   for (const type of ['histories', 'candles', 'intraday']) {
     const keys = new Set([...Object.keys(storedMarketHistory[type]), ...Object.keys(incoming[type])]);
     for (const key of keys) {
-      const oldPoints = (storedMarketHistory[type][key] || []).filter((point) => type !== 'intraday' || point.time >= cutoff);
+      const oldPoints = (storedMarketHistory[type][key] || []).filter((point) => point.time >= now - 366 * 86400000 && (type !== 'intraday' || point.time >= cutoff));
       const byTime = new Map(oldPoints.map((point) => [point.time, point]));
       for (const point of incoming[type][key] || []) {
         if (type === 'intraday' && point.time < cutoff) continue;
@@ -503,6 +518,7 @@ async function mergeAndStoreMarketHistory(env, apiData) {
       if (points.length) merged[type][key] = points;
     }
   }
+  const writeStatements = [];
   for (let start = 0; start < changedRows.length; start += 80) {
     const batch = changedRows.slice(start, start + 80);
     const placeholders = batch.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(',');
@@ -513,9 +529,16 @@ async function mergeAndStoreMarketHistory(env, apiData) {
       type === 'candles' ? point.close : null);
     const sql = 'INSERT INTO market_history_points (asset_key, series_type, point_time, value, open, high, low, close) VALUES ' + placeholders +
       ' ON CONFLICT(asset_key, series_type, point_time) DO UPDATE SET value=excluded.value, open=excluded.open, high=excluded.high, low=excluded.low, close=excluded.close';
-    await env.DB.prepare(sql).bind(...args).run();
+    writeStatements.push(env.DB.prepare(sql).bind(...args));
   }
-  await env.DB.prepare("DELETE FROM market_history_points WHERE series_type = 'intraday' AND point_time < ?").bind(cutoff).run();
+  if (writeStatements.length) await env.DB.batch(writeStatements);
+  if (now - lastMarketHistoryPruneAt >= 86400000) {
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM market_history_points WHERE series_type = 'intraday' AND point_time < ?").bind(cutoff),
+      env.DB.prepare('DELETE FROM market_history_points WHERE point_time < ?').bind(now - 366 * 86400000),
+    ]);
+    lastMarketHistoryPruneAt = now;
+  }
   storedMarketHistory = merged;
   return { ...merged, fetchedAt: Number(apiData?.fetchedAt) || now };
 }
@@ -769,6 +792,9 @@ async function fullState(env, user, request) {
   };
 }
 
+let persistedMarketHistoryAt = 0;
+let persistedMarketHistoryData = null;
+let persistedMarketHistoryPromise = null;
 let schemaPromise;
 
 const workerHandler = {
@@ -779,8 +805,17 @@ const workerHandler = {
       if (!response.ok) return response;
       const apiData = await response.json();
       try {
-        const completeHistory = await persistMarketHistory(env, apiData);
-        return Response.json(completeHistory, { headers: { 'Cache-Control': 'no-store' } });
+        if (persistedMarketHistoryData && Number(apiData.fetchedAt) <= persistedMarketHistoryAt) {
+          return Response.json(persistedMarketHistoryData, { headers: { 'Cache-Control': 'no-store' } });
+        }
+        if (!persistedMarketHistoryPromise) {
+          persistedMarketHistoryPromise = persistMarketHistory(env, apiData).then((completeHistory) => {
+            persistedMarketHistoryData = completeHistory;
+            persistedMarketHistoryAt = Number(apiData.fetchedAt) || Date.now();
+            return completeHistory;
+          }).finally(() => { persistedMarketHistoryPromise = null; });
+        }
+        return Response.json(await persistedMarketHistoryPromise, { headers: { 'Cache-Control': 'no-store' } });
       } catch (error) {
         console.error('Market history persistence failed:', error);
         return Response.json(apiData, { headers: { 'Cache-Control': 'no-store' } });
@@ -1078,6 +1113,18 @@ const workerHandler = {
         );`
       ].join("\n"));
     
+    await env.DB.exec([
+      'CREATE INDEX IF NOT EXISTS users_identifier_lower ON users(lower(identifier))',
+      'CREATE INDEX IF NOT EXISTS users_username_lower ON users(lower(username))',
+      'CREATE INDEX IF NOT EXISTS users_invite_code ON users(invite_code)',
+      'CREATE INDEX IF NOT EXISTS sessions_user_id ON sessions(user_id)',
+      'CREATE INDEX IF NOT EXISTS deposits_user_status_id ON deposits(user_id, status, id DESC)',
+      'CREATE INDEX IF NOT EXISTS deposits_status_date ON deposits(status, date)',
+      'CREATE INDEX IF NOT EXISTS deposits_tx_reference_lower ON deposits(lower(tx_reference))',
+      'CREATE INDEX IF NOT EXISTS withdrawals_user_date ON withdrawals(user_id, date DESC)',
+      'CREATE INDEX IF NOT EXISTS withdrawals_status_date ON withdrawals(status, date)',
+      'CREATE INDEX IF NOT EXISTS referral_commissions_user_source ON referral_commissions(user_id, source_user_id)',
+    ]);
     try { await env.DB.prepare("ALTER TABLE admin_roles ADD COLUMN permissions_json TEXT NOT NULL DEFAULT '{}'").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE settings ADD COLUMN auto_redeem_pct REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN fee_amount REAL NOT NULL DEFAULT 0").run(); } catch {}
@@ -1798,23 +1845,21 @@ async function deposit(request, env) {
 
 const MARKET_RISK_STOP_LOSS = Object.freeze({ conservative: 8, balanced: 18, aggressive: 35 });
 const CUSTOM_PLAN_FEES = Object.freeze({ 6: 200, 12: 300, 24: 400, 36: 500, 60: 600 });
-const MARKET_CUSTOM_ASSETS = new Set(['gold','oil','electricity','sp500','nasdaq','tesla','artificialIntelligence','bitcoin','ethereum']);
+const MARKET_CUSTOM_ASSETS = new Set(['gold','oil','electricity','sp500','nasdaq','tesla','artificialIntelligence','bitcoin','ethereum','dowJones','russell2000','silver','naturalGas','copper','euroUsd']);
 const MARKET_PLAN_ALLOCATIONS = {
-  6: [['gold',14],['oil',9],['electricity',12],['sp500',19],['nasdaq',14],['tesla',8],['artificialIntelligence',12],['bitcoin',7],['ethereum',5]],
-  12: [['gold',10],['oil',9],['electricity',10],['sp500',18],['nasdaq',16],['tesla',10],['artificialIntelligence',15],['bitcoin',7],['ethereum',5]],
-  24: [['gold',8],['oil',8],['electricity',8],['sp500',17],['nasdaq',18],['tesla',10],['artificialIntelligence',17],['bitcoin',8],['ethereum',6]],
-  36: [['gold',8],['oil',8],['electricity',8],['sp500',17],['nasdaq',18],['tesla',10],['artificialIntelligence',17],['bitcoin',8],['ethereum',6]],
-  60: [['gold',8],['oil',8],['electricity',8],['sp500',17],['nasdaq',18],['tesla',10],['artificialIntelligence',17],['bitcoin',8],['ethereum',6]],
+  6: [['gold',10],['oil',7],['electricity',8],['sp500',12],['nasdaq',10],['tesla',4],['artificialIntelligence',8],['bitcoin',4],['ethereum',3],['dowJones',8],['russell2000',6],['silver',5],['naturalGas',5],['copper',4],['euroUsd',6]],
+  12: [['gold',8],['oil',7],['electricity',8],['sp500',12],['nasdaq',12],['tesla',6],['artificialIntelligence',10],['bitcoin',5],['ethereum',4],['dowJones',7],['russell2000',6],['silver',4],['naturalGas',4],['copper',3],['euroUsd',4]],
+  24: [['gold',8],['oil',6],['electricity',6],['sp500',14],['nasdaq',14],['tesla',7],['artificialIntelligence',12],['bitcoin',8],['ethereum',7],['dowJones',6],['russell2000',4],['silver',3],['naturalGas',2],['copper',2],['euroUsd',1]],
+  36: [['gold',8],['oil',6],['electricity',6],['sp500',14],['nasdaq',14],['tesla',7],['artificialIntelligence',12],['bitcoin',8],['ethereum',7],['dowJones',6],['russell2000',4],['silver',3],['naturalGas',2],['copper',2],['euroUsd',1]],
+  60: [['gold',8],['oil',6],['electricity',6],['sp500',14],['nasdaq',14],['tesla',7],['artificialIntelligence',12],['bitcoin',8],['ethereum',7],['dowJones',6],['russell2000',4],['silver',3],['naturalGas',2],['copper',2],['euroUsd',1]],
 };
 
-async function currentMarketQuotes() {
-  if (cachedQuotes && Date.now() - cachedAt < 1_000) return cachedQuotes.quotes;
-  const data = await loadQuotes();
-  if (Object.keys(data.quotes || {}).length) {
-    cachedQuotes = { quotes: { ...(cachedQuotes?.quotes || {}), ...data.quotes }, fetchedAt: data.fetchedAt };
-    cachedAt = Date.now();
-  }
-  return cachedQuotes?.quotes || data.quotes || {};
+async function currentMarketQuotes(selectedMarket = "DE-LU") {
+  const market = normalizeElectricityMarket(selectedMarket), cached = positionQuoteCache.get(market);
+  if (cached && Date.now() - cached.fetchedAt < 1_000) return cached.quotes;
+  const data = await loadQuotes(market);
+  if (Object.keys(data.quotes || {}).length) positionQuoteCache.set(market, { quotes: data.quotes, fetchedAt: data.fetchedAt });
+  return positionQuoteCache.get(market)?.quotes || data.quotes || {};
 }
 
 function calendarMaturity(startedAt, months) {
@@ -1826,6 +1871,10 @@ function calendarMaturity(startedAt, months) {
   target.setDate(Math.min(start.getDate(), lastDay));
   target.setHours(start.getHours(), start.getMinutes(), start.getSeconds(), start.getMilliseconds());
   return target.getTime();
+}
+
+function positionElectricityMarket(position) {
+  try { return normalizeElectricityMarket(JSON.parse(position.entry_quotes_json || '{}').__electricityMarket); } catch { return "DE-LU"; }
 }
 
 function marketPositionValue(position, quotes) {
@@ -1845,10 +1894,10 @@ function marketPositionValue(position, quotes) {
 async function syncMarketPositions(env, userId) {
   const rows = (await env.DB.prepare("SELECT * FROM market_positions WHERE user_id = ? ORDER BY created_at DESC").bind(userId).all()).results || [];
   if (!rows.length) return [];
-  const quotes = await currentMarketQuotes();
   const now = Date.now();
   for (const row of rows) {
     if (!['active', 'paused'].includes(row.status)) continue;
+    const quotes = await currentMarketQuotes(positionElectricityMarket(row));
     const marketValue = marketPositionValue(row, quotes);
     const amount = Number(row.amount);
     const stop = amount * (1 - Number(row.stop_loss_pct) / 100);
@@ -2039,8 +2088,9 @@ async function marketInvest(request, env) {
   const source = body.source === 'earnings' ? 'earnings' : 'deposit';
   const wallet = await accrue(env, user.id);
   if (amount > Number(wallet[source] || 0) + 1e-9) return bad("Saldo disponibile insufficiente.");
-  const quotes = await currentMarketQuotes();
-  const entry = {};
+  const electricityMarket = normalizeElectricityMarket(body.electricityMarket);
+  const quotes = await currentMarketQuotes(electricityMarket);
+  const entry = { __electricityMarket: electricityMarket };
   for (const [key] of allocation) {
     const price = Number(quotes[key]?.price);
     if (!Number.isFinite(price) || price <= 0) return bad("Prezzi live temporaneamente non disponibili per completare il piano. Riprova più tardi.");
@@ -2087,7 +2137,8 @@ async function customMarketInvest(request, env) {
   const totalCharge = Number((principal + fee).toFixed(3));
   const wallet = await accrue(env, user.id);
   if (totalCharge > Number(wallet[source] || 0) + 1e-9) return bad('Saldo insufficiente: servono ' + totalCharge.toFixed(3) + ' USDT, inclusa la quota del piano.');
-  const quotes = await currentMarketQuotes(), entry = {};
+  const electricityMarket = normalizeElectricityMarket(body.electricityMarket);
+  const quotes = await currentMarketQuotes(electricityMarket), entry = { __electricityMarket: electricityMarket };
   for (const [key] of allocations) {
     const price = Number(quotes[key]?.price);
     if (!Number.isFinite(price) || price <= 0) return bad('Prezzi di riferimento non disponibili per tutti gli asset selezionati. Riprova più tardi.');
@@ -2114,11 +2165,11 @@ async function addMarketFunds(request, env) {
   const id = Number(body.positionId), amount = Number(Number(body.amount).toFixed(3));
   const source = body.source === 'earnings' ? 'earnings' : 'deposit';
   if (!Number.isInteger(id) || id < 1 || !Number.isFinite(amount) || amount < 1) return bad("Importo o piano non valido.");
-  const initialPosition = await env.DB.prepare("SELECT status FROM market_positions WHERE id = ? AND user_id = ? AND status IN ('active','paused')").bind(id, user.id).first();
+  const initialPosition = await env.DB.prepare("SELECT * FROM market_positions WHERE id = ? AND user_id = ? AND status IN ('active','paused')").bind(id, user.id).first();
   if (!initialPosition) return bad("Piano attivo o sospeso non trovato.");
   if (initialPosition.status === 'active') await syncMarketPositions(env, user.id);
   await accrue(env, user.id);
-  const quotes = await currentMarketQuotes();
+  const quotes = await currentMarketQuotes(positionElectricityMarket(initialPosition));
   const tx = await db.transaction('write');
   const reject = async message => { await tx.rollback(); return bad(message); };
   try {
@@ -2177,13 +2228,13 @@ async function redeemMarketGains(request, env) {
   await syncMarketPositions(env, user.id);
   const position = await env.DB.prepare("SELECT * FROM market_positions WHERE id = ? AND user_id = ? AND status IN ('active','paused')").bind(id, user.id).first();
   if (!position) return Response.json({ error: 'Il piano non è più attivo o riscattabile.' }, { status: 409 });
-  const quotes = await currentMarketQuotes();
+  const quotes = await currentMarketQuotes(positionElectricityMarket(position));
   const value = marketPositionValue(position, quotes);
   const gain = Number((value - Number(position.amount)).toFixed(3));
   if (!(gain >= 0.001)) return bad('Non ci sono guadagni sopra il capitale investito da riscattare.');
   let allocation = [];
   try { allocation = JSON.parse(position.allocations_json || '[]'); } catch {}
-  const nextBasis = {};
+  const nextBasis = { __electricityMarket: positionElectricityMarket(position) };
   for (const [key] of allocation) {
     const price = Number(quotes[key]?.price);
     if (!(price > 0)) return Response.json({ error: 'Prezzi di riferimento non disponibili; riprova tra poco.' }, { status: 503 });
@@ -2215,7 +2266,7 @@ async function closeMarketPositionEarly(request, env) {
   await syncMarketPositions(env, user.id);
   const position = await env.DB.prepare("SELECT * FROM market_positions WHERE id = ? AND user_id = ? AND status IN ('active','paused')").bind(id, user.id).first();
   if (!position) return Response.json({ error: 'Il piano è già chiuso, maturato o non disponibile.' }, { status: 409 });
-  const quotes = await currentMarketQuotes();
+  const quotes = await currentMarketQuotes(positionElectricityMarket(position));
   const value = Number(marketPositionValue(position, quotes).toFixed(3));
   if (!(value > 0)) return bad('Il valore di riferimento non è disponibile per la chiusura.');
   const fee = Number((value * 0.65).toFixed(3));
@@ -2997,6 +3048,25 @@ app.get('/api/notifications/stream', async (req, res) => {
     if (!res.headersSent) res.status(500).json({ error: 'Impossibile aprire il canale notifiche.' });
     else res.end();
   }
+});
+
+app.get('/api/asset-prices/stream', (req, res) => {
+  res.status(200);
+  res.set({ 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+  res.flushHeaders();
+  assetPriceStreams.add(res);
+  res.write(['event: ready', 'data: {}', '', ''].join(String.fromCharCode(10)));
+  if (!assetPriceStreamTimer) assetPriceStreamTimer = setInterval(() => { void publishAssetPriceUpdate(); }, 15000);
+  const heartbeat = setInterval(() => { if (!res.writableEnded) res.write(':' + ' keep-alive' + String.fromCharCode(10) + String.fromCharCode(10)); }, 20000);
+  res.on('close', () => {
+    clearInterval(heartbeat);
+    assetPriceStreams.delete(res);
+    if (!assetPriceStreams.size && assetPriceStreamTimer) {
+      clearInterval(assetPriceStreamTimer);
+      assetPriceStreamTimer = null;
+    }
+  });
+  void publishAssetPriceUpdate();
 });
 
 app.all('/api/*', async (req, res) => {
