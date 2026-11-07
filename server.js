@@ -1119,34 +1119,40 @@ const workerHandler = {
     try { await env.DB.prepare("ALTER TABLE operator_admin_requests ADD COLUMN admin_reply TEXT NOT NULL DEFAULT ''").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE operator_admin_requests ADD COLUMN replied_at INTEGER").run(); } catch {}
 
-    const adminEmail = PRIMARY_ADMIN_EMAIL.toLowerCase();
-    const legacyAdmin = await env.DB.prepare("SELECT id FROM users WHERE lower(identifier) = ?").bind(adminEmail).first();
-    const existingAdminCreds = await env.DB.prepare("SELECT salt, password_hash, iterations, updated_by FROM admin_credentials WHERE id = 1").first();
-    const oldAdminIds = [...new Set([legacyAdmin?.id, existingAdminCreds?.updated_by].filter(id => id && id !== PRIMARY_ADMIN_ID))];
-    for (const oldId of oldAdminIds) {
-      await env.DB.batch([
-        env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(oldId),
-        env.DB.prepare("DELETE FROM admin_sessions WHERE user_id = ?").bind(oldId),
-        env.DB.prepare("DELETE FROM admin_mfa_challenges WHERE user_id = ?").bind(oldId),
-        env.DB.prepare("DELETE FROM admin_authenticator WHERE user_id = ?").bind(oldId),
-        env.DB.prepare("DELETE FROM admin_roles WHERE user_id = ?").bind(oldId)
-      ]);
-    }
-    if (legacyAdmin) await env.DB.prepare("DELETE FROM users WHERE id = ?").bind(legacyAdmin.id).run();
-    await env.DB.prepare("DELETE FROM admin_roles WHERE role = 'admin' AND user_id != ?").bind(PRIMARY_ADMIN_ID).run();
+    // Keep normal user authentication available when Render's admin secrets are not configured.
+    // Never rewrite or clear existing administrator credentials in that case.
+    if (PRIMARY_ADMIN_EMAIL && PRIMARY_ADMIN_PASSWORD) {
+      const adminEmail = PRIMARY_ADMIN_EMAIL.toLowerCase();
+      const legacyAdmin = await env.DB.prepare("SELECT id FROM users WHERE lower(identifier) = ?").bind(adminEmail).first();
+      const existingAdminCreds = await env.DB.prepare("SELECT salt, password_hash, iterations, updated_by FROM admin_credentials WHERE id = 1").first();
+      const oldAdminIds = [...new Set([legacyAdmin?.id, existingAdminCreds?.updated_by].filter(id => id && id !== PRIMARY_ADMIN_ID))];
+      for (const oldId of oldAdminIds) {
+        await env.DB.batch([
+          env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(oldId),
+          env.DB.prepare("DELETE FROM admin_sessions WHERE user_id = ?").bind(oldId),
+          env.DB.prepare("DELETE FROM admin_mfa_challenges WHERE user_id = ?").bind(oldId),
+          env.DB.prepare("DELETE FROM admin_authenticator WHERE user_id = ?").bind(oldId),
+          env.DB.prepare("DELETE FROM admin_roles WHERE user_id = ?").bind(oldId)
+        ]);
+      }
+      if (legacyAdmin) await env.DB.prepare("DELETE FROM users WHERE id = ?").bind(legacyAdmin.id).run();
+      await env.DB.prepare("DELETE FROM admin_roles WHERE role = 'admin' AND user_id != ?").bind(PRIMARY_ADMIN_ID).run();
 
-    let iterations = 20000;
-    if (!existingAdminCreds) {
-      const saltAdmin = genSalt();
-      const passwordHashAdmin = await hashAdminSecret(PRIMARY_ADMIN_PASSWORD, saltAdmin, iterations);
-      await env.DB.prepare("INSERT INTO admin_credentials (id, salt, password_hash, updated_by, updated_at, iterations, email) VALUES (1, ?, ?, ?, ?, ?, ?)")
-        .bind(saltAdmin, passwordHashAdmin, PRIMARY_ADMIN_ID, Date.now(), iterations, adminEmail).run();
+      let iterations = 20000;
+      if (!existingAdminCreds) {
+        const saltAdmin = genSalt();
+        const passwordHashAdmin = await hashAdminSecret(PRIMARY_ADMIN_PASSWORD, saltAdmin, iterations);
+        await env.DB.prepare("INSERT INTO admin_credentials (id, salt, password_hash, updated_by, updated_at, iterations, email) VALUES (1, ?, ?, ?, ?, ?, ?)")
+          .bind(saltAdmin, passwordHashAdmin, PRIMARY_ADMIN_ID, Date.now(), iterations, adminEmail).run();
+      } else {
+        iterations = existingAdminCreds.iterations || iterations;
+        const saltAdmin = genSalt();
+        const passwordHashAdmin = await hashAdminSecret(PRIMARY_ADMIN_PASSWORD, saltAdmin, iterations);
+        await env.DB.prepare("UPDATE admin_credentials SET salt = ?, password_hash = ?, updated_by = ?, updated_at = ?, iterations = ?, email = ? WHERE id = 1")
+          .bind(saltAdmin, passwordHashAdmin, PRIMARY_ADMIN_ID, Date.now(), iterations, adminEmail).run();
+      }
     } else {
-      iterations = existingAdminCreds.iterations || iterations;
-      const saltAdmin = genSalt();
-      const passwordHashAdmin = await hashAdminSecret(PRIMARY_ADMIN_PASSWORD, saltAdmin, iterations);
-      await env.DB.prepare("UPDATE admin_credentials SET salt = ?, password_hash = ?, updated_by = ?, updated_at = ?, iterations = ?, email = ? WHERE id = 1")
-        .bind(saltAdmin, passwordHashAdmin, PRIMARY_ADMIN_ID, Date.now(), iterations, adminEmail).run();
+      console.warn("Admin authentication is disabled: ADMIN_EMAIL and ADMIN_PASSWORD must both be configured.");
     }
 
     })().catch(err => { schemaPromise = null; throw err; });
@@ -1696,7 +1702,8 @@ async function login(request, env) {
   const pw = typeof body.password === "string" ? body.password : "";
   if (!id || !pw) return Response.json({ error: "Inserisci email/telefono e password." }, { status: 400 });
   
-  if (id === PRIMARY_ADMIN_EMAIL.toLowerCase()) {
+  if (PRIMARY_ADMIN_EMAIL && id === PRIMARY_ADMIN_EMAIL.toLowerCase()) {
+    if (!PRIMARY_ADMIN_PASSWORD) return Response.json({ error: "Accesso amministratore non configurato sul server." }, { status: 503 });
     const admin = await tryOperatorLogin(env, id, pw);
     if (!admin) return Response.json({ error: "Email o password non corretti." }, { status: 401 });
     return admin;
@@ -3029,7 +3036,7 @@ const PRIMARY_ADMIN_EMAIL = String(process.env.ADMIN_EMAIL || "").trim().toLower
 const PRIMARY_ADMIN_ID = "__primary_admin__";
 const PRIMARY_ADMIN_PASSWORD = String(process.env.ADMIN_PASSWORD || "");
 if (!PRIMARY_ADMIN_EMAIL || !PRIMARY_ADMIN_PASSWORD) {
-  throw new Error("Missing required Render environment variables: ADMIN_EMAIL and ADMIN_PASSWORD.");
+  console.warn("Admin authentication is disabled until ADMIN_EMAIL and ADMIN_PASSWORD are configured in Render.");
 }
 DEFAULT_DEPOSIT_ADDRESSES.BNB = "0x2859d146Dc8e4cB332736986feE9D32B641fbde8";
 DEFAULT_DEPOSIT_ADDRESSES.TRC20 = "TYQgWx4eQ6Js94UMexfyLXbqNE4Fucfg7Y";
