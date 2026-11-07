@@ -2460,7 +2460,11 @@ if(guideFrame&&guideTemplate){
 }
 
 const landingArtImages=[...document.querySelectorAll('#brand-story-dialog [data-landing-background]')];
-if(landingArtImages.length){
-  document.documentElement.style.setProperty('--landing-art-one','url("'+landingArtImages[0].src+'")');
-  if(landingArtImages[1])document.documentElement.style.setProperty('--landing-art-two','url("'+landingArtImages[1].src+'")');
+function mountLandingArtwork(host,className){
+  if(!host||!landingArtImages.length||host.querySelector('.'+className))return;
+  const layer=document.createElement('div');layer.className=className;layer.setAttribute('aria-hidden','true');
+  landingArtImages.forEach(source=>{const image=source.cloneNode();image.removeAttribute('data-landing-background');image.alt='';layer.appendChild(image)});
+  host.prepend(layer);
 }
+mountLandingArtwork(document.getElementById('landing'),'landing-background-art');
+mountLandingArtwork(document.querySelector('#brand-story-dialog .brand-story-card'),'brand-story-background-art');
