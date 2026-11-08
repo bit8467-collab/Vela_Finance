@@ -425,7 +425,8 @@
           </div>
         </div>
         <div class="admin-section admin-request-hub" id="admin-request-hub">
-          <div class="section-heading"><div><p class="eyebrow">REQUEST CENTER</p><h2>Requests</h2></div><span class="admin-hub-note">Open a section to review</span></div>
+          <div class="section-heading"><div><p class="eyebrow">REQUEST CENTER</p><h2>Requests</h2></div><span class="admin-hub-note">Search a request type or choose a category below</span></div>
+          <label class="admin-request-search"><span>Find a request</span><input id="admin-request-search" type="search" placeholder="Try: wallet, email, deposit…" aria-label="Search request categories"></label>
           <details class="admin-request-subsection admin-password-reset-requests"><summary>Password recovery <span class="count-pill" id="password-reset-count">0</span></summary><div class="admin-queue" id="pending-password-resets"></div><div class="queue-empty" id="password-reset-queue-empty">No password recovery requests.</div></details>
           <details class="admin-request-group" id="request-group-otp">
             <summary><span>OTP &amp; account verification</span><span class="count-pill" id="pending-otp-count">0</span></summary>
@@ -435,7 +436,7 @@
             </div>
           </details>
           <details class="admin-request-group" id="request-group-wallet">
-            <summary><span>Wallet changes</span><span class="count-pill" id="pending-wallet-count">0</span></summary>
+            <summary><span class="admin-request-label"><b>Wallet changes</b><small>Address-change approvals</small></span><span class="count-pill" id="pending-wallet-count">0</span></summary>
             <div class="admin-request-group-content"><div class="admin-queue" id="pending-wallet-changes"></div><div class="queue-empty" id="wallet-queue-empty">No wallet changes awaiting approval.</div></div>
           </details>
           <details class="admin-request-group" id="request-group-accounts">

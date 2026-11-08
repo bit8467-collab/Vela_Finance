@@ -2504,3 +2504,25 @@ function mountLandingArtwork(host,className){
 }
 mountLandingArtwork(document.getElementById('landing'),'landing-background-art');
 mountLandingArtwork(document.querySelector('#brand-story-dialog .brand-story-card'),'brand-story-background-art');
+
+
+// Admin request finder: search categories and open matching queues directly.
+document.addEventListener('input',event=>{
+  if(event.target?.id!=='admin-request-search')return;
+  const query=event.target.value.trim().toLocaleLowerCase(),hub=$('admin-request-hub');
+  if(!hub)return;
+  const groups=[...hub.querySelectorAll('.admin-request-group,.admin-password-reset-requests')];
+  for(const group of groups){
+    const title=group.querySelector(':scope > summary')?.textContent?.toLocaleLowerCase()||'';
+    const nested=[...group.querySelectorAll('.admin-request-subsection')];
+    let nestedMatch=false;
+    for(const item of nested){
+      const matches=!query||(item.querySelector(':scope > summary')?.textContent||'').toLocaleLowerCase().includes(query);
+      item.classList.toggle('request-search-hidden',!matches);
+      if(query&&matches){item.open=true;nestedMatch=true;}
+    }
+    const matches=!query||title.includes(query)||nestedMatch;
+    group.classList.toggle('request-search-hidden',!matches);
+    if(query&&matches)group.open=true;
+  }
+});
