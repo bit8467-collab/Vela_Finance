@@ -669,6 +669,11 @@ async function adminAccess(request, env, permission) {
   const actor = await adminActor(request, env);
   if (!actor) return null;
   const permissions = await readAdminPermissions(actor, env);
+  if (permission === "antifraud") {
+    const assignedRole = await env.DB.prepare("SELECT role FROM admin_roles WHERE user_id = ?").bind(actor.id).first();
+    if (isPrimaryAdmin(actor) || assignedRole?.role === "admin" || permissions.allAdmin === true || permissions.fullPanel === true || permissions.antifraud === true) return actor;
+    return null;
+  }
   return permissions[permission] ? actor : null;
 }
 
@@ -2485,7 +2490,10 @@ async function adminPermissions(request, env) {
   const actor = await adminActor(request, env);
   if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
   const permissions = await readAdminPermissions(actor, env);
-  return Response.json({ permissions, isAdmin: isPrimaryAdmin(actor) || permissions.allAdmin === true });
+  const assignedRole = await env.DB.prepare("SELECT role FROM admin_roles WHERE user_id = ?").bind(actor.id).first();
+  const isAdmin = isPrimaryAdmin(actor) || assignedRole?.role === "admin" || permissions.allAdmin === true;
+  if (isAdmin || permissions.fullPanel) permissions.antifraud = true;
+  return Response.json({ permissions, isAdmin });
 }
 
 async function listPasswordResetRequests(request, env) {
