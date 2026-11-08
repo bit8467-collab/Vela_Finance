@@ -2021,7 +2021,7 @@ button[data-redeem-earnings]:disabled { opacity:.55; cursor:not-allowed; }
 #refresh-account { transition:transform .2s ease,box-shadow .2s ease,color .2s ease; }
 #refresh-account:hover,#refresh-account:focus-visible { color:#fff; box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 55%,transparent),0 0 18px color-mix(in srgb,var(--accent) 35%,transparent); }
 #refresh-account:disabled { opacity:.72; cursor:wait; }
-#refresh-account.is-refreshing svg { animation:none; }
+#refresh-account.is-refreshing svg { animation:account-refresh-spin .9s linear infinite; }
 @keyframes account-refresh-spin { to { transform:rotate(360deg); } }
 @media (prefers-reduced-motion:reduce) { #refresh-account.is-refreshing svg { animation-duration:2.4s; } }
 

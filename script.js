@@ -1987,7 +1987,7 @@ function connectAssetPriceStream(){
     }catch(error){console.warn('Live asset update failed',error)}
   });
 }
-function startPolling(){if(poll)clearInterval(poll);if(token){refreshState();connectNotificationStream()}else if(adminToken&&$('view-admin').classList.contains('active'))renderAdmin();loadMarket().then(connectAssetPriceStream);applyLanguage();poll=setInterval(()=>{if(document.visibilityState!=='visible'||(isEditingFormField()&&!walletOtpFocused()))return;if(token)refreshState();},adminToken?15000:10000)}
+function startPolling(){if(poll)clearInterval(poll);if(token){refreshState();connectNotificationStream()}else if(adminToken&&$('view-admin').classList.contains('active'))renderAdmin();loadMarket().then(connectAssetPriceStream);applyLanguage();poll=setInterval(()=>{if(document.visibilityState!=='visible'||(!token&&!adminToken)||isEditingFormField()||document.querySelector('dialog[open]')||document.querySelector('[aria-busy="true"]'))return;const button=$('refresh-account');if(button&&!button.disabled)button.click()},5000)}
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&token&&(!isEditingFormField()||walletOtpFocused())){refreshState();if(!isEditingFormField())refreshNotifications()}});
 
 let supportThread=null,supportMessages=[],adminSupportThreadId=null,supportSending=false,adminSupportSending=false,supportSelectedRating=0,supportFeedbackSubmittedThread=0;
