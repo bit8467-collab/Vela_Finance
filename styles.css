@@ -3294,3 +3294,26 @@ body.asset-catalog-open{overflow:hidden}
 .electricity-market-control select{width:min(100%,380px);min-height:40px;border:1px solid var(--line);border-radius:10px;background:var(--surface-2);color:var(--text);padding:8px}
 .electricity-market-control small{color:var(--muted);font-size:10px}
 @media(max-width:680px){.assets-page-inner{padding:14px 12px max(22px,env(safe-area-inset-bottom))}.assets-page-header{gap:13px;padding-bottom:18px}.assets-back-button{min-height:38px;padding:0 10px;font-size:11px}.assets-page-subtitle{font-size:11px}.assets-chart-panel{margin:15px 0 22px;padding:13px;border-radius:15px}.assets-chart-heading{gap:10px}.assets-chart-heading .asset-detail-quote small{max-width:155px;font-size:8px}.assets-chart-panel .asset-history-chart{min-height:220px}.assets-chart-panel .asset-chart-ranges{grid-template-columns:repeat(6,minmax(0,1fr));gap:3px}.assets-chart-panel .asset-chart-range{min-height:34px;padding:0 2px;font-size:9px}.assets-directory .asset-market-list{grid-template-columns:1fr}.assets-directory .asset-market-group-items{grid-template-columns:1fr}.assets-directory .asset-market-row{min-height:58px}}
+
+/* Admin antifraud queue */
+.admin-antifraud-section{border-color:rgba(218,153,71,.23);background:linear-gradient(145deg,rgba(212,158,86,.045),transparent 60%)}
+.admin-antifraud-note{max-width:760px;margin:0 0 16px;color:var(--muted);font-size:12px;line-height:1.55}
+.admin-antifraud-list{display:grid;gap:10px}
+.admin-antifraud-card{min-width:0;padding:15px;border:1px solid var(--line);border-radius:14px;background:var(--surface,rgba(255,255,255,.025));display:grid;gap:12px}
+.admin-antifraud-card.is-flagged{border-color:rgba(225,167,85,.48)}
+.admin-antifraud-card-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.admin-antifraud-card-head>div{display:grid;gap:4px;min-width:0}
+.admin-antifraud-card-head b{font-size:14px;overflow-wrap:anywhere}
+.admin-antifraud-card-head small,.admin-antifraud-meta small,.admin-antifraud-reference{color:var(--muted);font-size:10px}
+.admin-antifraud-badge{flex:none;border:1px solid var(--line);border-radius:99px;padding:5px 8px;color:var(--muted);font-size:9px;font-weight:700}
+.admin-antifraud-badge.flagged{color:#b57828;border-color:rgba(218,153,71,.5);background:rgba(218,153,71,.1)}
+.admin-antifraud-meta{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.admin-antifraud-meta>span{display:grid;gap:5px;min-width:0}
+.admin-antifraud-meta b{font-size:11px;overflow-wrap:anywhere}
+.admin-antifraud-ip{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.admin-antifraud-send{display:flex;align-items:center;gap:8px;flex-wrap:wrap;border-top:1px solid var(--line);padding-top:11px}
+.admin-antifraud-send select{flex:1 1 220px;min-width:0}
+.admin-antifraud-send button{flex:0 0 auto}
+.admin-antifraud-done,.admin-antifraud-muted{margin:0;color:var(--muted);font-size:11px}
+.admin-antifraud-done{color:#b57828}
+@media(max-width:560px){.admin-antifraud-meta{grid-template-columns:1fr 1fr}.admin-antifraud-meta>span:last-child{grid-column:1/-1}.admin-antifraud-card{padding:12px}.admin-antifraud-send{align-items:stretch}.admin-antifraud-send button{width:100%}}

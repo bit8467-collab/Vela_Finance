@@ -9,6 +9,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
 const notificationStreams = new Map();
 const assetPriceStreams = new Set();
@@ -653,7 +654,7 @@ async function privilegedAdminActor(request, env) {
   return permissions.allAdmin ? actor : null;
 }
 
-const ADMIN_PERMISSION_KEYS = ["fullPanel", "requests", "walletChanges", "otp", "support", "users", "allAdmin"];
+const ADMIN_PERMISSION_KEYS = ["fullPanel", "requests", "walletChanges", "otp", "support", "users", "antifraud", "allAdmin"];
 async function readAdminPermissions(actor, env) {
   if (isPrimaryAdmin(actor)) return { fullPanel: true, requests: true, walletChanges: true, otp: true, support: true, users: true, allAdmin: true };
   const role = await env.DB.prepare("SELECT role, permissions_json FROM admin_roles WHERE user_id = ?").bind(actor.id).first();
@@ -895,6 +896,10 @@ const workerHandler = {
           expires_at INTEGER
         );`,
         `CREATE INDEX IF NOT EXISTS notifications_user_created ON notifications(user_id, created_at DESC);`,
+        `CREATE TABLE IF NOT EXISTS antifraud_events (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, username TEXT NOT NULL, event_type TEXT NOT NULL CHECK (event_type IN ('registration','deposit','withdrawal')), ip_address TEXT, event_ref TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, shared_ip INTEGER NOT NULL DEFAULT 0);`,
+        `CREATE INDEX IF NOT EXISTS antifraud_events_ip_time ON antifraud_events(ip_address, created_at DESC);`,
+        `CREATE INDEX IF NOT EXISTS antifraud_events_created ON antifraud_events(created_at DESC);`,
+        `CREATE TABLE IF NOT EXISTS antifraud_notice_log (id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER NOT NULL, user_id TEXT NOT NULL, stage INTEGER NOT NULL CHECK (stage BETWEEN 1 AND 3), admin_id TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE(user_id, stage));`,
         `CREATE TABLE IF NOT EXISTS support_threads (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           user_id TEXT NOT NULL,
@@ -1267,6 +1272,8 @@ const workerHandler = {
       if (method === "POST" && pathName === "/api/settings") return await updateSettings(request, env);
       if (method === "POST" && pathName === "/api/change-password") return await changePassword(request, env);
       if (method === "GET" && pathName === "/api/admin/permissions") return await adminPermissions(request, env);
+      if (method === "GET" && pathName === "/api/admin/antifraud") return await adminAntifraudEvents(request, env);
+      if (method === "POST" && pathName === "/api/admin/antifraud/notify") return await sendAntifraudNotice(request, env);
       if (method === "GET" && pathName === "/api/admin/backup/export") return await adminDatabaseBackup(request, env);
       if (method === "GET" && pathName === "/api/admin/transactions") return await adminTransactions(request, env);
       if (method === "GET" && pathName === "/api/admin/ledger") return await adminGlobalLedger(request, env);
@@ -1531,6 +1538,7 @@ async function register(request, env) {
   const ph = await hash(password, s);
   await env.DB.prepare("INSERT INTO users (id, username, identifier, password_hash, salt, invite_code, referred_by, created_at, email_verified) VALUES (?,?,?,?,?,?,?,?,0)")
     .bind(id, username, email, ph, s, inviteCode, referredBy, Date.now()).run();
+  await recordAntifraudEvent(request, env, { id, username }, 'registration');
   return Response.json({ ok: true, email, username });
 }
 
@@ -1849,6 +1857,7 @@ async function deposit(request, env) {
     env.DB.prepare("INSERT INTO deposits (user_id, amount, net, date, status, tx_reference) VALUES (?,?,?,?, 'pending', ?)").bind(user.id, amount, net, created, txReference),
     env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Deposit request submitted", amount.toFixed(3) + " USDT · " + net + " · Pending review.", created),
   ]);
+  await recordAntifraudEvent(request, env, user, 'deposit', txReference);
   return Response.json({ ok: true, status: "pending" });
 }
 
@@ -2429,6 +2438,7 @@ async function withdraw(request, env) {
     await env.DB.prepare("UPDATE wallets SET " + prepared.source + " = " + prepared.source + " + ? WHERE user_id = ?").bind(prepared.chargedAmount, user.id).run();
     throw error;
   }
+  await recordAntifraudEvent(request, env, user, 'withdrawal');
   return Response.json({ ok: true, status: "pending", payout: prepared.amount, fee: prepared.feeAmount, charged: prepared.chargedAmount });
 }
 
@@ -2460,6 +2470,16 @@ async function confirmSensitiveActionOtp(request, env) {
   await env.DB.prepare("UPDATE sensitive_action_verifications SET consumed_at = ? WHERE user_id = ?").bind(Date.now(), user.id).run();
   return Response.json({ ok: true });
 }
+
+const ANTIFRAUD_RETENTION_MS=90*86400000;
+const ANTIFRAUD_TEMPLATES={
+1:{en:["Account security notice","Activity was detected from an IP address also used by another account. This automated signal is not proof of wrongdoing. Please review your account security and contact support if you do not recognize it."],fr:["Alerte de sécurité du compte","Une activité a été détectée depuis une adresse IP également utilisée par un autre compte. Ce signal automatique ne prouve aucun comportement fautif. Vérifiez votre compte et contactez l’assistance si vous ne reconnaissez pas cette activité."],es:["Aviso de seguridad de la cuenta","Se detectó actividad desde una IP también utilizada por otra cuenta. Esta señal automática no demuestra una conducta indebida. Revise su cuenta y contacte con soporte si no reconoce la actividad."],de:["Sicherheitshinweis zum Konto","Es wurde Aktivität über eine IP-Adresse festgestellt, die auch ein anderes Konto nutzt. Dieses automatische Signal ist kein Nachweis eines Fehlverhaltens. Prüfen Sie Ihr Konto und kontaktieren Sie bei Unklarheiten den Support."],pt:["Aviso de segurança da conta","Foi detetada atividade através de um IP também utilizado por outra conta. Este sinal automático não comprova irregularidade. Verifique a conta e contacte o apoio se não reconhecer a atividade."],hi:["खाता सुरक्षा सूचना","दूसरे खाते में भी उपयोग किए गए IP से गतिविधि मिली है। यह स्वचालित संकेत है, गलत काम का प्रमाण नहीं। खाते की सुरक्षा जाँचें और गतिविधि पहचान में न आए तो सहायता टीम से संपर्क करें।"],zh:["账户安全提醒","检测到使用另一账户也使用过的 IP 地址进行的活动。这是自动安全提示，并非不当行为的证明。请检查账户安全；如非本人操作，请联系支持团队。"],it:["Avviso di sicurezza dell’account","È stata rilevata attività da un indirizzo IP utilizzato anche da un altro account. È un segnale automatico, non una prova di illecito. Verifica la sicurezza dell’account e contatta l’assistenza se non riconosci l’attività."]},
+2:{en:["Final security warning","Final warning: activity associated with an IP address also used by another account remains under review. This signal alone does not establish wrongdoing. Contact support if you believe this is a mistake."],fr:["Dernier avertissement de sécurité","Dernier avertissement : une activité associée à une adresse IP également utilisée par un autre compte est toujours examinée. Ce signal seul ne prouve aucun comportement fautif. Contactez l’assistance si vous pensez qu’il s’agit d’une erreur."],es:["Último aviso de seguridad","Último aviso: se sigue revisando actividad asociada a una IP también utilizada por otra cuenta. Esta señal por sí sola no demuestra una conducta indebida. Contacte con soporte si cree que es un error."],de:["Letzte Sicherheitswarnung","Letzte Warnung: Aktivitäten über eine IP-Adresse, die auch ein anderes Konto nutzt, werden weiter geprüft. Dieses Signal allein belegt kein Fehlverhalten. Bei einem Irrtum wenden Sie sich an den Support."],pt:["Último aviso de segurança","Último aviso: continua em análise atividade associada a um IP também utilizado por outra conta. Este sinal, por si só, não comprova irregularidade. Contacte o apoio se considerar que é um erro."],hi:["अंतिम सुरक्षा चेतावनी","अंतिम चेतावनी: दूसरे खाते में भी उपयोग किए गए IP से जुड़ी गतिविधि की समीक्षा जारी है। केवल इस संकेत से गलत काम साबित नहीं होता। गलती लगे तो सहायता टीम से संपर्क करें।"],zh:["最后一次安全警告","最后提醒：与另一账户也使用过的 IP 地址相关的活动仍在审核中。仅凭此提示不能认定存在不当行为。如认为有误，请联系支持团队。"],it:["Ultimo avviso di sicurezza","Ultimo avviso: è ancora in corso la verifica di un’attività associata a un IP utilizzato anche da un altro account. Il segnale da solo non dimostra un illecito. Se ritieni che sia un errore, contatta l’assistenza."]},
+3:{en:["Final notice · account review","Continued activity associated with an IP address also used by another account may lead to an account-closure review. No account is closed automatically based on an IP match alone."],fr:["Dernier avis · examen du compte","La poursuite d’une activité associée à une adresse IP également utilisée par un autre compte peut entraîner un examen de clôture du compte. Aucun compte n’est fermé automatiquement sur la seule base d’une correspondance IP."],es:["Aviso final · revisión de la cuenta","La continuidad de actividad asociada a una IP también utilizada por otra cuenta puede dar lugar a una revisión para el cierre de la cuenta. Ninguna cuenta se cierra automáticamente por una coincidencia de IP."],de:["Letzter Hinweis · Kontoprüfung","Anhaltende Aktivitäten über eine IP-Adresse, die auch ein anderes Konto nutzt, können zu einer Prüfung einer Kontoschließung führen. Aufgrund eines IP-Treffers allein wird kein Konto automatisch geschlossen."],pt:["Aviso final · análise da conta","A continuidade de atividade associada a um IP também utilizado por outra conta pode levar a uma análise para encerramento da conta. Nenhuma conta é encerrada automaticamente apenas por correspondência de IP."],hi:["अंतिम सूचना · खाता समीक्षा","दूसरे खाते में भी उपयोग किए गए IP से जुड़ी गतिविधि जारी रहने पर खाता बंद करने की समीक्षा हो सकती है। केवल IP मिलान पर खाता अपने-आप बंद नहीं होगा।"],zh:["最终通知 · 账户审核","若与另一账户也使用过的 IP 地址相关的活动持续，账户可能进入关闭审核。不会仅凭 IP 匹配自动关闭账户。"],it:["Avviso finale · verifica dell’account","Il protrarsi di attività associate a un indirizzo IP utilizzato anche da un altro account può comportare una verifica ai fini della chiusura. Nessun account viene chiuso automaticamente sulla sola base di una corrispondenza IP."]}};
+function resolvedClientIp(request){const v=String(request.headers.get('x-platform-client-ip')||'').trim().replace(/^::ffff:/i,'');return v&&v.length<=64&&/^[0-9a-fA-F:.]+$/.test(v)?v:null}
+async function recordAntifraudEvent(request,env,user,eventType,eventRef=''){const now=Date.now(),ip=resolvedClientIp(request);await env.DB.prepare("DELETE FROM antifraud_events WHERE created_at < ?").bind(now-ANTIFRAUD_RETENTION_MS).run();const reuse=ip?await env.DB.prepare("SELECT COUNT(DISTINCT user_id) AS accounts FROM antifraud_events WHERE ip_address=? AND user_id!=? AND created_at>=?").bind(ip,user.id,now-ANTIFRAUD_RETENTION_MS).first():null;const shared=Number(reuse?.accounts||0)>0?1:0;if(shared)await env.DB.prepare("UPDATE antifraud_events SET shared_ip=1 WHERE ip_address=? AND created_at>=?").bind(ip,now-ANTIFRAUD_RETENTION_MS).run();await env.DB.prepare("INSERT INTO antifraud_events (user_id,username,event_type,ip_address,event_ref,created_at,shared_ip) VALUES (?,?,?,?,?,?,?)").bind(user.id,String(user.username||'user').slice(0,80),eventType,ip,String(eventRef||'').slice(0,180),now,shared).run()}
+async function adminAntifraudEvents(request,env){const actor=await adminAccess(request,env,'antifraud');if(!actor)return Response.json({error:'Permesso antifrode richiesto.'},{status:403});const rows=(await env.DB.prepare("SELECT e.id,e.user_id,e.username,e.event_type,e.ip_address,e.event_ref,e.created_at,e.shared_ip,COALESCE((SELECT MAX(n.stage) FROM antifraud_notice_log n WHERE n.user_id=e.user_id),0) AS notice_stage FROM antifraud_events e ORDER BY e.created_at DESC,e.id DESC LIMIT 250").all()).results;return Response.json({events:rows,retentionDays:90})}
+async function sendAntifraudNotice(request,env){const actor=await adminAccess(request,env,'antifraud');if(!actor)return Response.json({error:'Permesso antifrode richiesto.'},{status:403});let body={};try{body=await request.json()}catch{}const eventId=Number(body.eventId),stage=Number(body.stage),language=['en','fr','es','de','pt','hi','zh','it'].includes(body.language)?body.language:'en';if(!Number.isSafeInteger(eventId)||eventId<1||![1,2,3].includes(stage))return bad('Avviso antifrode non valido.');const event=await env.DB.prepare("SELECT id,user_id,shared_ip FROM antifraud_events WHERE id=?").bind(eventId).first();if(!event)return Response.json({error:'Segnalazione non trovata.'},{status:404});if(Number(event.shared_ip)!==1)return bad('Non è possibile inviare un avviso senza una corrispondenza IP tra account distinti.');const latest=await env.DB.prepare("SELECT COALESCE(MAX(stage),0) AS stage FROM antifraud_notice_log WHERE user_id=?").bind(event.user_id).first();if(stage!==Number(latest?.stage||0)+1)return Response.json({error:'Inviare gli avvisi in sequenza: avviso, ultimo avviso, avviso finale.'},{status:409});const msg=ANTIFRAUD_TEMPLATES[stage][language]||ANTIFRAUD_TEMPLATES[stage].en,now=Date.now();const result=await env.DB.batch([env.DB.prepare("INSERT INTO antifraud_notice_log (event_id,user_id,stage,admin_id,created_at) VALUES (?,?,?,?,?)").bind(eventId,event.user_id,stage,actor.id,now),env.DB.prepare("INSERT INTO notifications (user_id,kind,title,message,created_at) VALUES (?, 'antifraud', ?, ?, ?)").bind(event.user_id,msg[0],msg[1],now)]);if(!(result?.[0]?.meta?.changes>0))return Response.json({error:'Questo avviso è già stato inviato o la sequenza è cambiata. Aggiorna la sezione.'},{status:409});return Response.json({ok:true,stage})}
 
 async function adminPermissions(request, env) {
   const actor = await adminActor(request, env);
@@ -3127,9 +3147,11 @@ app.all('/api/*', async (req, res) => {
     }
 
     const fullUrl = `${req.protocol}://${req.get('host')}${req.originalUrl}`;
+    const forwardedHeaders = new Headers(req.headers); forwardedHeaders.delete('x-platform-client-ip');
+    if (req.ip) forwardedHeaders.set('x-platform-client-ip', String(req.ip));
     const webRequest = new Request(fullUrl, {
       method: req.method,
-      headers: new Headers(req.headers),
+      headers: forwardedHeaders,
       body: ['GET', 'HEAD'].includes(req.method) ? undefined : JSON.stringify(req.body)
     });
 
