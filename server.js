@@ -728,9 +728,34 @@ async function inviterStats(env, userId) {
 async function fullState(env, user, request) {
   let wallet = await accrue(env, user.id);
   const marketPositions = await syncMarketPositions(env, user.id);
-  const simpleEarnRows = (await env.DB.prepare("SELECT * FROM simple_earn_positions WHERE user_id = ? ORDER BY created_at DESC").bind(user.id).all()).results || [];
+  const [simpleEarnResult, redemptionResult, walletResult, investmentsResult, depositsResult, withdrawalsResult, teamResult, inviteStats, s, actionRow] = await Promise.all([
+    env.DB.prepare("SELECT * FROM simple_earn_positions WHERE user_id = ? ORDER BY created_at DESC").bind(user.id).all(),
+    env.DB.prepare("SELECT position_id, amount, reference_value, created_at, segment_start_at, basis_quotes_json FROM market_position_redemptions WHERE user_id = ? ORDER BY created_at DESC").bind(user.id).all(),
+    env.DB.prepare("SELECT * FROM wallets WHERE user_id = ?").bind(user.id).first(),
+    env.DB.prepare("SELECT * FROM investments WHERE user_id = ? ORDER BY id DESC").bind(user.id).all(),
+    env.DB.prepare("SELECT * FROM deposits WHERE user_id = ? ORDER BY id DESC").bind(user.id).all(),
+    env.DB.prepare("SELECT * FROM withdrawals WHERE user_id = ? ORDER BY id DESC").bind(user.id).all(),
+    env.DB.prepare(
+      "WITH RECURSIVE referral_tree(id, username, created_at, level) AS (" +
+      " SELECT id, username, created_at, 1 FROM users WHERE referred_by = ?" +
+      " UNION ALL" +
+      " SELECT u.id, u.username, u.created_at, t.level + 1 FROM users u" +
+      " JOIN referral_tree t ON u.referred_by = t.id WHERE t.level < 3" +
+      ") SELECT t.id, t.username, t.created_at AS joined, t.level," +
+      " COALESCE(SUM(i.amount), 0) AS invested," +
+      " EXISTS (SELECT 1 FROM deposits d WHERE d.user_id = t.id AND d.status = 'approved') AS deposited," +
+      " COALESCE((SELECT SUM(c.amount) FROM referral_commissions c WHERE c.user_id = ? AND c.source_user_id = t.id), 0) AS commission_earned" +
+      " FROM referral_tree t LEFT JOIN investments i ON i.user_id = t.id" +
+      " GROUP BY t.id, t.username, t.created_at, t.level" +
+      " ORDER BY t.level, t.created_at DESC"
+    ).bind(user.id, user.id).all(),
+    inviterStats(env, user.id),
+    env.DB.prepare("SELECT * FROM settings WHERE user_id = ?").bind(user.id).first(),
+    env.DB.prepare("SELECT action, payload_json, requested_at, issued_at, otp_expires_at FROM sensitive_action_verifications WHERE user_id = ? AND consumed_at IS NULL").bind(user.id).first(),
+  ]);
+  const simpleEarnRows = simpleEarnResult.results || [];
   const simpleEarnPositions = simpleEarnRows.map(position => { const elapsed = Math.max(0, Date.now() - Number(position.created_at)); const accruedInterest = Number((Number(position.principal) * Number(position.daily_rate) * elapsed / 86400000).toFixed(3)); return { ...position, accruedInterest, currentValue: Number((Number(position.principal) + accruedInterest).toFixed(3)) }; });
-  const redemptionRows = (await env.DB.prepare("SELECT position_id, amount, reference_value, created_at, segment_start_at, basis_quotes_json FROM market_position_redemptions WHERE user_id = ? ORDER BY created_at DESC").bind(user.id).all()).results || [];
+  const redemptionRows = redemptionResult.results || [];
   const redemptionsByPosition = new Map();
   for (const row of redemptionRows) {
     let bucket = redemptionsByPosition.get(Number(row.position_id));
@@ -739,28 +764,11 @@ async function fullState(env, user, request) {
     bucket.push({ amount: Number(row.amount), referenceValue: Number(row.reference_value), createdAt: Number(row.created_at), segmentStartAt: Number(row.segment_start_at), basisQuotes });
   }
   for (const position of marketPositions) position.redemptions = redemptionsByPosition.get(Number(position.id)) || [];
-  wallet = await env.DB.prepare("SELECT * FROM wallets WHERE user_id = ?").bind(user.id).first() || wallet;
-  const investments = (await env.DB.prepare("SELECT * FROM investments WHERE user_id = ? ORDER BY id DESC").bind(user.id).all()).results;
-  const deposits = (await env.DB.prepare("SELECT * FROM deposits WHERE user_id = ? ORDER BY id DESC").bind(user.id).all()).results;
-  const withdrawals = (await env.DB.prepare("SELECT * FROM withdrawals WHERE user_id = ? ORDER BY id DESC").bind(user.id).all()).results;
-  const team = (await env.DB.prepare(
-    "WITH RECURSIVE referral_tree(id, username, created_at, level) AS (" +
-    " SELECT id, username, created_at, 1 FROM users WHERE referred_by = ?" +
-    " UNION ALL" +
-    " SELECT u.id, u.username, u.created_at, t.level + 1 FROM users u" +
-    " JOIN referral_tree t ON u.referred_by = t.id WHERE t.level < 3" +
-    ") SELECT t.id, t.username, t.created_at AS joined, t.level," +
-    " COALESCE(SUM(i.amount), 0) AS invested," +
-    " EXISTS (SELECT 1 FROM deposits d WHERE d.user_id = t.id AND d.status = 'approved') AS deposited," +
-    " COALESCE((SELECT SUM(c.amount) FROM referral_commissions c WHERE c.user_id = ? AND c.source_user_id = t.id), 0) AS commission_earned" +
-    " FROM referral_tree t LEFT JOIN investments i ON i.user_id = t.id" +
-    " GROUP BY t.id, t.username, t.created_at, t.level" +
-    " ORDER BY t.level, t.created_at DESC"
-  ).bind(user.id, user.id).all()).results;
-  const inviteStats = await inviterStats(env, user.id);
-  const s = await env.DB.prepare("SELECT * FROM settings WHERE user_id = ?").bind(user.id).first();
-  
-  const actionRow = await env.DB.prepare("SELECT action, payload_json, requested_at, issued_at, otp_expires_at FROM sensitive_action_verifications WHERE user_id = ? AND consumed_at IS NULL").bind(user.id).first();
+  wallet = walletResult || wallet;
+  const investments = investmentsResult.results;
+  const deposits = depositsResult.results;
+  const withdrawals = withdrawalsResult.results;
+  const team = teamResult.results;
   let sensitiveAction = null;
   if (actionRow) {
     let payload = {};
@@ -1896,9 +1904,11 @@ async function syncMarketPositions(env, userId) {
   const rows = (await env.DB.prepare("SELECT * FROM market_positions WHERE user_id = ? ORDER BY created_at DESC").bind(userId).all()).results || [];
   if (!rows.length) return [];
   const now = Date.now();
+  const activeMarkets = [...new Set(rows.filter(row => ['active', 'paused'].includes(row.status)).map(positionElectricityMarket))];
+  const marketQuotes = new Map(await Promise.all(activeMarkets.map(async market => [market, await currentMarketQuotes(market)])));
   for (const row of rows) {
     if (!['active', 'paused'].includes(row.status)) continue;
-    const quotes = await currentMarketQuotes(positionElectricityMarket(row));
+    const quotes = marketQuotes.get(positionElectricityMarket(row)) || {};
     const marketValue = marketPositionValue(row, quotes);
     const amount = Number(row.amount);
     const stop = amount * (1 - Number(row.stop_loss_pct) / 100);
