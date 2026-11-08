@@ -3237,3 +3237,14 @@ body:has(#view-admin.active) .admin-brand-tag { display:inline-flex; align-items
 .asset-catalog-disclosure[open] .asset-market-row{min-height:64px;padding:12px 14px}
 body.asset-catalog-open{overflow:hidden}
 @media(max-width:600px){.asset-catalog-disclosure[open]{padding:0 12px max(18px,env(safe-area-inset-bottom))}.asset-catalog-disclosure[open]>summary{min-height:74px;margin:0 -12px;padding:12px 62px 12px 14px}.asset-catalog-disclosure[open]>summary>span{max-width:120px;font-size:9px;text-align:right}.asset-catalog-disclosure[open] .asset-market-list{margin-top:12px}.asset-catalog-close{width:38px;height:38px;top:max(10px,env(safe-area-inset-top));right:max(10px,env(safe-area-inset-right))}}
+
+
+/* Keep the catalog summary valid, readable and edge-to-edge in its expanded state. */
+.asset-catalog-heading{display:grid;gap:5px;min-width:0}
+.asset-catalog-heading .eyebrow{margin:0;color:var(--accent);font-size:9px;letter-spacing:.14em}
+.asset-catalog-heading [role=heading]{font-size:clamp(18px,2.5vw,25px);font-weight:800;line-height:1.2}
+.asset-catalog-disclosure[open]{padding:0 0 max(28px,env(safe-area-inset-bottom))}
+.asset-catalog-disclosure[open]>summary{margin:0;padding:15px max(70px,calc((100vw - 1280px)/2)) 15px;box-sizing:border-box}
+.asset-catalog-disclosure[open] .asset-catalog-heading [role=heading]{font-size:clamp(24px,3vw,34px)}
+.asset-catalog-open-hint{font-size:11px;line-height:1.4}
+@media(max-width:600px){.asset-catalog-disclosure[open]>summary{margin:0;padding:12px 60px 12px 14px}.asset-catalog-open-hint{max-width:110px;font-size:9px;text-align:right}}

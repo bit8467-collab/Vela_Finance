@@ -398,7 +398,7 @@ const marketApi = {
       return Response.json(await historyInFlight.get(selectedMarket), { headers: { "Cache-Control": "no-store" } });
     }
     if (url.pathname !== "/api/asset-prices") return new Response("Not found", { status: 404 });
-    if (cachedQuotes && cachedQuotesMarket === selectedMarket && Date.now() - cachedAt < 6_000) return Response.json({ ...cachedQuotes, electricityMarket: selectedMarket }, { headers: { "Cache-Control": "no-store" } });
+    if (cachedQuotes && cachedQuotesMarket === selectedMarket && Date.now() - cachedAt < 5_000) return Response.json({ ...cachedQuotes, electricityMarket: selectedMarket }, { headers: { "Cache-Control": "no-store" } });
     if (!refreshInFlight.has(selectedMarket)) {
       const task = loadQuotes(selectedMarket).then((data) => {
         if (Object.keys(data.quotes).length) { cachedQuotes = { quotes: { ...(cachedQuotes?.quotes || {}), ...data.quotes }, fetchedAt: data.fetchedAt }; cachedAt = Date.now(); cachedQuotesMarket = selectedMarket; }
@@ -3075,7 +3075,7 @@ app.get('/api/asset-prices/stream', (req, res) => {
   res.flushHeaders();
   assetPriceStreams.add(res);
   res.write(['event: ready', 'data: {}', '', ''].join(String.fromCharCode(10)));
-  if (!assetPriceStreamTimer) assetPriceStreamTimer = setInterval(() => { void publishAssetPriceUpdate(); }, 6000);
+  if (!assetPriceStreamTimer) assetPriceStreamTimer = setInterval(() => { void publishAssetPriceUpdate(); }, 5000);
   const heartbeat = setInterval(() => { if (!res.writableEnded) res.write(':' + ' keep-alive' + String.fromCharCode(10) + String.fromCharCode(10)); }, 20000);
   res.on('close', () => {
     clearInterval(heartbeat);
