@@ -1865,10 +1865,28 @@ const MARKET_PLAN_ALLOCATIONS = {
 
 async function currentMarketQuotes(selectedMarket = "DE-LU") {
   const market = normalizeElectricityMarket(selectedMarket), cached = positionQuoteCache.get(market);
-  if (cached && Date.now() - cached.fetchedAt < 1_000) return cached.quotes;
-  const data = await loadQuotes(market);
-  if (Object.keys(data.quotes || {}).length) positionQuoteCache.set(market, { quotes: data.quotes, fetchedAt: data.fetchedAt });
-  return positionQuoteCache.get(market)?.quotes || data.quotes || {};
+  let freshQuotes = {};
+  if (!(cached && Date.now() - cached.fetchedAt < 1_000)) {
+    try { freshQuotes = (await loadQuotes(market))?.quotes || {}; } catch (error) { console.warn('Live quote refresh failed; using last known prices:', error); }
+  }
+  const sharedQuotes = cachedQuotesMarket === market ? (cachedQuotes?.quotes || {}) : {};
+  const quotes = { ...sharedQuotes, ...(cached?.quotes || {}), ...freshQuotes };
+  const storedHistory = cachedHistoryMarket === market ? cachedHistory : null;
+  for (const key of MARKET_CUSTOM_ASSETS) {
+    const current = Number(quotes[key]?.price);
+    if (Number.isFinite(current) && current > 0) continue;
+    const series = storedHistory?.histories?.[key] || (key === 'electricity' ? null : persistedMarketHistoryData?.histories?.[key]);
+    if (!Array.isArray(series)) continue;
+    for (let i = series.length - 1; i >= 0; i--) {
+      const value = Number(series[i]?.value), time = Number(series[i]?.time);
+      if (Number.isFinite(value) && value > 0) {
+        quotes[key] = { ...(quotes[key] || {}), price: value, marketAt: time, currency: quotes[key]?.currency || 'USD', provider: quotes[key]?.provider || 'Last known market data' };
+        break;
+      }
+    }
+  }
+  if (Object.keys(quotes).length) positionQuoteCache.set(market, { quotes, fetchedAt: Date.now() });
+  return quotes;
 }
 
 function calendarMaturity(startedAt, months) {
