@@ -3076,3 +3076,8 @@ body:has(#view-admin.active) .admin-brand-tag { display:inline-flex; align-items
 #view-admin .admin-request-group>summary:hover{border-radius:12px}
 #view-admin .admin-request-hub>.section-heading{align-items:flex-start}
 #view-admin .admin-hub-note{max-width:26ch;text-align:right;line-height:1.45}
+
+
+/* Compact, high-clarity controls for protected full-platform backups. */
+#view-admin .admin-backup-section .admin-backup-status{margin:12px 0 0;color:var(--muted);font-size:11px;line-height:1.55}
+#view-admin .admin-backup-section .primary-button{min-height:44px}

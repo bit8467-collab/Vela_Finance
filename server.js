@@ -1259,6 +1259,7 @@ const workerHandler = {
       if (method === "POST" && pathName === "/api/settings") return await updateSettings(request, env);
       if (method === "POST" && pathName === "/api/change-password") return await changePassword(request, env);
       if (method === "GET" && pathName === "/api/admin/permissions") return await adminPermissions(request, env);
+      if (method === "GET" && pathName === "/api/admin/backup/export") return await adminDatabaseBackup(request, env);
       if (method === "GET" && pathName === "/api/admin/transactions") return await adminTransactions(request, env);
       if (method === "GET" && pathName === "/api/admin/ledger") return await adminGlobalLedger(request, env);
        if (method === "GET" && pathName === "/api/admin/password-reset-requests") return await listPasswordResetRequests(request, env);
@@ -2444,6 +2445,24 @@ async function listPasswordResetRequests(request, env) {
   if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
   const requests = (await env.DB.prepare("SELECT r.user_id, r.requested_at, r.otp_expires_at, r.issued_at, u.username, u.identifier FROM password_reset_requests r JOIN users u ON u.id = r.user_id ORDER BY r.requested_at DESC").all()).results;
   return Response.json({ requests });
+}
+
+async function adminDatabaseBackup(request, env) {
+  const actor = await privilegedAdminActor(request, env);
+  if (!actor) return Response.json({ error: "Accesso amministratore richiesto." }, { status: 403 });
+  const objects = (await env.DB.prepare("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE type IN ('table','index','trigger','view') AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL ORDER BY type, name").all()).results || [];
+  const tableObjects = objects.filter((item) => item.type === 'table');
+  const tables = {};
+  for (const item of tableObjects) {
+    const identifier = '"' + String(item.name).replaceAll('"', '""') + '"';
+    const result = await env.DB.prepare('SELECT * FROM ' + identifier).all();
+    tables[item.name] = result.results || [];
+  }
+  const createdAt = new Date().toISOString();
+  const filename = 'ginzeh-backup-' + createdAt.replace(/[:.]/g, '-') + '.json';
+  return new Response(JSON.stringify({ format: 'ginzeh-full-backup-v1', createdAt, tables, schema: objects }), {
+    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Disposition': 'attachment; filename="' + filename + '"' }
+  });
 }
 
 async function adminTransactions(request, env) {

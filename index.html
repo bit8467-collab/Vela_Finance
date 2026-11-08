@@ -373,6 +373,12 @@
       <section class="view" id="view-admin" aria-labelledby="admin-title">
         <div class="page-heading"><div><p class="eyebrow">ADMINISTRATION</p><h1 id="admin-title">Admin</h1></div></div>
         <p class="page-intro">Review requests and manage account information.</p>
+        <div class="admin-section admin-backup-section" id="admin-backup-section" hidden>
+          <div class="section-heading"><div><p class="eyebrow">DATA PROTECTION</p><h2>Full platform backup</h2></div></div>
+          <p class="page-intro">Download a JSON copy of every database table and its schema. It includes sensitive account data; store the file securely.</p>
+          <button class="primary-button" id="admin-backup-download" type="button">Download full backup</button>
+          <p class="admin-backup-status" id="admin-backup-status" role="status" aria-live="polite">Automatic download is scheduled daily at 23:59 on this device. Keep this app open and the admin signed in.</p>
+        </div>
         <button class="admin-payment-launch" id="open-payment-desk" type="button" hidden>Open payment desk <span aria-hidden="true">↗</span></button>
         <div class="admin-section admin-overview" id="admin-overview">
           <div class="section-heading"><div><p class="eyebrow">PLATFORM OVERVIEW</p><h2>Global statistics</h2></div></div>
