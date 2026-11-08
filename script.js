@@ -1859,7 +1859,6 @@ function renderCustomPortfolio(lang=localStorage.getItem('you-invest-language')|
   section.querySelectorAll('[data-custom-weight]').forEach(input=>input.addEventListener('input',()=>updateCustomPortfolioSummary(lang)));
   ['custom-portfolio-months','custom-portfolio-amount','custom-portfolio-stop','custom-portfolio-source'].forEach(id=>$(id).addEventListener('input',()=>updateCustomPortfolioSummary(lang)));
   ['custom-portfolio-months','custom-portfolio-source'].forEach(id=>$(id).addEventListener('change',()=>updateCustomPortfolioSummary(lang)));
-  $('custom-portfolio-submit').addEventListener('click',submitCustomPortfolio);
   updateCustomPortfolioSummary(lang);
 }
 function updateCustomPortfolioSummary(lang=localStorage.getItem('you-invest-language')||'en'){
@@ -1868,18 +1867,20 @@ function updateCustomPortfolioSummary(lang=localStorage.getItem('you-invest-lang
   const total=section.querySelectorAll('[data-custom-asset]:checked');if(total.length===1)total[0].closest('.custom-asset-row').querySelector('[data-custom-weight]').value='100';let weightSum=0,weightsValid=total.length>=1;total.forEach(check=>{const weight=Number(check.closest('.custom-asset-row').querySelector('[data-custom-weight]').value);if(!Number.isFinite(weight)||weight<=0||weight>100)weightsValid=false;weightSum+=Number.isFinite(weight)?weight:0});
   $('custom-portfolio-fee').textContent=amount(fee);$('custom-portfolio-total').textContent=amount(principal+fee);$('custom-portfolio-available').textContent=amount(available);
   const sumLabel=$('custom-portfolio-allocation-total');sumLabel.textContent=translateText('Allocation total: {percent}%',lang).replace('{percent}',weightSum.toFixed(1).replace(/\.0$/,''));sumLabel.classList.toggle('valid',weightsValid&&Math.abs(weightSum-100)<0.01);
-  const submit=$('custom-portfolio-submit');submit.disabled=!token||principal<1000||!Number.isFinite(principal)||!Number.isFinite(stop)||stop<1||stop>90||!weightsValid||Math.abs(weightSum-100)>0.01||available+1e-9<principal+fee;
+  const submit=$('custom-portfolio-submit');submit.disabled=false;
 }
 async function submitCustomPortfolio(){
-  const error=$('custom-portfolio-error');error.textContent='';if(!token){auth('login');return}if(!$('custom-portfolio-risk-ack')?.checked){error.textContent='Please acknowledge the market and loss risks before starting this plan.';return}
+  const button=$('custom-portfolio-submit');if(button?.disabled)return;const error=$('custom-portfolio-error');error.textContent='';if(!token){auth('login');return}if(!$('custom-portfolio-risk-ack')?.checked){error.textContent='Please acknowledge the market and loss risks before starting this plan.';return}
   const allocations=[...$('custom-portfolio-section').querySelectorAll('[data-custom-asset]:checked')].map(check=>({asset:check.dataset.customAsset,weight:Number(check.closest('.custom-asset-row').querySelector('[data-custom-weight]').value)}));
-  const payload={months:Number($('custom-portfolio-months').value),amount:Number($('custom-portfolio-amount').value),stopLossPct:Number($('custom-portfolio-stop').value),source:$('custom-portfolio-source').value,allocations,riskAcknowledged:true,electricityMarket:electricityMarket()};
-  const button=$('custom-portfolio-submit');button.disabled=true;
+  const months=Number($('custom-portfolio-months').value),amountValue=Number($('custom-portfolio-amount').value),stopLossPct=Number($('custom-portfolio-stop').value),source=$('custom-portfolio-source').value,fee=Number(CUSTOM_PORTFOLIO_FEES[months]||0),available=Number(state?.wallet?.[source]||0),weightTotal=allocations.reduce((sum,item)=>sum+item.weight,0);
+  if(!Number.isFinite(amountValue)||amountValue<1000){error.textContent='The minimum custom investment is 1,000 USDT.';return}if(!Number.isFinite(stopLossPct)||stopLossPct<1||stopLossPct>90){error.textContent='Choose a stop loss between 1% and 90%.';return}if(!allocations.length||allocations.some(item=>!Number.isFinite(item.weight)||item.weight<=0||item.weight>100)||Math.abs(weightTotal-100)>0.01){error.textContent='Select assets and make their weights total 100%.';return}if(available+1e-9<amountValue+fee){error.textContent='Insufficient available balance for the investment and plan fee.';return}
+  const payload={months,amount:amountValue,stopLossPct,source,allocations,riskAcknowledged:true,electricityMarket:electricityMarket()};
+  button.disabled=true;
   try{const result=await post('/api/market/custom-invest',payload);$('custom-portfolio-risk-ack').checked=false;await refreshState();const disclosure=$('custom-portfolio-section').closest('details');if(disclosure)disclosure.open=false;go('investments');notice(translateText('Custom portfolio started.',localStorage.getItem('you-invest-language')||'en')+' '+translateText('Service fee',localStorage.getItem('you-invest-language')||'en')+': '+amount(result.fee));}
   catch(e){error.textContent=e.message;updateCustomPortfolioSummary()}
   finally{if($('custom-portfolio-submit'))updateCustomPortfolioSummary()}
 }
-
+document.addEventListener('click',event=>{if(event.target.closest('#custom-portfolio-submit')){event.preventDefault();void submitCustomPortfolio()}});
 
 function openAddFunds(positionId){const p=(state?.marketPositions||[]).find(x=>Number(x.id)===Number(positionId));if(!p)return;const lang=localStorage.getItem('you-invest-language')||'en';$('add-funds-plan-terms').textContent=translateText(p.months===6?'6 months':(p.months/12)+' years',lang)+' · '+translateText('fixed stop',lang)+' '+p.stopLossPct+'% · '+translateText('Reference value',lang)+' '+amount(p.currentValue);$('add-funds-available').textContent=amount(state?.wallet?.deposit||0);$('add-funds-amount').value='';$('add-funds-dialog').dataset.positionId=String(positionId);open('add-funds-dialog')}
 document.addEventListener('click',e=>{const b=e.target.closest('[data-add-funds]');if(b)openAddFunds(b.dataset.addFunds)});
