@@ -269,11 +269,9 @@
           <div id="plan-history-chart" class="asset-history-chart line-chart" aria-live="polite"><p>Historical market data is loading...</p></div><div id="market-trend-indicator" class="market-trend neutral" role="status" aria-live="polite"><svg class="market-trend-gauge" viewBox="0 0 16 10" aria-hidden="true"><path d="M1 9a7 7 0 0 1 14 0"/><path class="gauge-needle" d="m8 8 3-4"/><circle cx="8" cy="8" r="1"/></svg><span class="market-trend-copy"><b id="market-trend-label">Trend in caricamento</b><small id="market-trend-value">Indicatore informativo · non indica il momento migliore per investire</small></span></div>
           <p class="asset-history-source">Market-weighted reference performance, derived from available live asset history.</p>
         </section>
-        <details class="market-history-card asset-catalog-disclosure" id="asset-catalog-disclosure" aria-labelledby="asset-market-title">
-          <summary class="market-history-heading"><span class="asset-catalog-heading"><span class="eyebrow">MARKET</span><span id="asset-market-title" role="heading" aria-level="2">Assets</span></span><span class="asset-catalog-open-hint">Tap an asset for its chart</span></summary>
-          <button class="asset-catalog-close" id="asset-catalog-close" type="button" aria-label="Close asset list">×</button>
-          <div id="asset-market-list" class="asset-market-list"><p>Historical market data is loading...</p></div>
-        </details>
+        <button class="market-history-card asset-catalog-entry" type="button" data-go="assets" aria-label="Open assets and their charts">
+          <span class="asset-catalog-heading"><span class="eyebrow">MARKET</span><span role="heading" aria-level="2">Assets</span></span><span class="asset-catalog-open-hint">Open indices and assets charts <b aria-hidden="true">→</b></span>
+        </button>
         <details class="catalog-disclosure standard-plan-disclosure">
           <summary><span>Start a plan</span><small>Choose duration, amount and risk</small><i aria-hidden="true">⌄</i></summary>
           <section class="custom-plan-card" id="custom-plan-section" aria-labelledby="custom-plan-title"></section>
@@ -302,6 +300,22 @@
             </div>
           </div>
         </dialog>
+      </section>
+
+      <section class="view assets-page" id="view-assets" aria-labelledby="asset-page-title">
+        <div class="assets-page-inner">
+          <header class="assets-page-header">
+            <button class="assets-back-button" type="button" data-go="catalog" aria-label="Back to plans"><span aria-hidden="true">←</span> Plans</button>
+            <div><p class="eyebrow">PLANS · MARKET</p><h1 id="asset-page-title">Assets & indices</h1><p class="assets-page-subtitle">Select any index or asset to view its dedicated historical chart.</p></div>
+          </header>
+          <section class="assets-chart-panel" aria-labelledby="asset-detail-title">
+            <div class="assets-chart-heading"><div><p class="eyebrow">HISTORICAL PERFORMANCE</p><h2 id="asset-detail-title">Choose an asset</h2></div><div class="asset-detail-quote" id="asset-detail-quote"></div></div>
+            <label class="electricity-market-control" id="electricity-market-control" hidden><span>Electricity market</span><select id="electricity-market-select" aria-label="Electricity market"></select><small>Regional day-ahead wholesale prices; not a global or CME futures quote.</small></label>
+            <div id="asset-chart-ranges" class="asset-chart-ranges" role="group" aria-label="Chart time range"></div>
+            <div id="asset-detail-chart" class="asset-history-chart line-chart" aria-live="polite"><p>Select an index or asset below to load its chart.</p></div>
+          </section>
+          <section class="assets-directory" aria-labelledby="asset-directory-title"><div class="section-heading"><div><p class="eyebrow">MARKET DIRECTORY</p><h2 id="asset-directory-title">Indices & assets</h2></div></div><div id="asset-market-list" class="asset-market-list"><p>Historical market data is loading...</p></div></section>
+        </div>
       </section>
 
       <section class="view" id="view-transactions" aria-labelledby="transactions-title">
@@ -659,17 +673,6 @@
         
         <div class="investment-detail-actions"><button class="primary-button" id="investment-detail-redeem-gains" type="button" hidden>Redeem gains</button><button class="outline-button" id="investment-detail-add-funds" type="button" hidden>Add funds</button><button class="danger-button" id="investment-detail-close-early" type="button" hidden>Close early · 65% fee</button></div>
         <p class="modal-footnote">The platform tracks reference quotes; it does not purchase or custody these assets. Closing early deducts 65% of current reference value; the remainder stays in the internal balance.</p>
-      </div>
-    </dialog>
-
-    <dialog class="modal asset-detail-dialog" id="asset-detail-dialog" aria-labelledby="asset-detail-title">
-      <div class="modal-card detail-modal-card">
-        <button class="modal-close" type="button" data-close="asset-detail-dialog" aria-label="Close">×</button>
-        <p class="eyebrow">HISTORICAL PERFORMANCE</p><h2 id="asset-detail-title">Asset chart</h2>
-        <label class="electricity-market-control" id="electricity-market-control" hidden><span>Electricity market</span><select id="electricity-market-select" aria-label="Electricity market"></select><small>Regional day-ahead wholesale prices; not a global or CME futures quote.</small></label>
-        <div id="asset-chart-ranges" class="asset-chart-ranges" role="group" aria-label="Chart time range"></div>
-        <div id="asset-detail-chart" class="asset-history-chart line-chart"></div>
-        <div id="asset-detail-quote" class="asset-detail-quote"></div>
       </div>
     </dialog>
 

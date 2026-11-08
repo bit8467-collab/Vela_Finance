@@ -3248,3 +3248,43 @@ body.asset-catalog-open{overflow:hidden}
 .asset-catalog-disclosure[open] .asset-catalog-heading [role=heading]{font-size:clamp(24px,3vw,34px)}
 .asset-catalog-open-hint{font-size:11px;line-height:1.4}
 @media(max-width:600px){.asset-catalog-disclosure[open]>summary{margin:0;padding:12px 60px 12px 14px}.asset-catalog-open-hint{max-width:110px;font-size:9px;text-align:right}}
+
+
+/* Dedicated full-screen plans asset page (normal view navigation, never a modal). */
+.asset-catalog-entry{width:100%;display:flex;align-items:center;justify-content:space-between;gap:16px;text-align:left;cursor:pointer;color:var(--text)}
+.asset-catalog-entry .asset-catalog-heading{display:grid;gap:5px}
+.asset-catalog-heading [role=heading]{font-size:20px;font-weight:800;line-height:1.2}
+.asset-catalog-entry .asset-catalog-open-hint{display:flex;align-items:center;gap:12px;color:var(--muted);font-size:11px}
+.asset-catalog-entry .asset-catalog-open-hint b{color:var(--accent);font-size:20px}
+#app-shell[data-view="assets"]{width:100%;max-width:none;min-height:100dvh;margin:0;padding:0;background:var(--bg)}
+#app-shell[data-view="assets"]>.topbar,#app-shell[data-view="assets"]~.bottom-nav{display:none!important}
+#app-shell[data-view="assets"] .view-assets{min-height:100dvh;padding:0;}
+#app-shell[data-view="assets"] .view-assets.active{display:block}
+.assets-page-inner{width:min(100%,1320px);min-height:100dvh;margin:0 auto;padding:clamp(18px,4vw,48px) clamp(14px,4vw,46px) max(30px,env(safe-area-inset-bottom));}
+.assets-page-header{display:flex;align-items:flex-start;gap:clamp(18px,4vw,54px);padding:2px 0 25px;border-bottom:1px solid var(--line)}
+.assets-back-button{flex:0 0 auto;display:inline-flex;align-items:center;gap:9px;min-height:42px;border:1px solid var(--line);border-radius:12px;background:var(--surface);color:var(--text);padding:0 14px;font:inherit;font-size:13px;font-weight:700;cursor:pointer}
+.assets-back-button span{font-size:19px;color:var(--accent)}
+.assets-page-header h1{margin:0;font-size:clamp(25px,4vw,40px);letter-spacing:-.035em}
+.assets-page-subtitle{margin:8px 0 0;color:var(--muted);font-size:13px}
+.assets-chart-panel{margin:24px 0 30px;padding:clamp(14px,2.5vw,28px);border:1px solid var(--line);border-radius:20px;background:var(--surface)}
+.assets-chart-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:20px}
+.assets-chart-heading h2{margin:2px 0 0;font-size:clamp(20px,3vw,30px)}
+.assets-chart-heading .asset-detail-quote{display:grid;gap:5px;text-align:right}
+.assets-chart-heading .asset-detail-quote b{font-size:clamp(17px,2.5vw,24px)}
+.assets-chart-heading .asset-detail-quote small{max-width:360px;color:var(--muted);font-size:10px;line-height:1.5}
+.assets-chart-panel .asset-chart-ranges{max-width:620px;margin-top:22px}
+.assets-chart-panel .asset-chart-range{min-height:38px;font-size:11px}
+.assets-chart-panel .asset-history-chart{min-height:290px;margin-top:12px}
+.assets-chart-panel .asset-history-chart>p{padding:110px 12px;font-size:13px}
+.assets-chart-panel .asset-history-chart svg{max-height:450px}
+.assets-directory .section-heading{margin-bottom:14px}
+.assets-directory .section-heading h2{font-size:20px}
+.assets-directory .asset-market-list{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.assets-directory .asset-market-group{background:var(--surface)}
+.assets-directory .asset-market-group-items{grid-template-columns:repeat(2,minmax(0,1fr))}
+.assets-directory .asset-market-row{min-height:65px;padding:10px 12px;cursor:pointer}
+.assets-directory .asset-market-row:hover{border-color:var(--accent);background:var(--surface-2)}
+.electricity-market-control:not([hidden]){display:grid;gap:8px;margin-top:18px;color:var(--text);font-size:12px}
+.electricity-market-control select{width:min(100%,380px);min-height:40px;border:1px solid var(--line);border-radius:10px;background:var(--surface-2);color:var(--text);padding:8px}
+.electricity-market-control small{color:var(--muted);font-size:10px}
+@media(max-width:680px){.assets-page-inner{padding:14px 12px max(22px,env(safe-area-inset-bottom))}.assets-page-header{gap:13px;padding-bottom:18px}.assets-back-button{min-height:38px;padding:0 10px;font-size:11px}.assets-page-subtitle{font-size:11px}.assets-chart-panel{margin:15px 0 22px;padding:13px;border-radius:15px}.assets-chart-heading{gap:10px}.assets-chart-heading .asset-detail-quote small{max-width:155px;font-size:8px}.assets-chart-panel .asset-history-chart{min-height:220px}.assets-chart-panel .asset-chart-ranges{grid-template-columns:repeat(6,minmax(0,1fr));gap:3px}.assets-chart-panel .asset-chart-range{min-height:34px;padding:0 2px;font-size:9px}.assets-directory .asset-market-list{grid-template-columns:1fr}.assets-directory .asset-market-group-items{grid-template-columns:1fr}.assets-directory .asset-market-row{min-height:58px}}
