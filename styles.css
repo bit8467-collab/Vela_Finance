@@ -3148,3 +3148,33 @@ body:has(#view-admin.active) .admin-brand-tag { display:inline-flex; align-items
 @media(max-width:980px){#view-admin .admin-workspace-shell{grid-template-columns:minmax(205px,235px) minmax(0,1fr);gap:12px}#view-admin .admin-workspace-nav{padding:9px}#view-admin .admin-workspace-stage>.admin-section>.admin-workspace-content,#view-admin .admin-workspace-stage>details>.admin-workspace-content{padding:15px}}
 @media(max-width:760px){#view-admin .admin-workspace-shell{grid-template-columns:minmax(0,1fr);gap:11px}#view-admin .admin-workspace-nav{position:relative;top:auto;max-height:none;overflow:visible}#view-admin .admin-workspace-nav-list{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}#view-admin .admin-workspace-link{min-height:58px}#view-admin .admin-workspace-stage{min-height:0}#view-admin .admin-workspace-stage>details.admin-workspace-disclosure.is-workspace-active,#view-admin .admin-workspace-stage>.admin-section.is-workspace-active{border-radius:15px}#view-admin .admin-workspace-stage>.admin-section>.section-heading,#view-admin .admin-workspace-stage>details.admin-workspace-disclosure>.admin-workspace-summary{min-height:72px;padding:14px 16px}}
 @media(max-width:520px){#view-admin .admin-workspace-nav-list{grid-template-columns:1fr}#view-admin .admin-workspace-link{min-height:48px}#view-admin .admin-workspace-stage>.admin-section>.admin-workspace-content,#view-admin .admin-workspace-stage>details>.admin-workspace-content{padding:11px}#view-admin .admin-workspace-stage .admin-users-toolbar,#view-admin .admin-workspace-stage .deposit-address-settings{grid-template-columns:minmax(0,1fr)}#view-admin .admin-workspace-stage .deposit-address-settings button{grid-column:auto}#view-admin .admin-workspace-stage .admin-queue{grid-template-columns:minmax(0,1fr)}#view-admin .admin-workspace-stage .admin-request-group-content{padding:10px}}
+
+
+/* Request center: a single, scannable queue dashboard. */
+#view-admin .admin-workspace-stage>#admin-request-hub.is-workspace-active>.admin-workspace-content{grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-flow:row dense;align-items:start;gap:11px;padding:18px}
+#view-admin #admin-request-hub>.admin-workspace-content>.admin-request-search{grid-column:1/-1;order:-1;margin:0 0 3px;padding:14px 16px;border:1px solid color-mix(in srgb,var(--line) 70%,var(--accent) 30%);border-radius:14px;background:linear-gradient(110deg,color-mix(in srgb,var(--accent) 7%,var(--surface)),var(--surface))}
+#view-admin #admin-request-hub>.admin-workspace-content>.admin-request-search>span{font-size:12px;font-weight:800;letter-spacing:.02em}
+#view-admin #admin-request-hub>.admin-workspace-content>.admin-request-search input{min-height:46px;border-radius:10px;font-size:13px}
+#view-admin #admin-request-hub>.admin-workspace-content>.admin-request-group,#view-admin #admin-request-hub>.admin-workspace-content>.admin-password-reset-requests{align-self:start;margin:0;order:2}
+#view-admin #admin-request-hub>.admin-workspace-content>#request-group-wallet{order:0;border-color:color-mix(in srgb,var(--accent) 45%,var(--line));box-shadow:inset 3px 0 0 var(--accent),0 4px 15px #0000000a}
+#view-admin #admin-request-hub>.admin-workspace-content>#request-group-accounts{order:1}
+#view-admin #admin-request-hub>.admin-workspace-content>#request-group-deposits{order:2}
+#view-admin #admin-request-hub>.admin-workspace-content>#request-group-withdrawals{order:3}
+#view-admin #admin-request-hub>.admin-workspace-content>.admin-password-reset-requests{order:4}
+#view-admin #admin-request-hub>.admin-workspace-content>#request-group-otp{grid-column:1/-1;order:5}
+#view-admin #admin-request-hub .admin-request-group>summary,#view-admin #admin-request-hub .admin-password-reset-requests>summary{min-height:68px;padding:14px 16px}
+#view-admin #admin-request-hub .admin-request-group>summary>span:first-child,#view-admin #admin-request-hub .admin-password-reset-requests>summary{font-size:13px;font-weight:800}
+#view-admin #admin-request-hub .admin-request-group-content{gap:12px;padding:12px}
+#view-admin #admin-request-hub .admin-request-group-content>.admin-queue{grid-template-columns:repeat(auto-fit,minmax(min(100%,270px),1fr));gap:9px}
+#view-admin #admin-request-hub #request-group-otp .admin-request-group-content{grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}
+#view-admin #admin-request-hub .admin-request-subsection{min-width:0;margin:0;padding:0;border:1px solid var(--line);border-radius:12px;background:color-mix(in srgb,var(--surface-2) 34%,var(--surface))}
+#view-admin #admin-request-hub .admin-request-subsection>summary{display:flex;align-items:center;justify-content:space-between;min-height:48px;padding:11px 13px;border:0;border-radius:12px;font-size:11px;font-weight:800}
+#view-admin #admin-request-hub .admin-request-subsection[open]>summary{border-bottom:1px solid var(--line);border-radius:12px 12px 0 0}
+#view-admin #admin-request-hub .admin-request-subsection>.admin-queue,#view-admin #admin-request-hub .admin-request-subsection>.queue-empty{margin:0;padding:11px}
+#view-admin #admin-request-hub .admin-request-subsection .queue-empty{border:0;background:transparent;text-align:left;font-size:10px}
+#view-admin #admin-request-hub .queue-empty{margin:0 12px 12px;padding:8px 2px;border:0;border-top:1px solid color-mix(in srgb,var(--line) 70%,transparent);border-radius:0;background:transparent;color:var(--muted);text-align:left;font-size:10px}
+#view-admin #admin-request-hub .admin-request{gap:8px;padding:12px}
+#view-admin #admin-request-hub .admin-request button{min-height:38px}
+#view-admin #admin-request-hub .count-pill{flex:0 0 auto;min-width:28px;height:28px}
+#view-admin #admin-request-hub .admin-request-group[open],#view-admin #admin-request-hub .admin-password-reset-requests[open]{border-color:color-mix(in srgb,var(--accent) 35%,var(--line));background:var(--surface)}
+@media(max-width:760px){#view-admin .admin-workspace-stage>#admin-request-hub.is-workspace-active>.admin-workspace-content{grid-template-columns:minmax(0,1fr);padding:12px}#view-admin #admin-request-hub>.admin-workspace-content>#request-group-otp{grid-column:auto}#view-admin #admin-request-hub #request-group-otp .admin-request-group-content{grid-template-columns:minmax(0,1fr)}}
