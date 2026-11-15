@@ -1047,7 +1047,8 @@ const workerHandler = {
           net TEXT NOT NULL,
           date INTEGER NOT NULL,
           status TEXT NOT NULL DEFAULT 'approved',
-          tx_reference TEXT NOT NULL DEFAULT ''
+          tx_reference TEXT NOT NULL DEFAULT '',
+          deposit_address TEXT NOT NULL DEFAULT ''
         );`,
         `CREATE TABLE IF NOT EXISTS withdrawals (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1146,6 +1147,7 @@ const workerHandler = {
     ]);
     try { await env.DB.prepare("ALTER TABLE admin_roles ADD COLUMN permissions_json TEXT NOT NULL DEFAULT '{}'").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE users ADD COLUMN last_login_at INTEGER").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE deposits ADD COLUMN deposit_address TEXT NOT NULL DEFAULT ").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE settings ADD COLUMN auto_redeem_pct REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN fee_amount REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN charged_amount REAL NOT NULL DEFAULT 0").run(); } catch {}
@@ -1853,10 +1855,12 @@ async function deposit(request, env) {
   const amount = Number(body.amount);
   const net = String(body.net || "").trim();
   const txReference = String(body.txReference || "").trim().slice(0, 180);
+  const depositAddress = String(body.depositAddress || "").trim().slice(0, 160);
   if (!Number.isFinite(amount) || amount < 50) return bad("Il deposito minimo è di 50 USDT.");
   if (!["BNB", "TRC20", "BTC", "USDC"].includes(net)) return bad("Rete non valida.");
   const officialAddresses = await readDepositAddresses(env);
-  if (!officialAddresses[net]) return bad("Questa rete non è ancora configurata per i depositi. Non inviare fondi.");
+  const addressPool = String(officialAddresses[net] || "").split(/[,;]+/).map(address => address.trim()).filter(Boolean);
+  if (!addressPool.length) return bad("Questa rete non è ancora configurata per i depositi. Non inviare fondi.");
   if (!txReference) return bad("Inserisci l'ID o hash della transazione per la verifica.");
   
   const existingDep = await env.DB.prepare("SELECT id FROM deposits WHERE lower(tx_reference) = lower(?)").bind(txReference).first();
@@ -1867,7 +1871,7 @@ async function deposit(request, env) {
   await accrue(env, user.id);
   const created = Date.now();
   await env.DB.batch([
-    env.DB.prepare("INSERT INTO deposits (user_id, amount, net, date, status, tx_reference) VALUES (?,?,?,?, 'pending', ?)").bind(user.id, amount, net, created, txReference),
+    env.DB.prepare("INSERT INTO deposits (user_id, amount, net, date, status, tx_reference, deposit_address) VALUES (?,?,?,?, 'pending', ?, ?)").bind(user.id, amount, net, created, txReference, depositAddress),
     env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Deposit request submitted", amount.toFixed(3) + " USDT · " + net + " · Pending review.", created),
   ]);
   await recordAntifraudEvent(request, env, user, 'deposit', txReference);
