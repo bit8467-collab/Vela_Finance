@@ -1861,6 +1861,7 @@ async function deposit(request, env) {
   const officialAddresses = await readDepositAddresses(env);
   const addressPool = String(officialAddresses[net] || "").split(/[,;]+/).map(address => address.trim()).filter(Boolean);
   if (!addressPool.length) return bad("Questa rete non è ancora configurata per i depositi. Non inviare fondi.");
+  if (!addressPool.includes(depositAddress)) return bad("Indirizzo di deposito non valido o aggiornato. Ricarica prima di inviare la richiesta.");
   if (!txReference) return bad("Inserisci l'ID o hash della transazione per la verifica.");
   
   const existingDep = await env.DB.prepare("SELECT id FROM deposits WHERE lower(tx_reference) = lower(?)").bind(txReference).first();
