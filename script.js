@@ -1594,7 +1594,7 @@ m=String(text||'').match(/^Network (.+) · Address change request successfully a
 m=String(text||'').match(/^Network (.+) · Address change request rejected: the new address is already used by another account\.$/);if(m)return [text,'Réseau '+m[1]+' · Demande refusée : la nouvelle adresse est déjà utilisée par un autre compte.','Red '+m[1]+' · Solicitud rechazada: otra cuenta ya utiliza la nueva dirección.','Netzwerk '+m[1]+' · Antrag abgelehnt: Die neue Adresse wird bereits von einem anderen Konto verwendet.','Rede '+m[1]+' · Pedido recusado: o novo endereço já está a ser utilizado por outra conta.','नेटवर्क '+m[1]+' · अनुरोध अस्वीकृत: नया पता पहले से किसी अन्य खाते में उपयोग हो रहा है।','网络 '+m[1]+' · 请求已拒绝：新地址已被其他账户使用。','Rete '+m[1]+' · Richiesta rifiutata: il nuovo indirizzo è già utilizzato da un altro account.'][i];
 return null;};
 function rewriteOperationalCopy(source, translated, language) {
-  const context=String(source??'')+' '+String(translated??'');
+  const sourceText=String(source??'').trim(), context=sourceText+' '+String(translated??'');
   const direct={
     'Deposits to review':['Deposits managed automatically','Dépôts gérés automatiquement','Depósitos gestionados automáticamente','Einzahlungen automatisch verwaltet','Depósitos geridos automaticamente','जमा राशि स्वचालित रूप से प्रबंधित','存款由系统自动处理','Depositi gestiti automaticamente'],
     'Withdrawals to review':['Withdrawals managed automatically','Retraits gérés automatiquement','Retiros gestionados automáticamente','Auszahlungen automatisch verwaltet','Levantamentos geridos automaticamente','निकासी स्वचालित रूप से प्रबंधित','提现由系统自动处理','Prelievi gestiti automaticamente'],
