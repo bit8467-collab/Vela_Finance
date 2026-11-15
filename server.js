@@ -1147,7 +1147,7 @@ const workerHandler = {
     ]);
     try { await env.DB.prepare("ALTER TABLE admin_roles ADD COLUMN permissions_json TEXT NOT NULL DEFAULT '{}'").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE users ADD COLUMN last_login_at INTEGER").run(); } catch {}
-    try { await env.DB.prepare("ALTER TABLE deposits ADD COLUMN deposit_address TEXT NOT NULL DEFAULT ").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE deposits ADD COLUMN deposit_address TEXT NOT NULL DEFAULT ''").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE settings ADD COLUMN auto_redeem_pct REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN fee_amount REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN charged_amount REAL NOT NULL DEFAULT 0").run(); } catch {}
