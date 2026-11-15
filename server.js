@@ -849,7 +849,8 @@ const workerHandler = {
           invite_code TEXT NOT NULL,
           referred_by TEXT,
           created_at INTEGER NOT NULL,
-          email_verified INTEGER NOT NULL DEFAULT 0
+          email_verified INTEGER NOT NULL DEFAULT 0,
+          last_login_at INTEGER
         );`,
         `CREATE TABLE IF NOT EXISTS sessions (
           token TEXT PRIMARY KEY,
@@ -1144,6 +1145,7 @@ const workerHandler = {
       'CREATE INDEX IF NOT EXISTS referral_commissions_user_source ON referral_commissions(user_id, source_user_id)',
     ]);
     try { await env.DB.prepare("ALTER TABLE admin_roles ADD COLUMN permissions_json TEXT NOT NULL DEFAULT '{}'").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE users ADD COLUMN last_login_at INTEGER").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE settings ADD COLUMN auto_redeem_pct REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN fee_amount REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN charged_amount REAL NOT NULL DEFAULT 0").run(); } catch {}
@@ -1788,7 +1790,11 @@ async function login(request, env) {
     const role = await env.DB.prepare("SELECT role FROM admin_roles WHERE user_id = ?").bind(user.id).first();
     if (role) return await beginAdminAuthenticator(env, user.id);
     const token = makeToken();
-    await env.DB.prepare("INSERT INTO sessions (token, user_id, created_at) VALUES (?,?,?)").bind(token, user.id, Date.now()).run();
+    const lastLoginAt = Date.now();
+    await env.DB.batch([
+      env.DB.prepare("UPDATE users SET last_login_at = ? WHERE id = ?").bind(lastLoginAt, user.id),
+      env.DB.prepare("INSERT INTO sessions (token, user_id, created_at) VALUES (?,?,?)").bind(token, user.id, lastLoginAt)
+    ]);
     return Response.json({ ok: true, mode: "user", token });
   }
   if (!user) return Response.json({ error: "Account non trovato. Registrati prima di accedere." }, { status: 400 });
@@ -2663,7 +2669,7 @@ async function adminUsers(request, env) {
 async function adminUserDetails(request, env, userId) {
   const actor = await adminAccess(request, env, "users");
   if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
-  const target = await env.DB.prepare("SELECT u.id, u.username, u.identifier, u.created_at, u.referred_by, u.email_verified, COALESCE(r.role, 'user') AS role, COALESCE(r.permissions_json, '{}') AS permissions_json FROM users u LEFT JOIN admin_roles r ON r.user_id = u.id WHERE u.id = ?").bind(userId).first();
+  const target = await env.DB.prepare("SELECT u.id, u.username, u.identifier, u.created_at, u.last_login_at, u.referred_by, u.email_verified, COALESCE(r.role, 'user') AS role, COALESCE(r.permissions_json, '{}') AS permissions_json FROM users u LEFT JOIN admin_roles r ON r.user_id = u.id WHERE u.id = ?").bind(userId).first();
   if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
   const wallet = await accrue(env, target.id);
   const investments = (await env.DB.prepare("SELECT id, amount, days, rate, created, credited, active FROM investments WHERE user_id = ? ORDER BY created DESC").bind(target.id).all()).results;
