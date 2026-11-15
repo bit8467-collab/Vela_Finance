@@ -1464,6 +1464,7 @@ Object.assign(rows, {
 });
 uiRows['Last access']=['Last access','Dernier accès','Último acceso','Letzter Zugriff','Último acesso','अंतिम पहुँच','上次访问','Ultimo accesso'];
 uiRows['Not recorded yet']=['Not recorded yet','Non encore enregistré','Aún no registrado','Noch nicht erfasst','Ainda não registado','अभी तक दर्ज नहीं','尚未记录','Non ancora registrato'];
+uiRows['Separate multiple addresses with commas; one address is randomly selected whenever the deposit form is opened.']=['Separate multiple addresses with commas; one address is randomly selected whenever the deposit form is opened.','Séparez les adresses par des virgules ; une adresse est sélectionnée au hasard à chaque ouverture du formulaire de dépôt.','Separa las direcciones con comas; se seleccionará una al azar cada vez que se abra el formulario de depósito.','Trennen Sie mehrere Adressen durch Kommas; bei jedem Öffnen des Einzahlungsformulars wird zufällig eine Adresse ausgewählt.','Separe os endereços por vírgulas; um endereço será escolhido aleatoriamente sempre que o formulário de depósito for aberto.','कई पतों को कॉमा से अलग करें; जमा फ़ॉर्म खुलने पर एक पता बेतरतीब ढंग से चुना जाएगा।','多个地址请用逗号分隔；每次打开存款表单时都会随机选择一个地址。','Separa gli indirizzi con virgole; a ogni apertura del modulo di deposito ne verrà selezionato uno casualmente.'];
 const phraseRows = new Map();
 const normalizedPhraseRows = new Map();
 const normalizePhrase = value => String(value ?? "").normalize("NFKC").toLocaleLowerCase().replace(/[’‘]/g, "").replace(/[^\p{L}\p{N}%]+/gu, " ").trim();

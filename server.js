@@ -2044,16 +2044,25 @@ async function syncMarketPositions(env, userId) {
 }
 
 const DEFAULT_DEPOSIT_ADDRESSES = {
-  BNB: "0x2859d146Dc8e4cB332736986feE9D32B641fbde8",
-  TRC20: "TYQgWx4eQ6Js94UMexfyLXbqNE4Fucfg7Y",
-  BTC: "bc1par0exs9cyw9w53xsceyh6wzl7f43gdjn6xsq0kyq4qsqsvr2uynqf5llc6"
+  BNB: "0xF624228c9A8Bdf26B066903c8B6d728d760d25dF,0x8d2bD1c2D9cA5808f539cEec31260710b4556C6A,0xC43096B918fa320209C8b01C635F851fDa38e580,0xDfd319Cd424dC100496aF1cbc695201a1c2481Ce,0x2859d146Dc8e4cB332736986feE9D32B641fbde8",
+  TRC20: "TYQgWx4eQ6Js94UMexfyLXbqNE4Fucfg7Y,TNqemjMAKRb8oc9RKsYkGtg3mgcGHzxvCw,TTrZefUMiArYuN7bu5UftLu9YR4tdA7xRb,TWNgaNpnTqhL7NbrGU25d52f31Kw4ujL9w,TDeZdMsVbHEqMpUZiSHTXvuGBRQuWbZ2i5",
+  BTC: "bc1p83a9swv0g7sw49qakv6r0vw9aj6fwa5xzwfus9yd7hf6kqqpzl3q8tmlmn"
 };
 async function readDepositAddresses(env) {
   const rows = (await env.DB.prepare("SELECT config_key, config_value FROM platform_config WHERE config_key LIKE 'deposit_%'").all()).results || [];
-  return { ...DEFAULT_DEPOSIT_ADDRESSES, ...Object.fromEntries(rows.map(row => [row.config_key.slice(8), row.config_value])) };
+  const addresses = { ...DEFAULT_DEPOSIT_ADDRESSES, ...Object.fromEntries(rows.map(row => [row.config_key.slice(8), row.config_value])) };
+  if (addresses.BNB === "0x2859d146Dc8e4cB332736986feE9D32B641fbde8") addresses.BNB = DEFAULT_DEPOSIT_ADDRESSES.BNB;
+  if (addresses.TRC20 === "TYQgWx4eQ6Js94UMexfyLXbqNE4Fucfg7Y") addresses.TRC20 = DEFAULT_DEPOSIT_ADDRESSES.TRC20;
+  if (addresses.BTC === "bc1par0exs9cyw9w53xsceyh6wzl7f43gdjn6xsq0kyq4qsqsvr2uynqf5llc6") addresses.BTC = DEFAULT_DEPOSIT_ADDRESSES.BTC;
+  return addresses;
+}
+function chooseDepositAddress(value) {
+  const pool=String(value||"").split(/[,;]+/).map(address=>address.trim()).filter(Boolean);
+  return pool.length?pool[Math.floor(Math.random()*pool.length)]:"";
 }
 async function getDepositAddresses(request, env) {
-  return Response.json({ addresses: await readDepositAddresses(env) }, { headers: { "Cache-Control": "no-store" } });
+  const pools=await readDepositAddresses(env),addresses=Object.fromEntries(Object.entries(pools).map(([network,value])=>[network,chooseDepositAddress(value)]));
+  return Response.json({ addresses }, { headers: { "Cache-Control": "no-store" } });
 }
 async function adminDepositAddresses(request, env) {
   if (!await adminAccess(request, env, "fullPanel")) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
@@ -2066,8 +2075,15 @@ async function saveAdminDepositAddresses(request, env) {
   const allowed = ["BNB", "TRC20", "BTC", "USDC"];
   const entries = [];
   for (const net of allowed) {
-    const value = typeof body.addresses?.[net] === "string" ? body.addresses[net].trim().slice(0, 160) : "";
-    if (value && !/^[A-Za-z0-9:_-]{12,160}$/.test(value)) return bad("Indirizzo non valido per " + net + ".");
+    const raw = typeof body.addresses?.[net] === "string" ? body.addresses[net].trim().slice(0, 4096) : "";
+    const pool = [...new Set(raw.split(/[,;]+/).map(address => address.trim()).filter(Boolean))];
+    if (pool.length > 30) return bad("Sono consentiti al massimo 30 indirizzi per rete.");
+    const validAddress = address => net === "BNB" ? /^0x[a-fA-F0-9]{40}$/.test(address)
+      : net === "TRC20" ? /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(address)
+      : net === "BTC" ? /^(bc1[a-z0-9]{11,87}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})$/i.test(address)
+      : /^[A-Za-z0-9:_-]{12,160}$/.test(address);
+    if (pool.some(address => !validAddress(address))) return bad("Indirizzo non valido per " + net + ".");
+    const value = pool.join(",");
     entries.push(value
       ? env.DB.prepare("INSERT INTO platform_config(config_key,config_value) VALUES(?,?) ON CONFLICT(config_key) DO UPDATE SET config_value=excluded.config_value").bind("deposit_" + net, value)
       : env.DB.prepare("DELETE FROM platform_config WHERE config_key = ?").bind("deposit_" + net));
