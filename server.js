@@ -1533,17 +1533,6 @@ async function register(request, env) {
   if (!rawIdentifier || !username) return Response.json({ error: "Compila tutti i campi." }, { status: 400 });
   const email = normalizeEmail(rawIdentifier);
   if (!email) return bad("Inserisci un indirizzo email valido.");
-  const allowedEmailDomains = new Set([
-    "icloud.com", "me.com", "mac.com", "gmail.com", "googlemail.com",
-    "outlook.com", "outlook.fr", "outlook.de", "outlook.es", "hotmail.com", "hotmail.co.uk", "hotmail.fr", "hotmail.de", "hotmail.es", "live.com", "live.co.uk", "msn.com",
-    "yahoo.com", "yahoo.co.uk", "yahoo.fr", "yahoo.de", "yahoo.es", "yahoo.it", "ymail.com", "rocketmail.com",
-    "libero.it", "virgilio.it", "tim.it", "alice.it", "tin.it",
-    "t-online.de", "gmx.de", "gmx.net", "web.de",
-    "orange.fr", "wanadoo.fr", "sfr.fr", "neuf.fr", "laposte.net",
-    "movistar.es", "telefonica.net", "orange.es"
-  ]);
-  const emailDomain = email.slice(email.lastIndexOf("@") + 1).toLowerCase();
-  if (!allowedEmailDomains.has(emailDomain)) return bad("Email non consentita");
   if (email.toLowerCase() === PRIMARY_ADMIN_EMAIL.toLowerCase()) return bad("Indirizzo riservato all’accesso amministratore.");
   if (password.length < 6) return Response.json({ error: "Password di almeno 6 caratteri." }, { status: 400 });
   const existing = await env.DB.prepare("SELECT id FROM users WHERE lower(identifier) = lower(?) OR lower(username) = lower(?)").bind(email, username).first();
