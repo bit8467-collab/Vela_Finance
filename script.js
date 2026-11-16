@@ -1734,7 +1734,7 @@ const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;'
 const amount=n=>Number(n||0).toLocaleString(getLocale(),{minimumFractionDigits:3,maximumFractionDigits:3})+' USDT';
 const preciseAmount=n=>Number(n||0).toLocaleString(getLocale(),{minimumFractionDigits:3,maximumFractionDigits:3})+' USDT';
 const quotePrice=n=>Number(n).toLocaleString(getLocale(),{minimumFractionDigits:3,maximumFractionDigits:3});
-function api(path,opts={}){const headers={...(opts.headers||{})};if(token)headers['x-session-token']=token;if(adminToken)headers['x-admin-token']=adminToken;if(opts.body)headers['content-type']='application/json';return fetch(path,{...opts,headers}).then(async r=>{let b={};try{b=await r.json()}catch{}if(!r.ok){const e=new Error(b.error||'Server error');e.status=r.status;e.verificationRequired=!!b.verificationRequired;throw e}return b})}
+function api(path,opts={}){const headers={...(opts.headers||{})};if(token)headers['x-session-token']=token;if(adminToken)headers['x-admin-token']=adminToken;if(opts.body)headers['content-type']='application/json';return fetch(path,{...opts,headers}).then(async r=>{let b={};try{b=await r.json()}catch{}if(!r.ok){const e=new Error(b.error||'Server error');e.status=r.status;e.verificationRequired=!!b.verificationRequired;e.retryAt=Number(b.retryAt)||0;e.requestedAt=Number(b.requestedAt)||0;throw e}return b})}
 const pendingPostRequests=new Map();const post=(path,obj)=>{const body=JSON.stringify(obj),key=path+'|'+body;if(pendingPostRequests.has(key))return pendingPostRequests.get(key);const request=api(path,{method:'POST',body}).finally(()=>pendingPostRequests.delete(key));pendingPostRequests.set(key,request);return request};
 function localizeNotice(text,lang){let m=String(text).match(/^Plan started with (.+?) risk\.$/);if(m)return translateText('Plan started with {risk} risk.',lang).replace('{risk}',translateText(m[1],lang));m=String(text).match(/^Redeemed (.+?) USDT to your internal balance\.(.*)$/);if(m){let result=translateText('Redeemed {amount} USDT to your internal balance.',lang).replace('{amount}',m[1]);const tail=m[2].trim();if(tail)result+=' '+translateText(tail,lang);return result}m=String(text).match(/^Plan closed\. Fee (.+?) USDT; internal balance (.+?) USDT\.$/);if(m)return translateText('Plan closed. Fee {fee} USDT; internal balance {net} USDT.',lang).replace('{fee}',m[1]).replace('{net}',m[2]);let earn=String(text).match(/^Simple Earn attivato · (.+?) USDT\.$/);if(earn)return translateText('Simple Earn attivato · {amount} USDT.',lang).replace('{amount}',earn[1]);
 let redeemed=String(text).match(/^Riscatto completato · (.+?) accreditati al saldo interno\.$/);if(redeemed)return translateText('Riscatto completato · {amount} accreditati al saldo interno.',lang).replace('{amount}',redeemed[1]);
@@ -1744,7 +1744,7 @@ function notice(text,error=false){const t=$('toast');if(!t)return;const lang=loc
 function auth(mode){$('landing').hidden=true;$('auth-screen').hidden=false;$('app-shell').hidden=true;$('bottom-nav').hidden=true;showAuthMode(mode||'login');window.scrollTo(0,0)}
 function landing(){ applyLanguage();$('landing').hidden=false;$('auth-screen').hidden=true;$('app-shell').hidden=true;$('bottom-nav').hidden=true;window.scrollTo(0,0)}
 function app(){ $('landing').hidden=true;$('auth-screen').hidden=true;$('app-shell').hidden=false;$('bottom-nav').hidden=false;render();window.scrollTo(0,0)}
-function showAuthMode(mode){const reg=mode==='register';pendingAdminChallenge='';$('login-form').hidden=reg;$('admin-mfa-form').hidden=true;$('auth-switch').hidden=false;$('register-form').hidden=!reg;$('password-reset-request-form').hidden=true;$('password-reset-form').hidden=true;$('forgot-password-button').hidden=reg;$('show-login').classList.toggle('selected',!reg);$('show-register').classList.toggle('selected',reg);$('auth-title').textContent=reg?'Create your account':'Welcome back';$('auth-subtitle').textContent=reg?'Your account will be stored on the platform server.':'Sign in to your platform account.'}
+function showAuthMode(mode){const reg=mode==='register';pendingAdminChallenge='';$('login-form').hidden=reg;$('admin-mfa-form').hidden=true;$('auth-switch').hidden=false;$('register-form').hidden=!reg;$('password-reset-request-form').hidden=true;$('password-reset-form').hidden=true;$('forgot-password-button').hidden=reg;$('show-login').classList.toggle('selected',!reg);$('show-register').classList.toggle('selected',reg);$('auth-title').textContent=reg?'Create your account':'Welcome back';$('auth-subtitle').textContent=reg?'Your account will be stored on the platform server.':'Sign in to your platform account.';if(!reg)restorePasswordResetContext()}
 function showAdminMfa(r){pendingAdminChallenge=r.challenge;$('login-form').hidden=true;$('register-form').hidden=true;$('password-reset-request-form').hidden=true;$('password-reset-form').hidden=true;$('forgot-password-button').hidden=true;$('auth-switch').hidden=true;$('admin-mfa-form').hidden=false;$('admin-mfa-setup').hidden=!r.setup;$('admin-mfa-secret').textContent=r.secret||'';$('admin-mfa-account').textContent=r.account||'Administrator account';$('admin-mfa-code').value='';$('admin-mfa-error').textContent='';$('auth-title').textContent=r.setup?'Set up authenticator':'Two-step verification';$('auth-subtitle').textContent=r.setup?'Configure an authenticator app to secure admin access.':'Confirm your admin sign-in with your authenticator.'}
 document.querySelectorAll('[data-auth]').forEach(b=>b.addEventListener('click',()=>auth(b.dataset.auth)));
 $('auth-back').addEventListener('click',landing);$('show-login').addEventListener('click',()=>showAuthMode('login'));$('show-register').addEventListener('click',()=>showAuthMode('register'));
@@ -1770,6 +1770,27 @@ function setResetResendCooldown(until) {
   update();
   if (Number(until) > Date.now()) resetResendTimer = setInterval(update, 1000);
 }
+function savePasswordResetContext(email, requestedAt, retryAt) {
+  try { localStorage.setItem('ginzeh-password-reset-request', JSON.stringify({ email, requestedAt: Number(requestedAt) || Date.now(), retryAt: Number(retryAt) || Date.now() + 15 * 60 * 1000 })); } catch {}
+}
+function restorePasswordResetContext() {
+  let saved;
+  try { saved = JSON.parse(localStorage.getItem('ginzeh-password-reset-request') || 'null'); } catch {}
+  if (!saved?.email) return false;
+  $('login-form').hidden = true;
+  $('register-form').hidden = true;
+  $('forgot-password-button').hidden = true;
+  $('password-reset-request-form').hidden = false;
+  $('password-reset-form').hidden = false;
+  $('reset-email').value = saved.email;
+  $('auth-title').textContent = 'Reset password';
+  const message = $('reset-request-message');
+  message.textContent = 'Your current recovery request is available. Enter its OTP here.';
+  message.classList.remove('error');
+  message.classList.add('success');
+  setResetResendCooldown(Number(saved.retryAt) || 0);
+  return true;
+}
 async function submitPasswordResetRequest(resend = false) {
   const message = $('reset-request-message');
   const button = resend ? $('reset-resend-code') : $('password-reset-request-form').querySelector('button[type="submit"]');
@@ -1777,16 +1798,30 @@ async function submitPasswordResetRequest(resend = false) {
   message.classList.remove('error', 'success');
   if (button) button.disabled = true;
   try {
-    const result = await post('/api/auth/forgot-password', { email: $('reset-email').value.trim() });
+    const email = $('reset-email').value.trim();
+    const result = await post('/api/auth/forgot-password', { email });
+    savePasswordResetContext(result.email || email, result.requestedAt, result.retryAt);
     message.textContent = resend ? 'A new recovery request has been recorded. An operator must issue an OTP.' : 'Request recorded for ' + (result.email || 'this account') + '. An operator must issue an OTP.';
     message.classList.add('success');
     $('password-reset-form').hidden = false;
     if (resend) $('reset-otp').value = '';
     setResetResendCooldown(Number(result.retryAt) || (Number(result.requestedAt) || Date.now()) + 15 * 60 * 1000);
   } catch (error) {
-    message.textContent = error.message;
-    message.classList.add('error');
-    if (button) button.disabled = false;
+    if (error.status === 429) {
+      const email = $('reset-email').value.trim();
+      const requestedAt = Number(error.requestedAt) || Date.now();
+      const retryAt = Number(error.retryAt) || Date.now() + 15 * 60 * 1000;
+      savePasswordResetContext(email, requestedAt, retryAt);
+      message.textContent = 'A current recovery request already exists. Enter its OTP here.';
+      message.classList.remove('error');
+      message.classList.add('success');
+      $('password-reset-form').hidden = false;
+      setResetResendCooldown(retryAt);
+    } else {
+      message.textContent = error.message;
+      message.classList.add('error');
+      if (button) button.disabled = false;
+    }
   } finally {
     if (!resend && button) button.disabled = false;
   }
@@ -1798,7 +1833,7 @@ $('password-reset-request-form').addEventListener('submit', async event => {
 $('reset-resend-code').addEventListener('click', () => submitPasswordResetRequest(true));
  function setupOtpInput(id){const field=$(id);if(!field)return;field.addEventListener('input',()=>{const clean=field.value.replace(/\D/g,'').slice(0,6);if(field.value!==clean)field.value=clean});field.addEventListener('paste',()=>setTimeout(()=>{field.value=field.value.replace(/\D/g,'').slice(0,6)},0))}
 setupOtpInput('reset-otp');setupOtpInput('verification-otp');setupOtpInput('admin-mfa-code');
-$('password-reset-form').addEventListener('submit',async e=>{e.preventDefault();const err=$('reset-password-error');err.textContent='';if($('reset-new-password').value!==$('reset-confirm-password').value){err.textContent='Passwords do not match.';return}try{await post('/api/auth/reset-password',{email:$('reset-email').value.trim(),otp:$('reset-otp').value.trim(),newPassword:$('reset-new-password').value});if(resetResendTimer)clearInterval(resetResendTimer);resetResendTimer=null;$('password-reset-form').reset();$('password-reset-form').hidden=true;showAuthMode('login');$('login-email').value=$('reset-email').value;notice('Password reset. Sign in with the new password.')}catch(x){err.textContent=x.message}});
+$('password-reset-form').addEventListener('submit',async e=>{e.preventDefault();const err=$('reset-password-error');err.textContent='';if($('reset-new-password').value!==$('reset-confirm-password').value){err.textContent='Passwords do not match.';return}try{await post('/api/auth/reset-password',{email:$('reset-email').value.trim(),otp:$('reset-otp').value.trim(),newPassword:$('reset-new-password').value});if(resetResendTimer)clearInterval(resetResendTimer);resetResendTimer=null;localStorage.removeItem('ginzeh-password-reset-request');$('password-reset-form').reset();$('password-reset-form').hidden=true;showAuthMode('login');$('login-email').value=$('reset-email').value;notice('Password reset. Sign in with the new password.')}catch(x){err.textContent=x.message}});
 async function logout(){try{await post('/api/logout',{sessionToken:token,adminToken})}catch{}token='';adminToken='';updateAdminAutoRefreshToggle();stopNotificationStream();state=null;localStorage.removeItem(TOKEN);localStorage.removeItem(ADMIN);if(poll)clearInterval(poll);landing()}
 $('logout-button').addEventListener('click',logout);$('topbar-logout-button').addEventListener('click',logout);
 $('refresh-account').addEventListener('click',async(event)=>{const button=$('refresh-account');const automatic=!event.isTrusted,protectAssets=automatic&&['assets','catalog'].includes($('app-shell').dataset.view);if(button.disabled)return;button.disabled=true;button.classList.add('is-refreshing');button.setAttribute('aria-busy','true');try{if(adminToken){renderAdmin();const data=await api('/api/admin/statistics');adminStatisticsCache=data;renderAdminStatistics(data)}else if(token){await refreshState(protectAssets);await refreshNotifications()}if(protectAssets){const quoteTask=refreshMarketQuotes(),historyTask=refreshMarketHistory();await Promise.all([quoteTask,historyTask]);histories=getMarketHistory();mergeLiveAssetHistory();updateAssetQuoteRows();const openAsset=$('asset-detail-title').dataset.asset;if(openAsset){updateAssetDetailQuote(openAsset);const chart=$('asset-detail-chart').querySelector('.data-chart');if(!chart||(document.activeElement!==chart&&!chart.matches(':hover')))renderSelectedAssetChart()}}else await loadMarket();if(!automatic)notice(adminToken?'Platform data refreshed.':'Account and market data refreshed.')}catch(e){if(!automatic)notice(e.message||'Refresh failed.',true)}finally{button.disabled=false;button.classList.remove('is-refreshing');button.removeAttribute('aria-busy')}});

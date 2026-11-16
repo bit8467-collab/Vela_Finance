@@ -1578,7 +1578,7 @@ async function requestPasswordReset(request, env) {
       await env.DB.prepare("INSERT INTO password_reset_requests (user_id, requested_at, otp_attempts) VALUES (?, ?, 0)").bind(user.id, now).run();
     } else {
       const retryAt = Number(existing.otp_expires_at) || (Number(existing.requested_at) + cooldown);
-      if (now < retryAt) return Response.json({ error: "Potrai richiedere un nuovo codice dopo la scadenza del codice o 15 minuti dalla richiesta." }, { status: 429 });
+      if (now < retryAt) return Response.json({ error: "Potrai richiedere un nuovo codice dopo la scadenza del codice o 15 minuti dalla richiesta.", requestedAt: Number(existing.requested_at), retryAt }, { status: 429 });
       await env.DB.prepare("UPDATE password_reset_requests SET requested_at = ?, otp_hash = NULL, otp_salt = NULL, otp_expires_at = NULL, otp_attempts = 0, issued_at = NULL, issued_by = NULL WHERE user_id = ?").bind(now, user.id).run();
     }
   }
