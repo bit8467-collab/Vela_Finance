@@ -912,13 +912,9 @@ body {
 .deposit-verification-note b { color: #83d8ae; font-weight: 700; }
 .deposit-network-warning { padding: 9px 10px; border: 1px solid #e9bb6b70; border-radius: 9px; color: #f2cc7a; background: #8d67201a; font-weight: 650; }
 .deposit-address-settings { display: grid; gap: 8px; }
-.deposit-network-addresses { min-width: 0; margin: 0; padding: 9px; display: grid; gap: 8px; border: 1px solid var(--line); border-radius: 9px; }
-.deposit-network-addresses legend { padding: 0 4px; color: var(--text); font-size: 9px; font-weight: 700; }
-.deposit-address-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-.deposit-address-settings label { min-width: 0; display: grid; gap: 5px; color: var(--muted); font-size: 8px; }
+.deposit-address-settings label { display: grid; gap: 5px; color: var(--muted); font-size: 8px; }
 .deposit-address-settings input {
   width: 100%;
-  min-width: 0;
   min-height: 36px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -927,7 +923,6 @@ body {
   color: var(--text);
   font-size: 9px;
 }
-@media(max-width:560px) { .deposit-address-list { grid-template-columns: 1fr; } }
 .setting-row .outline-button:disabled { opacity: .55; cursor: not-allowed; }
 :root[data-theme="light"] .landing-language-select { background: #fff; color: #302c22; }
 :root[data-theme="light"] .landing { background: linear-gradient(180deg, #f8f7f1, #f2f4ee); }
