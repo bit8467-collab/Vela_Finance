@@ -912,9 +912,12 @@ body {
 .deposit-verification-note b { color: #83d8ae; font-weight: 700; }
 .deposit-network-warning { padding: 9px 10px; border: 1px solid #e9bb6b70; border-radius: 9px; color: #f2cc7a; background: #8d67201a; font-weight: 650; }
 .deposit-address-settings { display: grid; gap: 8px; }
-.deposit-address-settings label { display: grid; gap: 5px; color: var(--muted); font-size: 8px; }
+.deposit-network-addresses { min-width: 0; margin: 0; padding: 9px; display: grid; gap: 8px; border: 1px solid var(--line); border-radius: 9px; }
+.deposit-network-addresses legend { padding: 0 4px; color: var(--text); font-size: 9px; font-weight: 700; }
+.deposit-address-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.deposit-address-settings label { min-width: 0; display: grid; gap: 5px; color: var(--muted); font-size: 8px; }
 .deposit-address-settings input {
-  width: 100%;
+  width: 100%; min-width: 0;
   min-height: 36px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -923,6 +926,7 @@ body {
   color: var(--text);
   font-size: 9px;
 }
+.deposit-address-settings .outline-wide { grid-column: 1 / -1; }
 .setting-row .outline-button:disabled { opacity: .55; cursor: not-allowed; }
 :root[data-theme="light"] .landing-language-select { background: #fff; color: #302c22; }
 :root[data-theme="light"] .landing { background: linear-gradient(180deg, #f8f7f1, #f2f4ee); }
@@ -1920,7 +1924,7 @@ button[data-redeem-earnings]:disabled { opacity:.55; cursor:not-allowed; }
   #view-admin > .admin-section .section-heading { min-height: 48px; margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid color-mix(in srgb, var(--line) 80%, transparent); }
   #view-admin > .admin-section .section-heading .eyebrow { display: inline-flex; align-items: center; min-height: 22px; margin-bottom: 7px; border: 1px solid color-mix(in srgb, var(--admin-section-accent, var(--accent)) 34%, transparent); border-radius: 999px; background: color-mix(in srgb, var(--admin-section-accent, var(--accent)) 10%, transparent); padding: 3px 9px; color: var(--admin-section-accent, var(--accent)); font-size: 9px; font-weight: 800; letter-spacing: .12em; }
   #view-admin > .admin-section .section-heading h2 { font-size: 18px; letter-spacing: -.025em; }
-  #view-admin > .admin-section:has(#admin-address-bep20) .deposit-address-settings { grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: end; gap: 15px; }
+  #view-admin > .admin-section:has(#admin-address-bep20) .deposit-address-settings { grid-template-columns: 1fr; align-items: stretch; gap: 15px; }
   #view-admin .deposit-address-settings label { gap: 9px; font-size: 12px; font-weight: 700; }
   #view-admin .deposit-address-settings input { min-height: 48px; border-color: #344c59; background: #0c1720; padding: 0 13px; font-size: 13px; }
   #view-admin .deposit-address-settings .outline-wide { min-height: 46px; margin-top: 2px; border-radius: 10px; font-size: 12px; font-weight: 750; }
@@ -2144,6 +2148,10 @@ body:has(#view-admin.active){padding:0!important;overflow-x:hidden}body:has(#vie
 .payment-desk-controls{display:flex;flex-wrap:wrap;gap:9px}
 .payment-desk-controls button,.payment-desk-card button{min-height:40px;border:1px solid var(--line);border-radius:10px;background:var(--surface-2);padding:9px 13px;color:var(--text);font-weight:700;cursor:pointer}
 .payment-desk-note{max-width:900px;margin:0 auto 22px;color:var(--muted);font-size:13px;line-height:1.65}
+.payment-auto-control{max-width:1000px;margin:0 auto 16px;padding:14px 16px;display:flex;align-items:center;justify-content:space-between;gap:14px;border:1px solid var(--line);border-radius:13px;background:var(--surface)}
+.payment-auto-control>div{display:grid;gap:4px}.payment-auto-control small{color:var(--muted);font-size:11px;line-height:1.5}
+.payment-auto-control button{min-height:38px;padding:8px 12px;border:1px solid var(--line);border-radius:9px;background:var(--surface-2);color:var(--text);font-weight:750;cursor:pointer;white-space:nowrap}
+.payment-auto-control button[aria-pressed="true"]{border-color:var(--green);color:var(--green)}
 .payment-desk-sections{display:grid;gap:14px;max-width:1000px;margin:0 auto}
 .payment-desk-group{overflow:hidden;border:1px solid var(--line);border-radius:15px;background:var(--surface)}
 .payment-desk-group>summary{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:60px;padding:15px 18px;cursor:pointer;font-weight:750;list-style:none}
@@ -2167,9 +2175,11 @@ body:has(#view-admin.active){padding:0!important;overflow-x:hidden}body:has(#vie
 .payment-hash-entry input{width:100%;min-height:40px;border:1px solid var(--line);border-radius:9px;background:var(--bg);padding:9px;color:var(--text);font:12px ui-monospace,monospace}
 .payment-desk-card button[data-payment-sent],.payment-desk-card button[data-payment-review="approve"]{border-color:#418867;color:var(--green)}
 .payment-desk-card button.payment-reject{border-color:#8f4c52;color:var(--red)}
+.payment-desk-card .payment-desk-status.is-failed{color:var(--red)}
+.payment-desk-card button:disabled,.payment-auto-control button:disabled{opacity:.55;cursor:not-allowed}
 .payment-desk-actions{display:flex;flex-wrap:wrap;gap:8px}
 .payment-desk-empty{margin:0;padding:0 18px 17px}
-@media(max-width:600px){.payment-desk-header{align-items:flex-start}.payment-desk-controls{flex-direction:column}.payment-desk-controls button{min-height:36px;padding:7px 10px}.payment-desk-card>header{align-items:flex-start}}
+@media(max-width:600px){.payment-desk-header{align-items:flex-start}.payment-desk-controls{flex-direction:column}.payment-desk-controls button{min-height:36px;padding:7px 10px}.payment-desk-card>header{align-items:flex-start}.payment-auto-control{align-items:flex-start;flex-direction:column}}
 
 /* Operator-to-admin support escalation */
 .operator-admin-escalation{display:grid;gap:7px;max-height:26dvh;overflow:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface-2);padding:11px}

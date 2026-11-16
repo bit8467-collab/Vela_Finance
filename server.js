@@ -1048,7 +1048,8 @@ const workerHandler = {
           date INTEGER NOT NULL,
           status TEXT NOT NULL DEFAULT 'approved',
           tx_reference TEXT NOT NULL DEFAULT '',
-          deposit_address TEXT NOT NULL DEFAULT ''
+          deposit_address TEXT NOT NULL DEFAULT '',
+          transfer_status TEXT NOT NULL DEFAULT 'pending'
         );`,
         `CREATE TABLE IF NOT EXISTS withdrawals (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1061,7 +1062,8 @@ const workerHandler = {
           source TEXT NOT NULL DEFAULT 'earnings',
           tx_reference TEXT NOT NULL DEFAULT '',
           fee_amount REAL NOT NULL DEFAULT 0,
-          charged_amount REAL NOT NULL DEFAULT 0
+          charged_amount REAL NOT NULL DEFAULT 0,
+          transfer_status TEXT NOT NULL DEFAULT 'pending'
         );`,
         `CREATE TABLE IF NOT EXISTS balance_transfers (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1148,6 +1150,9 @@ const workerHandler = {
     try { await env.DB.prepare("ALTER TABLE admin_roles ADD COLUMN permissions_json TEXT NOT NULL DEFAULT '{}'").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE users ADD COLUMN last_login_at INTEGER").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE deposits ADD COLUMN deposit_address TEXT NOT NULL DEFAULT ''").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE deposits ADD COLUMN transfer_status TEXT NOT NULL DEFAULT 'pending'").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN transfer_status TEXT NOT NULL DEFAULT 'pending'").run(); } catch {}
+
     try { await env.DB.prepare("ALTER TABLE settings ADD COLUMN auto_redeem_pct REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN fee_amount REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN charged_amount REAL NOT NULL DEFAULT 0").run(); } catch {}
@@ -1159,6 +1164,7 @@ const workerHandler = {
     try { await env.DB.prepare("ALTER TABLE wallets ADD COLUMN released REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN source TEXT NOT NULL DEFAULT 'earnings'").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN tx_reference TEXT NOT NULL DEFAULT ''").run(); } catch {}
+    await env.DB.prepare("UPDATE withdrawals SET transfer_status = 'sent' WHERE status = 'pending' AND tx_reference != '' AND transfer_status = 'pending'").run();
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN risk_level TEXT NOT NULL DEFAULT 'legacy'").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN early_close_fee REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN last_redemption_id TEXT NOT NULL DEFAULT ''").run(); } catch {}
@@ -1290,6 +1296,10 @@ const workerHandler = {
       if (method === "GET" && pathName === "/api/admin/ledger") return await adminGlobalLedger(request, env);
        if (method === "GET" && pathName === "/api/admin/password-reset-requests") return await listPasswordResetRequests(request, env);
       if (method === "POST" && pathName === "/api/admin/payments/mark-sent") return await markWithdrawalSent(request, env);
+      if (method === "POST" && pathName === "/api/admin/payments/mark-failed") return await markWithdrawalFailed(request, env);
+      if (method === "POST" && pathName === "/api/admin/payments/mark-received") return await markDepositReceived(request, env);
+      if (method === "GET" && pathName === "/api/admin/payment-settings") return await getAdminPaymentSettings(request, env);
+      if (method === "POST" && pathName === "/api/admin/payment-settings") return await saveAdminPaymentSettings(request, env);
       if (method === "GET" && pathName === "/api/admin/statistics") return await adminStatistics(request, env);
       if (method === "GET" && pathName === "/api/admin/users") return await adminUsers(request, env);
       if (method === "GET" && pathName === "/api/admin/operator-audit") return await adminOperatorAudit(request, env);
@@ -2063,25 +2073,25 @@ async function syncMarketPositions(env, userId) {
   }));
 }
 
-const DEFAULT_DEPOSIT_ADDRESSES = {
-  BNB: "0xF624228c9A8Bdf26B066903c8B6d728d760d25dF,0x8d2bD1c2D9cA5808f539cEec31260710b4556C6A,0xC43096B918fa320209C8b01C635F851fDa38e580,0xDfd319Cd424dC100496aF1cbc695201a1c2481Ce,0x2859d146Dc8e4cB332736986feE9D32B641fbde8",
-  TRC20: "TYQgWx4eQ6Js94UMexfyLXbqNE4Fucfg7Y,TNqemjMAKRb8oc9RKsYkGtg3mgcGHzxvCw,TTrZefUMiArYuN7bu5UftLu9YR4tdA7xRb,TWNgaNpnTqhL7NbrGU25d52f31Kw4ujL9w,TDeZdMsVbHEqMpUZiSHTXvuGBRQuWbZ2i5",
-  BTC: "bc1p83a9swv0g7sw49qakv6r0vw9aj6fwa5xzwfus9yd7hf6kqqpzl3q8tmlmn"
-};
 async function readDepositAddresses(env) {
   const rows = (await env.DB.prepare("SELECT config_key, config_value FROM platform_config WHERE config_key LIKE 'deposit_%'").all()).results || [];
-  const addresses = { ...DEFAULT_DEPOSIT_ADDRESSES, ...Object.fromEntries(rows.map(row => [row.config_key.slice(8), row.config_value])) };
-  if (addresses.BNB === "0x2859d146Dc8e4cB332736986feE9D32B641fbde8") addresses.BNB = DEFAULT_DEPOSIT_ADDRESSES.BNB;
-  if (addresses.TRC20 === "TYQgWx4eQ6Js94UMexfyLXbqNE4Fucfg7Y") addresses.TRC20 = DEFAULT_DEPOSIT_ADDRESSES.TRC20;
-  if (addresses.BTC === "bc1par0exs9cyw9w53xsceyh6wzl7f43gdjn6xsq0kyq4qsqsvr2uynqf5llc6") addresses.BTC = DEFAULT_DEPOSIT_ADDRESSES.BTC;
+  const networks = ["BNB", "TRC20", "BTC", "USDC"];
+  const addresses = Object.fromEntries(networks.map(net => [net, ""]));
+  for (const row of rows) {
+    const net = String(row.config_key || "").slice(8);
+    if (!networks.includes(net)) continue;
+    const pool = [...new Set(String(row.config_value || "").split(/[,;]+/).map(address => address.trim()).filter(Boolean))].slice(0, 6);
+    addresses[net] = pool.join(",");
+  }
   return addresses;
 }
 function chooseDepositAddress(value) {
-  const pool=String(value||"").split(/[,;]+/).map(address=>address.trim()).filter(Boolean);
-  return pool.length?pool[Math.floor(Math.random()*pool.length)]:"";
+  const pool = String(value || "").split(/[,;]+/).map(address => address.trim()).filter(Boolean);
+  return pool.length ? pool[Math.floor(Math.random() * pool.length)] : "";
 }
 async function getDepositAddresses(request, env) {
-  const pools=await readDepositAddresses(env),addresses=Object.fromEntries(Object.entries(pools).map(([network,value])=>[network,chooseDepositAddress(value)]));
+  const pools = await readDepositAddresses(env);
+  const addresses = Object.fromEntries(Object.entries(pools).map(([network, value]) => [network, chooseDepositAddress(value)]));
   return Response.json({ addresses }, { headers: { "Cache-Control": "no-store" } });
 }
 async function adminDepositAddresses(request, env) {
@@ -2097,7 +2107,7 @@ async function saveAdminDepositAddresses(request, env) {
   for (const net of allowed) {
     const raw = typeof body.addresses?.[net] === "string" ? body.addresses[net].trim().slice(0, 4096) : "";
     const pool = [...new Set(raw.split(/[,;]+/).map(address => address.trim()).filter(Boolean))];
-    if (pool.length > 30) return bad("Sono consentiti al massimo 30 indirizzi per rete.");
+    if (pool.length > 6) return bad("Sono consentiti al massimo 6 indirizzi per rete.");
     const validAddress = address => net === "BNB" ? /^0x[a-fA-F0-9]{40}$/.test(address)
       : net === "TRC20" ? /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(address)
       : net === "BTC" ? /^(bc1[a-z0-9]{11,87}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})$/i.test(address)
@@ -2770,6 +2780,41 @@ async function adminDeleteUser(request, env, userId) {
   return Response.json({ ok: true, message: "Utente e tutti i dati associati eliminati con successo." });
 }
 
+async function readAutomaticWithdrawalDecisions(env) {
+  const row = await env.DB.prepare("SELECT config_value FROM platform_config WHERE config_key = 'payment_auto_withdrawals'").first();
+  return row?.config_value === "1";
+}
+async function getAdminPaymentSettings(request, env) {
+  const actor = await adminActor(request, env);
+  if (!actor || !(await readAdminPermissions(actor, env)).requests) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  return Response.json({ automaticWithdrawalDecisions: await readAutomaticWithdrawalDecisions(env) });
+}
+async function saveAdminPaymentSettings(request, env) {
+  const actor = await privilegedAdminActor(request, env);
+  if (!actor) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  const body = await request.json().catch(() => ({}));
+  if (typeof body.automaticWithdrawalDecisions !== "boolean") return bad("Impostazione automatica non valida.");
+  const value = body.automaticWithdrawalDecisions ? "1" : "0";
+  await env.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES('payment_auto_withdrawals', ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind(value).run();
+  return Response.json({ ok: true, automaticWithdrawalDecisions: value === "1" });
+}
+async function runAutomaticWithdrawalDecision(request, env, id, action, txReference = "") {
+  const headers = new Headers(request.headers);
+  headers.delete("content-length");
+  headers.set("content-type", "application/json");
+  const internalRequest = new Request(request.url, { method: "POST", headers, body: JSON.stringify({ kind: "withdrawal", id, action, txReference }) });
+  return await reviewTransaction(internalRequest, env);
+}
+async function markDepositReceived(request, env) {
+  const actor = await privilegedAdminActor(request, env);
+  if (!actor) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  const body = await request.json().catch(() => ({}));
+  const id = Number(body.id);
+  if (!Number.isInteger(id) || id < 1) return bad("Richiesta di deposito non valida.");
+  const result = await env.DB.prepare("UPDATE deposits SET transfer_status = 'received' WHERE id = ? AND status = 'pending' AND transfer_status != 'received'").bind(id).run();
+  if (!result.meta?.changes) return bad("Il deposito non è più in attesa o è già stato contrassegnato come ricevuto.");
+  return Response.json({ ok: true, transferStatus: "received" });
+}
 async function markWithdrawalSent(request, env) {
   const actor = await privilegedAdminActor(request, env);
   if (!actor) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
@@ -2778,12 +2823,29 @@ async function markWithdrawalSent(request, env) {
   const txReference = String(body.txReference || "").trim();
   if (!Number.isInteger(id) || id < 1) return bad("Richiesta di prelievo non valida.");
   if (!/^(?:0x)?[a-fA-F0-9]{64}$/.test(txReference)) return bad("Inserisci un hash di transazione valido dopo aver inviato il pagamento.");
-  const withdrawal = await env.DB.prepare("SELECT id, status FROM withdrawals WHERE id = ?").bind(id).first();
-  if (!withdrawal) return bad("Prelievo non trovato.");
-  if (withdrawal.status !== "pending") return bad("Il prelievo è già stato esaminato.");
-  const result = await env.DB.prepare("UPDATE withdrawals SET tx_reference = ? WHERE id = ? AND status = 'pending'").bind(txReference, id).run();
+  const result = await env.DB.prepare("UPDATE withdrawals SET tx_reference = ?, transfer_status = 'sent' WHERE id = ? AND status = 'pending'").bind(txReference, id).run();
   if (!result.meta?.changes) return bad("Il prelievo non è più in attesa.");
-  return Response.json({ ok: true, status: "pending", txReference });
+  if (await readAutomaticWithdrawalDecisions(env)) {
+    const finalized = await runAutomaticWithdrawalDecision(request, env, id, "approve", txReference);
+    if (!finalized.ok) return finalized;
+    return Response.json({ ok: true, transferStatus: "sent", automaticDecision: "approved" });
+  }
+  return Response.json({ ok: true, transferStatus: "sent", txReference, automaticDecision: null });
+}
+async function markWithdrawalFailed(request, env) {
+  const actor = await privilegedAdminActor(request, env);
+  if (!actor) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  const body = await request.json().catch(() => ({}));
+  const id = Number(body.id);
+  if (!Number.isInteger(id) || id < 1) return bad("Richiesta di prelievo non valida.");
+  const result = await env.DB.prepare("UPDATE withdrawals SET transfer_status = 'failed' WHERE id = ? AND status = 'pending' AND transfer_status != 'sent' AND tx_reference = ''").bind(id).run();
+  if (!result.meta?.changes) return bad("Il prelievo non è più in attesa o risulta già inviato.");
+  if (await readAutomaticWithdrawalDecisions(env)) {
+    const finalized = await runAutomaticWithdrawalDecision(request, env, id, "reject");
+    if (!finalized.ok) return finalized;
+    return Response.json({ ok: true, transferStatus: "failed", automaticDecision: "rejected" });
+  }
+  return Response.json({ ok: true, transferStatus: "failed", automaticDecision: null });
 }
 
 async function reviewTransaction(request, env) {
@@ -2804,12 +2866,15 @@ async function reviewTransaction(request, env) {
   if (kind === "deposit") {
     const dep = await env.DB.prepare("SELECT * FROM deposits WHERE id = ?").bind(id).first();
     if (!dep) return bad("Deposito non trovato.");
+    if (dep.status !== "pending") return bad("Questa richiesta è già stata esaminata.");
     userId = dep.user_id;
     amount = dep.amount;
     net = dep.net;
 
     if (action === "approve") {
-      await env.DB.prepare("UPDATE deposits SET status = 'approved' WHERE id = ?").bind(id).run();
+      if (dep.transfer_status !== "received") return bad("Conferma prima la ricezione del trasferimento nel Payment desk.");
+      const approved = await env.DB.prepare("UPDATE deposits SET status = 'approved' WHERE id = ? AND status = 'pending'").bind(id).run();
+      if (!approved.meta?.changes) return bad("Questa richiesta è già stata esaminata.");
       await env.DB.prepare("UPDATE wallets SET deposit = deposit + ?, total_deposited = total_deposited + ? WHERE user_id = ?").bind(amount, amount, userId).run();
 
       const existingFirst = await env.DB.prepare("SELECT 1 FROM referral_first_deposits WHERE source_user_id = ?").bind(userId).first();
@@ -2848,7 +2913,8 @@ async function reviewTransaction(request, env) {
         }
       }
     } else {
-      await env.DB.prepare("UPDATE deposits SET status = 'rejected' WHERE id = ?").bind(id).run();
+      const rejected = await env.DB.prepare("UPDATE deposits SET status = 'rejected' WHERE id = ? AND status = 'pending'").bind(id).run();
+      if (!rejected.meta?.changes) return bad("Questa richiesta è già stata esaminata.");
     }
   } else if (kind === "withdrawal") {
     const wit = await env.DB.prepare("SELECT * FROM withdrawals WHERE id = ?").bind(id).first();
@@ -2859,6 +2925,7 @@ async function reviewTransaction(request, env) {
     net = wit.net;
 
     if (action === "approve") {
+      if (wit.transfer_status !== "sent") return bad("Conferma prima il trasferimento inviato nel Payment desk.");
       const txReference = String(wit.tx_reference || '').trim();
       const submittedReference = String(body.txReference || '').trim();
       if (!/^(?:0x)?[a-fA-F0-9]{64}$/.test(txReference)) return bad("L’amministratore deve prima registrare l’hash del pagamento.");
@@ -2868,7 +2935,9 @@ async function reviewTransaction(request, env) {
       if (!reviewed.meta?.changes) return bad("Il prelievo non è più in attesa o l’hash è cambiato.");
       await env.DB.prepare("UPDATE wallets SET total_withdrawn = total_withdrawn + ? WHERE user_id = ?").bind(amount, userId).run();
     } else {
-      await env.DB.prepare("UPDATE withdrawals SET status = 'rejected' WHERE id = ?").bind(id).run();
+      if (wit.transfer_status === "sent") return bad("Un trasferimento confermato come inviato non può essere rifiutato o rimborsato.");
+      const rejected = await env.DB.prepare("UPDATE withdrawals SET status = 'rejected' WHERE id = ? AND status = 'pending'").bind(id).run();
+      if (!rejected.meta?.changes) return bad("Questa richiesta è già stata esaminata.");
       const refundSource = wit.source === 'released' ? 'released' : 'earnings';
       const refundAmount = Number(wit.charged_amount) > 0 ? Number(wit.charged_amount) : amount;
       await env.DB.prepare("UPDATE wallets SET " + refundSource + " = " + refundSource + " + ? WHERE user_id = ?").bind(refundAmount, userId).run();
@@ -3236,6 +3305,3 @@ const PRIMARY_ADMIN_PASSWORD = String(process.env.ADMIN_PASSWORD || "");
 if (!PRIMARY_ADMIN_EMAIL || !PRIMARY_ADMIN_PASSWORD) {
   console.warn("Admin authentication is disabled until ADMIN_EMAIL and ADMIN_PASSWORD are configured in Render.");
 }
-DEFAULT_DEPOSIT_ADDRESSES.BNB = "0x2859d146Dc8e4cB332736986feE9D32B641fbde8";
-DEFAULT_DEPOSIT_ADDRESSES.TRC20 = "TYQgWx4eQ6Js94UMexfyLXbqNE4Fucfg7Y";
-DEFAULT_DEPOSIT_ADDRESSES.BTC = "bc1par0exs9cyw9w53xsceyh6wzl7f43gdjn6xsq0kyq4qsqsvr2uynqf5llc6";
