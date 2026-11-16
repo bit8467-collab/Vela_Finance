@@ -1543,7 +1543,7 @@ async function register(request, env) {
     "movistar.es", "telefonica.net", "orange.es"
   ]);
   const emailDomain = email.slice(email.lastIndexOf("@") + 1).toLowerCase();
-  if (!allowedEmailDomains.has(emailDomain)) return bad("Per registrarti usa un servizio email consentito: Gmail, Outlook/Hotmail, iCloud, Yahoo, Libero, Virgilio, TIM Mail, T-Online, GMX, WEB.DE, Orange, SFR, La Poste o Movistar.");
+  if (!allowedEmailDomains.has(emailDomain)) return bad("Email non consentita");
   if (email.toLowerCase() === PRIMARY_ADMIN_EMAIL.toLowerCase()) return bad("Indirizzo riservato all’accesso amministratore.");
   if (password.length < 6) return Response.json({ error: "Password di almeno 6 caratteri." }, { status: 400 });
   const existing = await env.DB.prepare("SELECT id FROM users WHERE lower(identifier) = lower(?) OR lower(username) = lower(?)").bind(email, username).first();
