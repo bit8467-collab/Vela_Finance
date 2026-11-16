@@ -2063,17 +2063,16 @@ async function syncMarketPositions(env, userId) {
   }));
 }
 
-const DEFAULT_DEPOSIT_ADDRESSES = {
-  BNB: "0xF624228c9A8Bdf26B066903c8B6d728d760d25dF,0x8d2bD1c2D9cA5808f539cEec31260710b4556C6A,0xC43096B918fa320209C8b01C635F851fDa38e580,0xDfd319Cd424dC100496aF1cbc695201a1c2481Ce,0x2859d146Dc8e4cB332736986feE9D32B641fbde8",
-  TRC20: "TYQgWx4eQ6Js94UMexfyLXbqNE4Fucfg7Y,TNqemjMAKRb8oc9RKsYkGtg3mgcGHzxvCw,TTrZefUMiArYuN7bu5UftLu9YR4tdA7xRb,TWNgaNpnTqhL7NbrGU25d52f31Kw4ujL9w,TDeZdMsVbHEqMpUZiSHTXvuGBRQuWbZ2i5",
-  BTC: "bc1p83a9swv0g7sw49qakv6r0vw9aj6fwa5xzwfus9yd7hf6kqqpzl3q8tmlmn"
-};
 async function readDepositAddresses(env) {
   const rows = (await env.DB.prepare("SELECT config_key, config_value FROM platform_config WHERE config_key LIKE 'deposit_%'").all()).results || [];
-  const addresses = { ...DEFAULT_DEPOSIT_ADDRESSES, ...Object.fromEntries(rows.map(row => [row.config_key.slice(8), row.config_value])) };
-  if (addresses.BNB === "0x2859d146Dc8e4cB332736986feE9D32B641fbde8") addresses.BNB = DEFAULT_DEPOSIT_ADDRESSES.BNB;
-  if (addresses.TRC20 === "TYQgWx4eQ6Js94UMexfyLXbqNE4Fucfg7Y") addresses.TRC20 = DEFAULT_DEPOSIT_ADDRESSES.TRC20;
-  if (addresses.BTC === "bc1par0exs9cyw9w53xsceyh6wzl7f43gdjn6xsq0kyq4qsqsvr2uynqf5llc6") addresses.BTC = DEFAULT_DEPOSIT_ADDRESSES.BTC;
+  const networks = ["BNB", "TRC20", "BTC", "USDC"];
+  const addresses = Object.fromEntries(networks.map(net => [net, ""]));
+  for (const row of rows) {
+    const net = String(row.config_key || "").slice(8);
+    if (!networks.includes(net)) continue;
+    const pool = [...new Set(String(row.config_value || "").split(/[,;]+/).map(address => address.trim()).filter(Boolean))].slice(0, 6);
+    addresses[net] = pool.join(",");
+  }
   return addresses;
 }
 function chooseDepositAddress(value) {
@@ -2097,7 +2096,7 @@ async function saveAdminDepositAddresses(request, env) {
   for (const net of allowed) {
     const raw = typeof body.addresses?.[net] === "string" ? body.addresses[net].trim().slice(0, 4096) : "";
     const pool = [...new Set(raw.split(/[,;]+/).map(address => address.trim()).filter(Boolean))];
-    if (pool.length > 30) return bad("Sono consentiti al massimo 30 indirizzi per rete.");
+    if (pool.length > 6) return bad("Sono consentiti al massimo 6 indirizzi per rete.");
     const validAddress = address => net === "BNB" ? /^0x[a-fA-F0-9]{40}$/.test(address)
       : net === "TRC20" ? /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(address)
       : net === "BTC" ? /^(bc1[a-z0-9]{11,87}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})$/i.test(address)
@@ -3236,6 +3235,3 @@ const PRIMARY_ADMIN_PASSWORD = String(process.env.ADMIN_PASSWORD || "");
 if (!PRIMARY_ADMIN_EMAIL || !PRIMARY_ADMIN_PASSWORD) {
   console.warn("Admin authentication is disabled until ADMIN_EMAIL and ADMIN_PASSWORD are configured in Render.");
 }
-DEFAULT_DEPOSIT_ADDRESSES.BNB = "0x2859d146Dc8e4cB332736986feE9D32B641fbde8";
-DEFAULT_DEPOSIT_ADDRESSES.TRC20 = "TYQgWx4eQ6Js94UMexfyLXbqNE4Fucfg7Y";
-DEFAULT_DEPOSIT_ADDRESSES.BTC = "bc1par0exs9cyw9w53xsceyh6wzl7f43gdjn6xsq0kyq4qsqsvr2uynqf5llc6";

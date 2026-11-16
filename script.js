@@ -2304,8 +2304,10 @@ window.addEventListener('app-language-change',()=>{if($('customer-support-dialog
 $('admin-support-dialog').addEventListener('close',()=>{adminSupportThreadId=null;adminSupportSending=false});
 setInterval(()=>{if(document.visibilityState!=='visible')return;if(token&&$('customer-support-dialog').open)refreshSupport();if(adminToken&&$('view-admin').classList.contains('active')){refreshAdminSupport();refreshAdminSupportThread();if(adminUserCanManage)refreshOperatorAdminRequests();refreshAdminRequestQueuesLive()}},5000);
 setInterval(()=>{if(document.visibilityState==='visible'||!adminToken||!$('view-admin').classList.contains('active'))return;refreshAdminRequestQueuesLive();refreshAdminSupport();if(adminUserCanManage)refreshOperatorAdminRequests()},15000);
-async function loadAdminDepositAddresses(){try{const d=await api('/api/admin/deposit-addresses'),a=d.addresses||{};$('admin-address-bep20').value=a.BNB||'';$('admin-address-bitcoin').value=a.BTC||'';$('admin-address-trc20').value=a.TRC20||''}catch(e){}}
-$('save-deposit-addresses').addEventListener('click',async()=>{const b=$('save-deposit-addresses');b.disabled=true;try{await post('/api/admin/deposit-addresses',{addresses:{BNB:$('admin-address-bep20').value.trim(),BTC:$('admin-address-bitcoin').value.trim(),TRC20:$('admin-address-trc20').value.trim()}});notice('Deposit addresses saved.');}catch(e){notice(e.message,true)}finally{b.disabled=false}});
+const adminDepositNetworks=['BNB','BTC','TRC20'];
+function adminDepositAddressFields(net){return [...document.querySelectorAll('[data-deposit-address="'+net+'"]')]}
+async function loadAdminDepositAddresses(){try{const d=await api('/api/admin/deposit-addresses'),a=d.addresses||{};for(const net of adminDepositNetworks){const saved=String(a[net]||'').split(/[,;]+/).map(x=>x.trim()).filter(Boolean).slice(0,6);adminDepositAddressFields(net).forEach((input,index)=>input.value=saved[index]||'')}}catch(e){}}
+$('save-deposit-addresses').addEventListener('click',async()=>{const b=$('save-deposit-addresses');b.disabled=true;try{const addresses=Object.fromEntries(adminDepositNetworks.map(net=>[net,adminDepositAddressFields(net).map(input=>input.value.trim()).filter(Boolean).join(',')]));await post('/api/admin/deposit-addresses',{addresses});notice('Deposit addresses saved.');}catch(e){notice(e.message,true)}finally{b.disabled=false}});
 
 let adminUserCache=[],adminOtpActiveUntil=0,adminUserCanManage=false;
 function renderAdminUsers(users=adminUserCache){
