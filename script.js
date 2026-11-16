@@ -1754,10 +1754,51 @@ $('admin-mfa-cancel').addEventListener('click',()=>showAuthMode('login'));
 const inviteFromLink=new URLSearchParams(location.search).get('invite');if(inviteFromLink)$('register-referral').value=inviteFromLink;
 $('register-form').addEventListener('submit',async e=>{e.preventDefault();const err=$('register-error');err.textContent='';if($('register-password').value!==$('register-confirm').value){err.textContent='Passwords do not match.';return}const btn=e.submitter;btn.disabled=true;try{await post('/api/register',{identifier:$('register-email').value.trim(),username:$('register-username').value.trim(),password:$('register-password').value,invite:$('register-referral').value.trim()});$('login-email').value=$('register-email').value;showAuthMode('login');$('login-error').textContent='Account created. Sign in to continue.'}catch(x){err.textContent=x.message}finally{btn.disabled=false}});
 $('forgot-password-button').addEventListener('click',()=>{ $('login-form').hidden=true;$('register-form').hidden=true;$('forgot-password-button').hidden=true;$('password-reset-request-form').hidden=false;$('auth-title').textContent='Reset password'});
-$('password-reset-request-form').addEventListener('submit',async e=>{e.preventDefault();const m=$('reset-request-message');m.textContent='';try{const r=await post('/api/auth/forgot-password',{email:$('reset-email').value.trim()});m.textContent='Request recorded for '+(r.email||'this account')+'. An operator must issue an OTP.';m.classList.add('success');$('password-reset-form').hidden=false}catch(x){m.textContent=x.message;m.classList.add('error')}});
-function setupOtpInput(id){const field=$(id);if(!field)return;field.addEventListener('input',()=>{const clean=field.value.replace(/\D/g,'').slice(0,6);if(field.value!==clean)field.value=clean});field.addEventListener('paste',()=>setTimeout(()=>{field.value=field.value.replace(/\D/g,'').slice(0,6)},0))}
+let resetResendTimer = null;
+function setResetResendCooldown(until) {
+  const button = $('reset-resend-code');
+  if (resetResendTimer) clearInterval(resetResendTimer);
+  button.hidden = false;
+  const update = () => {
+    const remaining = Math.max(0, Number(until) - Date.now());
+    button.disabled = remaining > 0;
+    button.textContent = remaining > 0
+      ? 'Request a new code in ' + Math.floor(remaining / 60000) + ':' + String(Math.ceil((remaining % 60000) / 1000)).padStart(2, '0')
+      : 'Request a new code';
+    if (!remaining && resetResendTimer) { clearInterval(resetResendTimer); resetResendTimer = null; }
+  };
+  update();
+  if (Number(until) > Date.now()) resetResendTimer = setInterval(update, 1000);
+}
+async function submitPasswordResetRequest(resend = false) {
+  const message = $('reset-request-message');
+  const button = resend ? $('reset-resend-code') : $('password-reset-request-form').querySelector('button[type="submit"]');
+  message.textContent = '';
+  message.classList.remove('error', 'success');
+  if (button) button.disabled = true;
+  try {
+    const result = await post('/api/auth/forgot-password', { email: $('reset-email').value.trim() });
+    message.textContent = resend ? 'A new recovery request has been recorded. An operator must issue an OTP.' : 'Request recorded for ' + (result.email || 'this account') + '. An operator must issue an OTP.';
+    message.classList.add('success');
+    $('password-reset-form').hidden = false;
+    if (resend) $('reset-otp').value = '';
+    setResetResendCooldown(Number(result.retryAt) || (Number(result.requestedAt) || Date.now()) + 15 * 60 * 1000);
+  } catch (error) {
+    message.textContent = error.message;
+    message.classList.add('error');
+    if (button) button.disabled = false;
+  } finally {
+    if (!resend && button) button.disabled = false;
+  }
+}
+$('password-reset-request-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  await submitPasswordResetRequest(false);
+});
+$('reset-resend-code').addEventListener('click', () => submitPasswordResetRequest(true));
+ function setupOtpInput(id){const field=$(id);if(!field)return;field.addEventListener('input',()=>{const clean=field.value.replace(/\D/g,'').slice(0,6);if(field.value!==clean)field.value=clean});field.addEventListener('paste',()=>setTimeout(()=>{field.value=field.value.replace(/\D/g,'').slice(0,6)},0))}
 setupOtpInput('reset-otp');setupOtpInput('verification-otp');setupOtpInput('admin-mfa-code');
-$('password-reset-form').addEventListener('submit',async e=>{e.preventDefault();const err=$('reset-password-error');err.textContent='';if($('reset-new-password').value!==$('reset-confirm-password').value){err.textContent='Passwords do not match.';return}try{await post('/api/auth/reset-password',{email:$('reset-email').value.trim(),otp:$('reset-otp').value.trim(),newPassword:$('reset-new-password').value});$('password-reset-form').reset();$('password-reset-form').hidden=true;showAuthMode('login');$('login-email').value=$('reset-email').value;notice('Password reset. Sign in with the new password.')}catch(x){err.textContent=x.message}});
+$('password-reset-form').addEventListener('submit',async e=>{e.preventDefault();const err=$('reset-password-error');err.textContent='';if($('reset-new-password').value!==$('reset-confirm-password').value){err.textContent='Passwords do not match.';return}try{await post('/api/auth/reset-password',{email:$('reset-email').value.trim(),otp:$('reset-otp').value.trim(),newPassword:$('reset-new-password').value});if(resetResendTimer)clearInterval(resetResendTimer);resetResendTimer=null;$('password-reset-form').reset();$('password-reset-form').hidden=true;showAuthMode('login');$('login-email').value=$('reset-email').value;notice('Password reset. Sign in with the new password.')}catch(x){err.textContent=x.message}});
 async function logout(){try{await post('/api/logout',{sessionToken:token,adminToken})}catch{}token='';adminToken='';updateAdminAutoRefreshToggle();stopNotificationStream();state=null;localStorage.removeItem(TOKEN);localStorage.removeItem(ADMIN);if(poll)clearInterval(poll);landing()}
 $('logout-button').addEventListener('click',logout);$('topbar-logout-button').addEventListener('click',logout);
 $('refresh-account').addEventListener('click',async(event)=>{const button=$('refresh-account');const automatic=!event.isTrusted,protectAssets=automatic&&['assets','catalog'].includes($('app-shell').dataset.view);if(button.disabled)return;button.disabled=true;button.classList.add('is-refreshing');button.setAttribute('aria-busy','true');try{if(adminToken){renderAdmin();const data=await api('/api/admin/statistics');adminStatisticsCache=data;renderAdminStatistics(data)}else if(token){await refreshState(protectAssets);await refreshNotifications()}if(protectAssets){const quoteTask=refreshMarketQuotes(),historyTask=refreshMarketHistory();await Promise.all([quoteTask,historyTask]);histories=getMarketHistory();mergeLiveAssetHistory();updateAssetQuoteRows();const openAsset=$('asset-detail-title').dataset.asset;if(openAsset){updateAssetDetailQuote(openAsset);const chart=$('asset-detail-chart').querySelector('.data-chart');if(!chart||(document.activeElement!==chart&&!chart.matches(':hover')))renderSelectedAssetChart()}}else await loadMarket();if(!automatic)notice(adminToken?'Platform data refreshed.':'Account and market data refreshed.')}catch(e){if(!automatic)notice(e.message||'Refresh failed.',true)}finally{button.disabled=false;button.classList.remove('is-refreshing');button.removeAttribute('aria-busy')}});

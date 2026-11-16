@@ -1560,23 +1560,27 @@ async function requestPasswordReset(request, env) {
 
   const user = await env.DB.prepare("SELECT id, username, identifier FROM users WHERE lower(identifier) = ?").bind(email).first();
   const now = Date.now();
+  const cooldown = 15 * 60 * 1000;
   if (user) {
-    const created = await env.DB.prepare(
-      "INSERT INTO password_reset_requests (user_id, requested_at, otp_attempts) VALUES (?, ?, 0) ON CONFLICT(user_id) DO NOTHING"
-    ).bind(user.id, now).run();
-    if (!(created.meta?.changes > 0)) return Response.json({ error: "È già presente una richiesta di reimpostazione della password. Completa quella in corso prima di inviarne un'altra." }, { status: 409 });
+    const existing = await env.DB.prepare("SELECT requested_at, otp_expires_at FROM password_reset_requests WHERE user_id = ?").bind(user.id).first();
+    if (!existing) {
+      await env.DB.prepare("INSERT INTO password_reset_requests (user_id, requested_at, otp_attempts) VALUES (?, ?, 0)").bind(user.id, now).run();
+    } else {
+      const retryAt = Number(existing.otp_expires_at) || (Number(existing.requested_at) + cooldown);
+      if (now < retryAt) return Response.json({ error: "Potrai richiedere un nuovo codice dopo la scadenza del codice o 15 minuti dalla richiesta." }, { status: 429 });
+      await env.DB.prepare("UPDATE password_reset_requests SET requested_at = ?, otp_hash = NULL, otp_salt = NULL, otp_expires_at = NULL, otp_attempts = 0, issued_at = NULL, issued_by = NULL WHERE user_id = ?").bind(now, user.id).run();
+    }
   }
 
-  return Response.json({ 
-    ok: true, 
-    email: user ? user.identifier : email, 
-    username: user ? user.username : 'Utente', 
-    userId: user ? user.id : 'unknown', 
-    requestedAt: now 
+  return Response.json({
+    ok: true,
+    email: user ? user.identifier : email,
+    username: user ? user.username : 'Utente',
+    userId: user ? user.id : 'unknown',
+    requestedAt: now,
+    retryAt: now + cooldown
   });
-}
-
-async function confirmPasswordReset(request, env) {
+}async function confirmPasswordReset(request, env) {
   const body = await request.json();
   const email = normalizeEmail(body.email);
   const otp = typeof body.otp === "string" ? body.otp.trim() : "";
