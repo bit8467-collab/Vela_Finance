@@ -1298,6 +1298,7 @@ const workerHandler = {
       if (method === "POST" && pathName === "/api/admin/payments/mark-sent") return await markWithdrawalSent(request, env);
       if (method === "POST" && pathName === "/api/admin/payments/mark-failed") return await markWithdrawalFailed(request, env);
       if (method === "POST" && pathName === "/api/admin/payments/mark-received") return await markDepositReceived(request, env);
+      if (method === "POST" && pathName === "/api/admin/payments/mark-deposit-failed") return await markDepositFailed(request, env);
       if (method === "GET" && pathName === "/api/admin/payment-settings") return await getAdminPaymentSettings(request, env);
       if (method === "POST" && pathName === "/api/admin/payment-settings") return await saveAdminPaymentSettings(request, env);
       if (method === "GET" && pathName === "/api/admin/statistics") return await adminStatistics(request, env);
@@ -2798,11 +2799,11 @@ async function saveAdminPaymentSettings(request, env) {
   await env.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES('payment_auto_withdrawals', ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind(value).run();
   return Response.json({ ok: true, automaticWithdrawalDecisions: value === "1" });
 }
-async function runAutomaticWithdrawalDecision(request, env, id, action, txReference = "") {
+async function runAutomaticRequestDecision(request, env, kind, id, action, txReference = "") {
   const headers = new Headers(request.headers);
   headers.delete("content-length");
   headers.set("content-type", "application/json");
-  const internalRequest = new Request(request.url, { method: "POST", headers, body: JSON.stringify({ kind: "withdrawal", id, action, txReference }) });
+  const internalRequest = new Request(request.url, { method: "POST", headers, body: JSON.stringify({ kind, id, action, txReference }) });
   return await reviewTransaction(internalRequest, env);
 }
 async function markDepositReceived(request, env) {
@@ -2813,7 +2814,27 @@ async function markDepositReceived(request, env) {
   if (!Number.isInteger(id) || id < 1) return bad("Richiesta di deposito non valida.");
   const result = await env.DB.prepare("UPDATE deposits SET transfer_status = 'received' WHERE id = ? AND status = 'pending' AND transfer_status != 'received'").bind(id).run();
   if (!result.meta?.changes) return bad("Il deposito non è più in attesa o è già stato contrassegnato come ricevuto.");
-  return Response.json({ ok: true, transferStatus: "received" });
+  if (await readAutomaticWithdrawalDecisions(env)) {
+    const finalized = await runAutomaticRequestDecision(request, env, "deposit", id, "approve");
+    if (!finalized.ok) return finalized;
+    return Response.json({ ok: true, transferStatus: "received", automaticDecision: "approved" });
+  }
+  return Response.json({ ok: true, transferStatus: "received", automaticDecision: null });
+}
+async function markDepositFailed(request, env) {
+  const actor = await privilegedAdminActor(request, env);
+  if (!actor) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  const body = await request.json().catch(() => ({}));
+  const id = Number(body.id);
+  if (!Number.isInteger(id) || id < 1) return bad("Richiesta di deposito non valida.");
+  const result = await env.DB.prepare("UPDATE deposits SET transfer_status = 'failed' WHERE id = ? AND status = 'pending' AND transfer_status != 'received' AND transfer_status != 'failed'").bind(id).run();
+  if (!result.meta?.changes) return bad("Il deposito non è più in attesa o risulta già ricevuto/contrassegnato.");
+  if (await readAutomaticWithdrawalDecisions(env)) {
+    const finalized = await runAutomaticRequestDecision(request, env, "deposit", id, "reject");
+    if (!finalized.ok) return finalized;
+    return Response.json({ ok: true, transferStatus: "failed", automaticDecision: "rejected" });
+  }
+  return Response.json({ ok: true, transferStatus: "failed", automaticDecision: null });
 }
 async function markWithdrawalSent(request, env) {
   const actor = await privilegedAdminActor(request, env);
@@ -2826,7 +2847,7 @@ async function markWithdrawalSent(request, env) {
   const result = await env.DB.prepare("UPDATE withdrawals SET tx_reference = ?, transfer_status = 'sent' WHERE id = ? AND status = 'pending'").bind(txReference, id).run();
   if (!result.meta?.changes) return bad("Il prelievo non è più in attesa.");
   if (await readAutomaticWithdrawalDecisions(env)) {
-    const finalized = await runAutomaticWithdrawalDecision(request, env, id, "approve", txReference);
+    const finalized = await runAutomaticRequestDecision(request, env, "withdrawal", id, "approve", txReference);
     if (!finalized.ok) return finalized;
     return Response.json({ ok: true, transferStatus: "sent", automaticDecision: "approved" });
   }
@@ -2841,7 +2862,7 @@ async function markWithdrawalFailed(request, env) {
   const result = await env.DB.prepare("UPDATE withdrawals SET transfer_status = 'failed' WHERE id = ? AND status = 'pending' AND transfer_status != 'sent' AND tx_reference = ''").bind(id).run();
   if (!result.meta?.changes) return bad("Il prelievo non è più in attesa o risulta già inviato.");
   if (await readAutomaticWithdrawalDecisions(env)) {
-    const finalized = await runAutomaticWithdrawalDecision(request, env, id, "reject");
+    const finalized = await runAutomaticRequestDecision(request, env, "withdrawal", id, "reject");
     if (!finalized.ok) return finalized;
     return Response.json({ ok: true, transferStatus: "failed", automaticDecision: "rejected" });
   }
