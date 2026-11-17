@@ -1977,6 +1977,39 @@ async function markNotificationsRead(request, env) {
   return Response.json({ ok: true });
 }
 
+async function checkDepositTransactionOnChain(network, reference) {
+  let hash = String(reference || "").trim();
+  if (network === "BNB") hash = hash.replace(/^0x/i, "");
+  if (!["BNB", "TRC20", "BTC"].includes(network) || !/^[a-fA-F0-9]{64}$/.test(hash)) return false;
+  try {
+    const signal = AbortSignal.timeout(6000);
+    if (network === "BNB") {
+      const response = await fetch("https://bsc-dataseed.binance.org/", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_getTransactionByHash", params: ["0x" + hash] }), signal,
+      });
+      if (!response.ok) return null;
+      const result = await response.json();
+      if (result.error || !Object.prototype.hasOwnProperty.call(result, "result")) return null;
+      return result.result === null ? false : true;
+    }
+    if (network === "TRC20") {
+      const response = await fetch("https://api.trongrid.io/v1/transactions/" + encodeURIComponent(hash), { signal });
+      if (response.status === 404) return false;
+      if (!response.ok) return null;
+      const result = await response.json();
+      return Array.isArray(result.data) ? result.data.length > 0 : null;
+    }
+    const response = await fetch("https://mempool.space/api/tx/" + encodeURIComponent(hash), { signal });
+    if (response.status === 404) return false;
+    if (!response.ok) return null;
+    const result = await response.json();
+    return result && result.txid ? true : null;
+  } catch {
+    return null;
+  }
+}
+
 async function deposit(request, env) {
   const user = await authed(request, env);
   const body = await request.json();
@@ -1997,8 +2030,18 @@ async function deposit(request, env) {
     return bad("Questo hash o ID di transazione è già stato utilizzato da un utente.");
   }
 
+  const automaticDecisions = await readAutomaticWithdrawalDecisions(env);
+  const transactionExists = automaticDecisions ? await checkDepositTransactionOnChain(net, txReference) : null;
   await accrue(env, user.id);
   const created = Date.now();
+  if (automaticDecisions && transactionExists === false) {
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO deposits (user_id, amount, net, date, status, tx_reference, deposit_address, transfer_status) VALUES (?,?,?,?, 'rejected', ?, ?, 'failed')").bind(user.id, amount, net, created, txReference, depositAddress),
+      env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Deposit request automatically rejected", "The transaction hash was invalid or not found on the selected network. No funds were credited.", created),
+    ]);
+    await recordAntifraudEvent(request, env, user, 'deposit', txReference);
+    return Response.json({ ok: true, status: "rejected", automaticDecision: "rejected" });
+  }
   await env.DB.batch([
     env.DB.prepare("INSERT INTO deposits (user_id, amount, net, date, status, tx_reference, deposit_address) VALUES (?,?,?,?, 'pending', ?, ?)").bind(user.id, amount, net, created, txReference, depositAddress),
     env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Deposit request submitted", amount.toFixed(3) + " USDT · " + net + " · Pending review.", created),
