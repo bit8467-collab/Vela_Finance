@@ -9,6 +9,14 @@ import { deflateRawSync } from 'zlib';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const PROMOTER_PACKAGE_TIERS = Object.freeze({
+  starter: Object.freeze({ price: 5, limit: 3 }),
+  growth: Object.freeze({ price: 20, limit: 15 }),
+  pro: Object.freeze({ price: 50, limit: 40 }),
+  business: Object.freeze({ price: 100, limit: 100 }),
+  elite: Object.freeze({ price: 200, limit: 250 }),
+});
+
 const app = express();
 app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
@@ -1418,6 +1426,7 @@ const workerHandler = {
       if (method === "GET" && adminSupportThreadMatch) return await adminSupportThread(request, env, Number(adminSupportThreadMatch[1]));
       if (method === "POST" && pathName === "/api/deposit") return await deposit(request, env);
       if (method === "POST" && pathName === "/api/promoter/skip") return await skipPromoterPackages(request, env);
+      if (method === "POST" && pathName === "/api/promoter/upgrade") return await upgradePromoterAccount(request, env);
       if (method === "POST" && pathName === "/api/invest") return Response.json({ error: "I vecchi piani a rendimento fisso non accettano nuovi investimenti. Usa i portafogli market con valore variabile." }, { status: 410 });
       if (method === "POST" && pathName === "/api/market/invest") return await marketInvest(request, env);
       if (method === "POST" && pathName === "/api/market/simple-earn") return await simpleEarnInvest(request, env);
@@ -2114,9 +2123,19 @@ async function checkDepositTransactionOnChain(network, reference) {
   }
 }
 
+async function upgradePromoterAccount(request, env) {
+  const user = await authed(request, env);
+  const account = await env.DB.prepare("SELECT account_type FROM users WHERE id = ?").bind(user.id).first();
+  if (!account) return bad("Account non trovato.");
+  if (account.account_type !== "promoter") {
+    await env.DB.prepare("UPDATE users SET account_type = 'promoter' WHERE id = ? AND account_type = 'simple'").bind(user.id).run();
+  }
+  return Response.json({ ok: true, accountType: "promoter" });
+}
+
 async function skipPromoterPackages(request, env) {
   const user = await authed(request, env);
-  const account = await env.DB.prepare("SELECT account_type, promoter_package, promoter_expires_at FROM users WHERE id = ?").bind(user.id).first();
+  const account = await env.DB.prepare("SELECT account_type, promoter_package, promoter_invite_limit, promoter_expires_at FROM users WHERE id = ?").bind(user.id).first();
   if (!account || account.account_type !== "promoter") return bad("Il profilo promoter non è disponibile.");
   if (account.promoter_expires_at > Date.now() && account.promoter_package) return bad("Un pacchetto attivo non può essere convertito in profilo semplice.");
   const pending = await env.DB.prepare("SELECT id FROM deposits WHERE user_id = ? AND purpose = 'promoter-package' AND status = 'pending'").bind(user.id).first();
@@ -2134,12 +2153,12 @@ async function deposit(request, env) {
   const depositAddress = String(body.depositAddress || "").trim().slice(0, 160);
   const purpose = body.purpose === "promoter-package" ? "promoter-package" : "deposit";
   const packageId = purpose === "promoter-package" ? String(body.packageId || "") : null;
-  const packageTier = packageId === "starter" ? { price: 5, limit: 3 } : packageId === "growth" ? { price: 20, limit: 15 } : null;
+  const packageTier = PROMOTER_PACKAGE_TIERS[packageId] || null;
   if (purpose === "promoter-package") {
     if (!packageTier || amount !== packageTier.price) return bad("Pacchetto o importo non valido.");
-    const account = await env.DB.prepare("SELECT account_type, promoter_package, promoter_expires_at FROM users WHERE id = ?").bind(user.id).first();
+    const account = await env.DB.prepare("SELECT account_type, promoter_package, promoter_invite_limit, promoter_expires_at FROM users WHERE id = ?").bind(user.id).first();
     if (account?.account_type !== "promoter") return bad("Seleziona il profilo promoter prima di acquistare un pacchetto.");
-    if (account.promoter_expires_at > Date.now() && account.promoter_package === "growth" && packageId === "starter") return bad("Non è possibile ridurre un pacchetto ancora attivo.");
+    if (account.promoter_expires_at > Date.now() && Number(account.promoter_invite_limit || 0) > packageTier.limit) return bad("Non è possibile ridurre un pacchetto ancora attivo.");
     const pending = await env.DB.prepare("SELECT id FROM deposits WHERE user_id = ? AND purpose = 'promoter-package' AND status = 'pending'").bind(user.id).first();
     if (pending) return bad("Hai già un pagamento pacchetto in attesa di revisione.");
   } else if (!Number.isFinite(amount) || amount < 50) return bad("Il deposito minimo è di 50 USDT.");
@@ -3168,10 +3187,10 @@ async function reviewTransaction(request, env) {
       if (dep.transfer_status !== "received") return bad("Conferma prima la ricezione del trasferimento nel Payment desk.");
       let packageTier = null;
       if (dep.purpose === "promoter-package") {
-        packageTier = dep.package_id === "starter" ? { price: 5, limit: 3 } : dep.package_id === "growth" ? { price: 20, limit: 15 } : null;
+        packageTier = PROMOTER_PACKAGE_TIERS[dep.package_id] || null;
         const target = await env.DB.prepare("SELECT account_type, promoter_package, promoter_expires_at FROM users WHERE id = ?").bind(userId).first();
         if (!packageTier || Number(dep.amount) !== packageTier.price || target?.account_type !== "promoter") return bad("Il pacchetto non è valido per questo account.");
-        if (target.promoter_expires_at > Date.now() && target.promoter_package === "growth" && dep.package_id === "starter") return bad("Non è possibile ridurre un pacchetto attivo.");
+        if (target.promoter_expires_at > Date.now() && Number(target.promoter_invite_limit || 0) > packageTier.limit) return bad("Non è possibile ridurre un pacchetto attivo.");
       }
       const approved = await env.DB.prepare("UPDATE deposits SET status = 'approved' WHERE id = ? AND status = 'pending'").bind(id).run();
       if (!approved.meta?.changes) return bad("Questa richiesta è già stata esaminata.");
