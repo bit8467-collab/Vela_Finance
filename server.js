@@ -1357,8 +1357,8 @@ const workerHandler = {
       await env.DB.exec(`
         CREATE TRIGGER market_position_release AFTER UPDATE OF status ON market_positions
         WHEN OLD.status IN ('active','paused') AND NEW.status IN ('matured','stop_loss','early_closed')
-        BEGIN 
-          UPDATE wallets SET released = released + NEW.last_value WHERE user_id = NEW.user_id; 
+        BEGIN
+          UPDATE wallets SET released = released + MAX(0, ROUND(NEW.last_value - NEW.early_close_fee - ROUND(MIN(NEW.last_value, NEW.amount * 0.20), 3), 3)) WHERE user_id = NEW.user_id;
         END;
       `);
     } catch {}
@@ -1454,7 +1454,6 @@ const workerHandler = {
       if (method === "GET" && pathName === "/api/admin/deposit-addresses") return await adminDepositAddresses(request, env);
       if (method === "POST" && pathName === "/api/admin/deposit-addresses") return await saveAdminDepositAddresses(request, env);
       if (method === "POST" && pathName === "/api/withdraw") return await withdraw(request, env);
-      if (method === "POST" && pathName === "/api/transfer-deposit-earnings") return await transferDepositToEarnings(request, env);
       if (method === "POST" && pathName === "/api/security/confirm-otp") return await confirmSensitiveActionOtp(request, env);
       if (method === "POST" && pathName === "/api/save-wallet") return await saveWallet(request, env);
       if (method === "POST" && pathName === "/api/wallet-change-request") return await requestWalletChange(request, env);
@@ -2454,11 +2453,13 @@ async function simpleEarnRedeem(request, env) {
   if (!position) return Response.json({ error: "La posizione non è più attiva." }, { status: 409 });
   const now = Date.now(), principal = Number(position.principal);
   const interest = Number((principal * Number(position.daily_rate) * Math.max(0, now - Number(position.created_at)) / 86400000).toFixed(3));
+  const capitalWithholding = Number((principal * 0.20).toFixed(3));
+  const principalReturned = Number(Math.max(0, principal - capitalWithholding).toFixed(3));
   const result = await env.DB.prepare("UPDATE simple_earn_positions SET status = 'redeemed', interest_paid = ?, closed_at = ? WHERE id = ? AND user_id = ? AND status = 'active'").bind(interest, now, id, user.id).run();
   if (!(result.meta?.changes > 0)) return Response.json({ error: "La posizione è già stata riscattata." }, { status: 409 });
-  if (position.source === "earnings") await env.DB.prepare("UPDATE wallets SET earnings = earnings + ? WHERE user_id = ?").bind(Number((principal + interest).toFixed(3)), user.id).run();
-  else await env.DB.prepare("UPDATE wallets SET deposit = deposit + ?, earnings = earnings + ? WHERE user_id = ?").bind(principal, interest, user.id).run();
-  return Response.json({ ok: true, principal, interest, total: Number((principal + interest).toFixed(3)) });
+  if (position.source === "earnings") await env.DB.prepare("UPDATE wallets SET earnings = earnings + ? WHERE user_id = ?").bind(Number((principalReturned + interest).toFixed(3)), user.id).run();
+  else await env.DB.prepare("UPDATE wallets SET deposit = deposit + ?, earnings = earnings + ? WHERE user_id = ?").bind(principalReturned, interest, user.id).run();
+  return Response.json({ ok: true, principal: principalReturned, interest, capitalWithholding, total: Number((principalReturned + interest).toFixed(3)) });
 }
 
 async function marketInvest(request, env) {
@@ -2671,20 +2672,19 @@ async function closeMarketPositionEarly(request, env) {
   const quotes = await currentMarketQuotes(positionElectricityMarket(position));
   const value = Number(marketPositionValue(position, quotes).toFixed(3));
   if (!(value > 0)) return bad('Il valore di riferimento non è disponibile per la chiusura.');
-  const fee = Number((value * 0.65).toFixed(3));
-  const net = Number((value - fee).toFixed(3));
+  const fee = Number((value * 0.35).toFixed(3));
+  const capitalWithholding = Number(Math.min(value, Number((Number(position.amount) * 0.20).toFixed(3))).toFixed(3));
+  const net = Number(Math.max(0, value - fee - capitalWithholding).toFixed(3));
   const now = Date.now();
   const transactionId = makeToken();
   const batch = await env.DB.batch([
     env.DB.prepare("UPDATE market_positions SET status = 'early_closed', closed_at = ?, last_value = ?, early_close_fee = ?, last_redemption_id = ? WHERE id = ? AND user_id = ? AND status = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ?)")
       .bind(now, value, fee, transactionId, id, user.id, position.status, user.id),
-    env.DB.prepare("UPDATE wallets SET released = MAX(0, released - ?), earnings = earnings + ? WHERE user_id = ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'early_closed' AND last_redemption_id = ?)")
-      .bind(value, net, user.id, id, user.id, transactionId),
     env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'early_closed' AND last_redemption_id = ?)")
-      .bind(user.id, 'Plan closed early', 'Current reference value ' + value.toFixed(3) + ' USDT; 65% early-closure fee ' + fee.toFixed(3) + ' USDT; net credited to earnings balance and available for withdrawal request ' + net.toFixed(3) + ' USDT. No external payout was made.', now, id, user.id, transactionId),
+      .bind(user.id, 'Plan closed early', 'Current reference value ' + value.toFixed(3) + ' USDT; 35% early-closure fee ' + fee.toFixed(3) + ' USDT; net credited to released balance ' + net.toFixed(3) + ' USDT. No external payout was made.', now, id, user.id, transactionId),
   ]);
   if (!(batch[0]?.meta?.changes > 0)) return Response.json({ error: 'Il piano è cambiato. Aggiorna e riprova.' }, { status: 409 });
-  return Response.json({ ok: true, referenceValue: value, fee, net });
+  return Response.json({ ok: true, referenceValue: value, fee, capitalWithholding, net });
 }
 
 async function savePositionAutoRedeem(request, env) {
@@ -2717,39 +2717,14 @@ async function savePositionAutoAdd(request, env) {
   return Response.json({ok:true,positionId,enabled,drawdownPct,mode,value,anchor});
 }
 
-async function transferDepositToEarnings(request, env) {
-  const user = await authed(request, env);
-  const body = await request.json().catch(() => ({}));
-  const amount = Number(Number(body.amount).toFixed(3));
-  if (!Number.isFinite(amount) || amount <= 0) return bad("Inserisci un importo valido.");
-  const wallet = await accrue(env, user.id);
-  if (amount > Number(wallet.deposit || 0) + 1e-9) return bad("Saldo deposito insufficiente.");
-  const feeAmount = Number((amount * 0.25).toFixed(3));
-  const creditedAmount = Number((amount - feeAmount).toFixed(3));
-  if (!(creditedAmount > 0)) return bad("L'importo è troppo piccolo dopo la commissione.");
-  const changed = await env.DB.prepare("UPDATE wallets SET deposit = deposit - ?, earnings = earnings + ? WHERE user_id = ? AND deposit >= ?").bind(amount, creditedAmount, user.id, amount).run();
-  if (!(changed.meta?.changes > 0)) return Response.json({ error: "Saldo deposito insufficiente o aggiornato. Riprova." }, { status: 409 });
-  const created = Date.now();
-  try {
-    await env.DB.batch([
-      env.DB.prepare("INSERT INTO balance_transfers (user_id, amount, fee_amount, credited_amount, created_at) VALUES (?, ?, ?, ?, ?)").bind(user.id, amount, feeAmount, creditedAmount, created),
-      env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Deposit balance transferred", amount.toFixed(3) + " USDT moved from deposit balance; 25% commission " + feeAmount.toFixed(3) + " USDT; " + creditedAmount.toFixed(3) + " USDT credited to earnings.", created),
-    ]);
-  } catch (error) {
-    await env.DB.prepare("UPDATE wallets SET deposit = deposit + ?, earnings = MAX(0, earnings - ?) WHERE user_id = ?").bind(amount, creditedAmount, user.id).run();
-    throw error;
-  }
-  return Response.json({ ok: true, amount, fee: feeAmount, credited: creditedAmount });
-}
-
 async function validateWithdrawal(env, user, body) {
   const amount = Number(body.amount);
   const net = String(body.net || "").trim();
   if (!Number.isFinite(amount) || amount < 50) return bad("Il prelievo minimo è di 50 USDT.");
   if (!["BNB", "TRC20", "BTC", "USDC"].includes(net)) return bad("Rete non valida.");
   const wallet = await accrue(env, user.id);
-  const source = body.source === 'released' ? 'released' : 'earnings';
-  if (amount > Number(wallet[source] || 0) + 1e-9) return bad(source === 'released' ? "Saldo capitale restituito non sufficiente." : "Saldo riscattabile non sufficiente.");
+  const source = body.source === 'deposit' ? 'deposit' : body.source === 'released' ? 'released' : 'earnings';
+  if (amount > Number(wallet[source] || 0) + 1e-9) return bad(source === 'deposit' ? "Saldo deposito insufficiente." : source === 'released' ? "Saldo svincolato insufficiente." : "Saldo guadagni insufficiente.");
   
   let address = String(body.address || "").trim();
   if (!address || address === "wallet-default" || address === "") {
@@ -2775,7 +2750,7 @@ async function validateWithdrawal(env, user, body) {
 
   if (!address || address === "Indirizzo non specificato dall'utente") return bad("Collega un indirizzo di prelievo per la rete selezionata nel profilo.");
   const chargedAmount = Number(amount.toFixed(3));
-  const feeRate = source === 'released' ? 0.25 : 0.08;
+  const feeRate = source === 'earnings' ? 0.08 : 0.25;
   const feeAmount = Number((chargedAmount * feeRate).toFixed(3));
   const payoutAmount = Number((chargedAmount - feeAmount).toFixed(3));
   return { amount: payoutAmount, feeAmount, chargedAmount, net, address, source };
@@ -3281,7 +3256,7 @@ async function reviewTransaction(request, env) {
       if (wit.transfer_status === "sent") return bad("Un trasferimento confermato come inviato non può essere rifiutato o rimborsato.");
       const rejected = await env.DB.prepare("UPDATE withdrawals SET status = 'rejected' WHERE id = ? AND status = 'pending'").bind(id).run();
       if (!rejected.meta?.changes) return bad("Questa richiesta è già stata esaminata.");
-      const refundSource = wit.source === 'released' ? 'released' : 'earnings';
+      const refundSource = wit.source === 'deposit' ? 'deposit' : wit.source === 'released' ? 'released' : 'earnings';
       const refundAmount = Number(wit.charged_amount) > 0 ? Number(wit.charged_amount) : amount;
       await env.DB.prepare("UPDATE wallets SET " + refundSource + " = " + refundSource + " + ? WHERE user_id = ?").bind(refundAmount, userId).run();
     }
