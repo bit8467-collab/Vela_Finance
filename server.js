@@ -827,12 +827,14 @@ async function inviterStats(env, userId) {
 async function settleMonthlyReferralProfits(env, inviterId) {
   try {
     const now = Date.now(), period = new Date(now).toISOString().slice(0, 7);
+    const inviter = await env.DB.prepare("SELECT account_type, promoter_package, promoter_expires_at FROM users WHERE id = ?").bind(inviterId).first();
+    if (inviter?.account_type !== "promoter" || !inviter.promoter_package || Number(inviter.promoter_expires_at || 0) <= now) return;
     const sources = (await env.DB.prepare(
       "SELECT u.id, u.username FROM users u WHERE u.referred_by = ? AND NOT EXISTS (SELECT 1 FROM referral_profit_settlements s WHERE s.user_id = ? AND s.source_user_id = u.id AND s.period = ?)"
     ).bind(inviterId, inviterId, period).all()).results || [];
     for (const source of sources) {
       const previous = await env.DB.prepare(
-        "SELECT profit_base FROM referral_profit_settlements WHERE user_id = ? AND source_user_id = ? AND commission_amount > 0 ORDER BY period DESC LIMIT 1"
+        "SELECT profit_base FROM referral_profit_settlements WHERE user_id = ? AND source_user_id = ? AND credited_at IS NOT NULL ORDER BY period DESC LIMIT 1"
       ).bind(inviterId, source.id).first();
       const totals = await env.DB.prepare(
         "SELECT " +
@@ -859,6 +861,18 @@ async function settleMonthlyReferralProfits(env, inviterId) {
     console.error('Monthly referral commission settlement failed:', error);
   }
 }
+async function seedPromoterReferralBaselines(env, inviterId, now) {
+  const period = new Date(now).toISOString().slice(0, 7);
+  await env.DB.prepare(
+    "INSERT OR IGNORE INTO referral_profit_settlements (user_id, source_user_id, period, profit_base, commission_amount, created_at, credited_at) " +
+    "SELECT ?, invitee.id, ?, MAX(0, COALESCE((SELECT SUM(amount) FROM market_position_redemptions WHERE user_id = invitee.id), 0) + " +
+    "COALESCE((SELECT SUM(interest_paid) FROM simple_earn_positions WHERE user_id = invitee.id AND status = 'redeemed'), 0) + " +
+    "COALESCE((SELECT SUM(amount * rate / 100 * CASE WHEN active = 1 THEN MIN(days, MAX(0, (? - created) / 86400000.0)) ELSE credited END) FROM investments WHERE user_id = invitee.id), 0) + " +
+    "COALESCE((SELECT SUM(last_value - early_close_fee - amount) FROM market_positions WHERE user_id = invitee.id AND status IN ('matured', 'early_closed')), 0)), 0, ?, ? " +
+    "FROM users invitee WHERE invitee.referred_by = ?"
+  ).bind(inviterId, period, now, now, now, inviterId).run();
+}
+
 async function fullState(env, user, request) {
   let wallet = await accrue(env, user.id);
   await settleMonthlyReferralProfits(env, user.id);
@@ -1319,7 +1333,7 @@ const workerHandler = {
     try { await env.DB.prepare("ALTER TABLE users ADD COLUMN promoter_expires_at INTEGER").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE deposits ADD COLUMN purpose TEXT NOT NULL DEFAULT 'deposit'").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE deposits ADD COLUMN package_id TEXT").run(); } catch {}
-    try { await env.DB.exec("CREATE TRIGGER IF NOT EXISTS enforce_promoter_invite_limit BEFORE INSERT ON users WHEN NEW.referred_by IS NOT NULL BEGIN SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM users p WHERE p.id = NEW.referred_by AND p.account_type = 'promoter' AND p.promoter_expires_at > CAST(strftime('%s','now') AS INTEGER) * 1000 AND p.promoter_started_at IS NOT NULL AND (SELECT COUNT(*) FROM users invited WHERE invited.referred_by = p.id AND invited.created_at >= p.promoter_started_at) < p.promoter_invite_limit) THEN RAISE(ABORT, 'Invitation limit reached or promoter package inactive') END; END;"); } catch {}
+    try { await env.DB.exec("DROP TRIGGER IF EXISTS enforce_promoter_invite_limit; CREATE TRIGGER enforce_promoter_invite_limit BEFORE INSERT ON users WHEN NEW.referred_by IS NOT NULL BEGIN SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM users p WHERE p.id = NEW.referred_by AND p.account_type = 'promoter' AND p.email_verified = 1 AND ((p.promoter_package IS NOT NULL AND p.promoter_expires_at > CAST(strftime('%s','now') AS INTEGER) * 1000 AND p.promoter_started_at IS NOT NULL AND (SELECT COUNT(*) FROM users invited WHERE invited.referred_by = p.id AND invited.created_at >= p.promoter_started_at) < p.promoter_invite_limit) OR (COALESCE(TRIM(p.promoter_package), '') = '' AND (SELECT COUNT(*) FROM users invited WHERE invited.referred_by = p.id AND invited.created_at >= p.created_at) < 1))) THEN RAISE(ABORT, 'Invitation limit reached or promoter package inactive') END; END;"); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN source TEXT NOT NULL DEFAULT 'earnings'").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN tx_reference TEXT NOT NULL DEFAULT ''").run(); } catch {}
     await env.DB.prepare("UPDATE withdrawals SET transfer_status = 'sent' WHERE status = 'pending' AND tx_reference != '' AND transfer_status = 'pending'").run();
@@ -1725,7 +1739,7 @@ async function register(request, env) {
   if (existing) return Response.json({ error: "Email o nome utente già registrato." }, { status: 400 });
   let referredBy = null;
   if (invite) {
-    const ref = await env.DB.prepare("SELECT p.id FROM users p WHERE p.invite_code = ? AND p.account_type = 'promoter' AND p.promoter_expires_at > ? AND p.promoter_started_at IS NOT NULL AND (SELECT COUNT(*) FROM users invited WHERE invited.referred_by = p.id AND invited.created_at >= p.promoter_started_at) < p.promoter_invite_limit").bind(invite, Date.now()).first();
+    const ref = await env.DB.prepare("SELECT p.id FROM users p WHERE p.invite_code = ? AND p.account_type = 'promoter' AND p.email_verified = 1 AND ((p.promoter_package IS NOT NULL AND p.promoter_expires_at > ? AND p.promoter_started_at IS NOT NULL AND (SELECT COUNT(*) FROM users invited WHERE invited.referred_by = p.id AND invited.created_at >= p.promoter_started_at) < p.promoter_invite_limit) OR (COALESCE(TRIM(p.promoter_package), '') = '' AND (SELECT COUNT(*) FROM users invited WHERE invited.referred_by = p.id AND invited.created_at >= p.created_at) < 1))").bind(invite, Date.now()).first();
     if (!ref) return bad("Questo codice invito non è attivo o ha raggiunto il limite.");
     referredBy = ref.id;
   }
@@ -3196,7 +3210,9 @@ async function reviewTransaction(request, env) {
       if (!approved.meta?.changes) return bad("Questa richiesta è già stata esaminata.");
       if (packageTier) {
         const now = Date.now(), expires = now + 365 * 24 * 60 * 60 * 1000;
+        const hadActivePackage = await env.DB.prepare("SELECT 1 FROM users WHERE id = ? AND promoter_package IS NOT NULL AND promoter_expires_at > ?").bind(userId, now).first();
         await env.DB.prepare("UPDATE users SET promoter_package = ?, promoter_invite_limit = ?, promoter_started_at = ?, promoter_expires_at = ? WHERE id = ? AND account_type = 'promoter'").bind(dep.package_id, packageTier.limit, now, expires, userId).run();
+        if (!hadActivePackage) await seedPromoterReferralBaselines(env, userId, now);
         const label = dep.package_id === "starter" ? "3-invitation" : "15-invitation";
         await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)").bind(userId, "Promoter package activated", "Your " + label + " package is active for one year.", now).run();
       } else {
@@ -3213,12 +3229,13 @@ async function reviewTransaction(request, env) {
 
         for (let level = 0; level < REFERRAL_PCTS.length; level++) {
           if (!currentReferrerId) break;
-          const uplineUser = await env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(currentReferrerId).first();
+          const uplineUser = await env.DB.prepare("SELECT id, account_type, promoter_package, promoter_expires_at FROM users WHERE id = ?").bind(currentReferrerId).first();
           if (!uplineUser) break;
 
           const pct = REFERRAL_PCTS[level];
           const commAmount = Number((amount * pct).toFixed(3));
-          if (commAmount > 0) {
+          const canReceiveReferralCommission = uplineUser.account_type === "promoter" && !!uplineUser.promoter_package && Number(uplineUser.promoter_expires_at || 0) > now;
+          if (commAmount > 0 && canReceiveReferralCommission) {
             await env.DB.prepare(
               "INSERT INTO wallets (user_id, deposit, earnings, total_deposited, total_earned, total_withdrawn) VALUES (?, 0, ?, 0, ?, 0) " +
               "ON CONFLICT(user_id) DO UPDATE SET earnings = earnings + ?, total_earned = total_earned + ?"
