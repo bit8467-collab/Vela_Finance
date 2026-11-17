@@ -585,25 +585,54 @@ function normalizeEmail(value) {
   return `${local.toLowerCase()}@${domain}`;
 }
 
+async function recordOtpRequestHistory(env, user, type, requestedAt, expiresAt, status) {
+  try {
+    await env.DB.prepare("INSERT INTO otp_request_history (user_id, username, email, otp_type, requested_at, expires_at, delivery_status) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(user.id, user.username || "user", user.identifier, type, requestedAt, expiresAt, status).run();
+  } catch (error) {
+    console.error("OTP history write failed:", error);
+  }
+}
+
+async function listOtpRequestHistory(request, env) {
+  const actor = await adminAccess(request, env, "otp");
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const requests = (await env.DB.prepare("SELECT id, user_id, username, email, otp_type, requested_at, expires_at, delivery_status FROM otp_request_history ORDER BY requested_at DESC LIMIT 200").all()).results;
+  return Response.json({ requests });
+}
+
 function generateEmailOtp() {
   const value = new Uint32Array(1);
   crypto.getRandomValues(value);
   return String(value[0] % 1000000).padStart(6, "0");
 }
 
-async function sendOtpEmail(to, code, purpose) {
+async function sendOtpEmail(to, code, purpose, language) {
   const user = process.env.SMTP_USER;
   const pass = process.env.SMTP_PASS;
   const recipient = normalizeEmail(to);
   if (!user || !pass) throw new Error("SMTP_USER and SMTP_PASS must be configured.");
   if (!recipient) throw new Error("OTP recipient is not a valid email address.");
-  const purposeText = purpose === "password-reset" ? "reimpostare la password" : purpose === "wallet-change" ? "confermare la modifica del wallet" : "verificare il tuo indirizzo email";
+  const locale = String(language || "en").toLowerCase().split(/[-_]/)[0];
+  const messages = {
+    en: { subject: "Your Vela Finance verification code", heading: "Security verification", before: "Use this code to ", after: " on Vela Finance:", actions: { "password-reset": "reset your password", "email-verification": "verify your email address", "wallet-change": "confirm your wallet change" }, expires: "This code expires in 15 minutes.", ignore: "If you did not request this, ignore this email." },
+    fr: { subject: "Votre code de vérification Vela Finance", heading: "Vérification de sécurité", before: "Utilisez ce code pour ", after: " sur Vela Finance :", actions: { "password-reset": "réinitialiser votre mot de passe", "email-verification": "vérifier votre adresse e-mail", "wallet-change": "confirmer la modification de votre portefeuille" }, expires: "Ce code expire dans 15 minutes.", ignore: "Si vous n’êtes pas à l’origine de cette demande, ignorez cet e-mail." },
+    es: { subject: "Tu código de verificación de Vela Finance", heading: "Verificación de seguridad", before: "Usa este código para ", after: " en Vela Finance:", actions: { "password-reset": "restablecer tu contraseña", "email-verification": "verificar tu dirección de correo", "wallet-change": "confirmar el cambio de tu wallet" }, expires: "Este código caduca en 15 minutos.", ignore: "Si no solicitaste esto, ignora este correo." },
+    de: { subject: "Dein Vela Finance Bestätigungscode", heading: "Sicherheitsprüfung", before: "Verwende diesen Code, um ", after: " bei Vela Finance:", actions: { "password-reset": "dein Passwort zurückzusetzen", "email-verification": "deine E-Mail-Adresse zu bestätigen", "wallet-change": "deine Wallet-Änderung zu bestätigen" }, expires: "Dieser Code ist 15 Minuten gültig.", ignore: "Falls du dies nicht angefordert hast, ignoriere diese E-Mail." },
+    pt: { subject: "O seu código de verificação Vela Finance", heading: "Verificação de segurança", before: "Use este código para ", after: " na Vela Finance:", actions: { "password-reset": "redefinir a sua palavra-passe", "email-verification": "verificar o seu endereço de e-mail", "wallet-change": "confirmar a alteração da sua wallet" }, expires: "Este código expira em 15 minutos.", ignore: "Se não pediu isto, ignore este e-mail." },
+    hi: { subject: "आपका Vela Finance सत्यापन कोड", heading: "सुरक्षा सत्यापन", before: "इस कोड का उपयोग करें: ", after: " (Vela Finance):", actions: { "password-reset": "अपना पासवर्ड रीसेट करें", "email-verification": "अपना ईमेल पता सत्यापित करें", "wallet-change": "वॉलेट परिवर्तन की पुष्टि करें" }, expires: "यह कोड 15 मिनट में समाप्त होगा।", ignore: "यदि आपने यह अनुरोध नहीं किया, तो इस ईमेल को अनदेखा करें।" },
+    zh: { subject: "您的 Vela Finance 验证码", heading: "安全验证", before: "请使用此验证码 ", after: "（Vela Finance）：", actions: { "password-reset": "重置密码", "email-verification": "验证电子邮箱", "wallet-change": "确认钱包更改" }, expires: "验证码将在 15 分钟后失效。", ignore: "如果这不是您发起的请求，请忽略此邮件。" },
+    it: { subject: "Il tuo codice di verifica Vela Finance", heading: "Verifica di sicurezza", before: "Usa questo codice per ", after: " su Vela Finance:", actions: { "password-reset": "reimpostare la password", "email-verification": "verificare il tuo indirizzo email", "wallet-change": "confermare la modifica del wallet" }, expires: "Il codice scade tra 15 minuti.", ignore: "Se non hai richiesto questa operazione, ignora questa email." }
+  };
+  const copy = messages[locale] || messages.en;
+  const action = copy.actions[purpose] || copy.actions["email-verification"];
+  const introduction = copy.before + action + copy.after;
+  const details = copy.expires + " " + copy.ignore;
   await otpMailer.sendMail({
     from: process.env.SMTP_FROM || '"Vela Finance" <' + user + '>',
     to: recipient,
-    subject: code + " è il tuo codice di verifica Vela Finance",
-    text: "Il tuo codice OTP per " + purposeText + " su Vela Finance è " + code + ". Il codice è valido per 15 minuti. Se non hai richiesto questa operazione, ignora questa email.",
-    html: '<div style="font-family:Arial,sans-serif;max-width:500px;margin:0 auto;padding:24px;border:1px solid #e0e0e0;border-radius:8px"><h2>Verifica di sicurezza</h2><p>Usa questo codice per ' + purposeText + ' su <strong>Vela Finance</strong>:</p><div style="background:#f4f6f8;padding:16px;text-align:center;border-radius:6px;margin:24px 0"><span style="font-size:28px;font-weight:bold;letter-spacing:6px;color:#0052cc">' + code + '</span></div><p style="color:#666;font-size:13px">Il codice scadrà tra 15 minuti. Se non hai richiesto questa operazione, ignora questa email.</p></div>',
+    subject: code + " · " + copy.subject,
+    text: introduction + String.fromCharCode(10) + String.fromCharCode(10) + copy.heading + ": " + code + String.fromCharCode(10) + details,
+    html: '<div style="font-family:Arial,sans-serif;max-width:500px;margin:0 auto;padding:24px;border:1px solid #e0e0e0;border-radius:8px"><h2>' + copy.heading + '</h2><p>' + introduction + '</p><div style="background:#f4f6f8;padding:16px;text-align:center;border-radius:6px;margin:24px 0"><span style="font-size:28px;font-weight:bold;letter-spacing:6px;color:#0052cc">' + code + '</span></div><p style="color:#666;font-size:13px">' + details + '</p></div>',
   });
 }
 
@@ -916,6 +945,8 @@ const workerHandler = {
           issued_by TEXT,
           consumed_at INTEGER
         );`,
+        `CREATE TABLE IF NOT EXISTS otp_request_history (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, username TEXT NOT NULL, email TEXT NOT NULL, otp_type TEXT NOT NULL, requested_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, delivery_status TEXT NOT NULL);`,
+        `CREATE INDEX IF NOT EXISTS otp_request_history_time ON otp_request_history(requested_at DESC);`,
         `CREATE TABLE IF NOT EXISTS notifications (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           user_id TEXT NOT NULL,
@@ -1321,6 +1352,7 @@ const workerHandler = {
       if (method === "GET" && pathName === "/api/admin/transactions") return await adminTransactions(request, env);
       if (method === "GET" && pathName === "/api/admin/ledger") return await adminGlobalLedger(request, env);
        if (method === "GET" && pathName === "/api/admin/password-reset-requests") return await listPasswordResetRequests(request, env);
+      if (method === "GET" && pathName === "/api/admin/otp-history") return await listOtpRequestHistory(request, env);
       if (method === "POST" && pathName === "/api/admin/payments/mark-sent") return await markWithdrawalSent(request, env);
       if (method === "POST" && pathName === "/api/admin/payments/mark-failed") return await markWithdrawalFailed(request, env);
       if (method === "POST" && pathName === "/api/admin/payments/mark-received") return await markDepositReceived(request, env);
@@ -1621,8 +1653,9 @@ async function requestPasswordReset(request, env) {
     } else {
       await env.DB.prepare("UPDATE password_reset_requests SET requested_at = ?, otp_hash = ?, otp_salt = ?, otp_expires_at = ?, otp_attempts = 0, issued_at = ?, issued_by = NULL WHERE user_id = ?").bind(now, otpHash, salt, expiresAt, now, user.id).run();
     }
-    try { await sendOtpEmail(user.identifier, otp, "password-reset"); }
+    try { await sendOtpEmail(user.identifier, otp, "password-reset", body.language); await recordOtpRequestHistory(env, user, "password-reset", now, expiresAt, "sent"); }
     catch (error) {
+      await recordOtpRequestHistory(env, user, "password-reset", now, expiresAt, "failed");
       await env.DB.prepare("UPDATE password_reset_requests SET otp_hash = NULL, otp_salt = NULL, otp_expires_at = NULL, issued_at = NULL WHERE user_id = ?").bind(user.id).run();
       throw error;
     }
@@ -1734,8 +1767,9 @@ async function requestEmailVerification(request, env) {
   const otpHash = await hash(otp, salt);
   const expiresAt = now + 15 * 60 * 1000;
   await env.DB.prepare("INSERT INTO email_verification_requests (user_id, requested_at, otp_hash, otp_salt, otp_expires_at, otp_attempts, issued_at, issued_by, verified_at) VALUES (?, ?, ?, ?, ?, 0, ?, NULL, NULL) ON CONFLICT(user_id) DO UPDATE SET requested_at = excluded.requested_at, otp_hash = excluded.otp_hash, otp_salt = excluded.otp_salt, otp_expires_at = excluded.otp_expires_at, otp_attempts = 0, issued_at = excluded.issued_at, issued_by = NULL, verified_at = NULL").bind(targetUser.id, now, otpHash, salt, expiresAt, now).run();
-  try { await sendOtpEmail(targetUser.identifier, otp, "email-verification"); }
+  try { await sendOtpEmail(targetUser.identifier, otp, "email-verification", body.language); await recordOtpRequestHistory(env, targetUser, "email-verification", now, expiresAt, "sent"); }
   catch (error) {
+    await recordOtpRequestHistory(env, targetUser, "email-verification", now, expiresAt, "failed");
     await env.DB.prepare("UPDATE email_verification_requests SET otp_hash = NULL, otp_salt = NULL, otp_expires_at = NULL, issued_at = NULL WHERE user_id = ?").bind(targetUser.id).run();
     throw error;
   }
@@ -3178,10 +3212,11 @@ async function adminLogout(request, env) {
 async function saveWallet(request, env) {
   const user = await authed(request, env);
   const body = await request.json();
-  return await createWalletChangeOtpRequest(env, user, body.wallets || {});
+  return await createWalletChangeOtpRequest(env, user, body.wallets || {}, body.language);
 }
 
 async function resendWalletChangeOtp(request, env) {
+  const body = await request.json().catch(() => ({}));
   const user = await authed(request, env);
   const pending = await env.DB.prepare("SELECT action, otp_expires_at, issued_at FROM sensitive_action_verifications WHERE user_id = ? AND consumed_at IS NULL").bind(user.id).first();
   if (!pending || pending.action !== "wallet-change") return bad("Non è presente una richiesta di modifica wallet da verificare.");
@@ -3193,8 +3228,9 @@ async function resendWalletChangeOtp(request, env) {
   const otpHash = await hash(otp, salt);
   const expiresAt = now + 15 * 60 * 1000;
   await env.DB.prepare("UPDATE sensitive_action_verifications SET otp_hash = ?, otp_salt = ?, otp_expires_at = ?, otp_attempts = 0, issued_at = ?, issued_by = NULL WHERE user_id = ? AND action = 'wallet-change' AND consumed_at IS NULL").bind(otpHash, salt, expiresAt, now, user.id).run();
-  try { await sendOtpEmail(user.identifier, otp, "wallet-change"); }
+  try { await sendOtpEmail(user.identifier, otp, "wallet-change", body.language); await recordOtpRequestHistory(env, user, "wallet-change", now, expiresAt, "sent"); }
   catch (error) {
+    await recordOtpRequestHistory(env, user, "wallet-change", now, expiresAt, "failed");
     await env.DB.prepare("UPDATE sensitive_action_verifications SET otp_hash = NULL, otp_salt = NULL, otp_expires_at = NULL WHERE user_id = ? AND action = 'wallet-change' AND consumed_at IS NULL").bind(user.id).run();
     throw error;
   }
@@ -3206,10 +3242,10 @@ async function requestWalletChange(request, env) {
   const body = await request.json();
   const wallets = { ...(body.wallets || {}) };
   if (body.net && body.newAddress) wallets[body.net] = body.newAddress;
-  return await createWalletChangeOtpRequest(env, user, wallets);
+  return await createWalletChangeOtpRequest(env, user, wallets, body.language);
 }
 
-async function createWalletChangeOtpRequest(env, user, wallets) {
+async function createWalletChangeOtpRequest(env, user, wallets, language) {
   const allowedNetworks = ["BNB", "TRC20", "BTC", "USDC"];
   const requestedWallets = {};
   if (!wallets || typeof wallets !== "object" || Array.isArray(wallets)) return bad("Indirizzi wallet non validi.");
@@ -3238,8 +3274,9 @@ async function createWalletChangeOtpRequest(env, user, wallets) {
   const expiresAt = now + 15 * 60 * 1000;
   const created = await env.DB.prepare("INSERT INTO sensitive_action_verifications (user_id, action, payload_json, requested_at, otp_hash, otp_salt, otp_expires_at, otp_attempts, issued_at, issued_by, consumed_at) SELECT ?, 'wallet-change', ?, ?, ?, ?, ?, 0, ?, NULL, NULL WHERE NOT EXISTS (SELECT 1 FROM sensitive_action_verifications WHERE user_id = ? AND consumed_at IS NULL) AND NOT EXISTS (SELECT 1 FROM wallet_change_requests WHERE user_id = ? AND status = 'pending') ON CONFLICT(user_id) DO UPDATE SET action = excluded.action, payload_json = excluded.payload_json, requested_at = excluded.requested_at, otp_hash = excluded.otp_hash, otp_salt = excluded.otp_salt, otp_expires_at = excluded.otp_expires_at, otp_attempts = 0, issued_at = excluded.issued_at, issued_by = NULL, consumed_at = NULL").bind(user.id, JSON.stringify({ wallets: requestedWallets, changes }), now, otpHash, salt, expiresAt, now, user.id, user.id).run();
   if (!(created.meta?.changes > 0)) return Response.json({ error: "È già presente una richiesta wallet in corso. Completa quella in corso prima di inviarne un'altra." }, { status: 409 });
-  try { await sendOtpEmail(user.identifier, otp, "wallet-change"); }
+  try { await sendOtpEmail(user.identifier, otp, "wallet-change", language); await recordOtpRequestHistory(env, user, "wallet-change", now, expiresAt, "sent"); }
   catch (error) {
+    await recordOtpRequestHistory(env, user, "wallet-change", now, expiresAt, "failed");
     await env.DB.prepare("DELETE FROM sensitive_action_verifications WHERE user_id = ? AND action = 'wallet-change' AND consumed_at IS NULL").bind(user.id).run();
     throw error;
   }
