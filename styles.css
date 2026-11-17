@@ -3423,7 +3423,7 @@ body.asset-catalog-open{overflow:hidden}
 
 
 .promoter-package-screen { position:fixed; inset:0; width:100vw; height:100vh; height:100dvh; max-width:none; max-height:none; margin:0; padding:max(24px,env(safe-area-inset-top)) 18px max(24px,env(safe-area-inset-bottom)); border:0; border-radius:0; background:var(--bg); color:var(--text); overflow:auto; }
-.promoter-package-screen[open] { display:grid; place-items:center; }
+.promoter-package-screen[open] { display:grid; place-items:safe center; }
 .promoter-package-screen::backdrop { background:var(--bg); }
 .promoter-package-card { width:min(100%,460px); margin:auto; display:flex; flex-direction:column; gap:12px; }
 .promoter-package-card h1 { font-size:clamp(25px,6vw,38px); line-height:1.12; margin:0; }
