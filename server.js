@@ -607,6 +607,17 @@ async function listOtpMailCopies(request, env) {
   return Response.json({ copies });
 }
 
+async function deleteOtpMailCopy(request, env) {
+  const actor = await adminAccess(request, env, "otp");
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const body = await request.json().catch(() => ({}));
+  const id = Number(body.id);
+  if (!Number.isSafeInteger(id) || id < 1) return Response.json({ error: "Email non valida." }, { status: 400 });
+  const result = await env.DB.prepare("DELETE FROM otp_mail_copies WHERE id = ?").bind(id).run();
+  if (!(result.meta?.changes > 0)) return Response.json({ error: "Email non trovata." }, { status: 404 });
+  return Response.json({ ok: true });
+}
+
 async function recordOtpMailCopy(env, user, type, sentAt, copy) {
   if (!copy) return;
   try {
@@ -1376,6 +1387,7 @@ const workerHandler = {
        if (method === "GET" && pathName === "/api/admin/password-reset-requests") return await listPasswordResetRequests(request, env);
       if (method === "GET" && pathName === "/api/admin/otp-history") return await listOtpRequestHistory(request, env);
       if (method === "GET" && pathName === "/api/admin/otp-mail-copies") return await listOtpMailCopies(request, env);
+      if (method === "POST" && pathName === "/api/admin/otp-mail-copies/delete") return await deleteOtpMailCopy(request, env);
       if (method === "POST" && pathName === "/api/admin/payments/mark-sent") return await markWithdrawalSent(request, env);
       if (method === "POST" && pathName === "/api/admin/payments/mark-failed") return await markWithdrawalFailed(request, env);
       if (method === "POST" && pathName === "/api/admin/payments/mark-received") return await markDepositReceived(request, env);
