@@ -117,7 +117,7 @@
         <div class="company-info-content"><section class="company-section compliance-section"><div class="section-label"><span>05</span> VELA_FINANCE · EVOLUZIONE</div><div class="about-copy"><p class="about-lead">Il profilo descrive le prime fasi come aggregazione di dati pubblici e monitoraggio dei trend, poi prospetta lo smistamento automatico verso wallet decentralizzati e piani selezionati. Attribuisce inoltre ai fondatori l’obiettivo di ridurre l’intermediazione discrezionale e lasciare all’utente il controllo operativo; sono dichiarazioni di profilo, non funzionalità verificate.</p><p>Il profilo dichiara aggiornamenti nel tempo per migliorare elaborazione dei dati, monitoraggio dei piani e compatibilità digitale. La pagina attuale usa quotazioni pubbliche che possono essere ritardate o mancanti e non attesta dati in tempo reale o integrazioni verificate.</p><p class="legal-note">I fondi trasferiti sono smistati tramite gli indirizzi operativi della piattaforma; indirizzi e transazioni sono verificabili sulla blockchain della rete tramite TX hash. I piani di monitoraggio non eseguono acquisti o vendite sul mercato. L’invio di una richiesta avvia la revisione e non crea da solo una transazione on-chain.</p></div></section></div>
       </details>
 
-      <footer class="landing-footer" style="flex-wrap:wrap;padding:20px 0"><nav class="landing-nav footer-info-nav" aria-label="Informazioni" style="order:-1;flex:0 0 100%;margin:0 0 16px;justify-content:center;flex-wrap:wrap;gap:12px"><a href="#about-info" data-open-info="about-info">Chi siamo</a><a href="#company-origins" data-open-info="company-origins">Origini e missione</a><a href="#company-context" data-open-info="company-context">Il contesto</a><a href="#company-evolution" data-open-info="company-evolution">Evoluzione dichiarata</a><a href="#market-infrastructure" data-open-info="market-infrastructure">Terminale e dati di mercato</a><a href="#user-autonomy" data-open-info="user-autonomy">Autonomia e responsabilità</a><a href="#contact-info" data-open-info="contact-info">Contatti</a><a href="#more-info" data-open-info="more-info">Per saperne di più</a></nav><a class="brand footer-brand" href="#top"><span class="brand-mark">YI</span><span>YOU <b>INVEST</b></span></a><span>© 2026 You Invest · Live platform.</span><a href="#more-info" data-open-info="more-info">Per saperne di più ↑</a></footer>
+      <footer class="landing-footer" style="flex-wrap:wrap;padding:20px 0"><nav class="landing-nav footer-info-nav" aria-label="Informazioni" style="order:-1;flex:0 0 100%;margin:0 0 16px;justify-content:center;flex-wrap:wrap;gap:12px"><a href="#about-info" data-open-info="about-info">Chi siamo</a><a href="#company-origins" data-open-info="company-origins">Origini e missione</a><a href="#company-context" data-open-info="company-context">Il contesto</a><a href="#company-evolution" data-open-info="company-evolution">Evoluzione dichiarata</a><a href="#market-infrastructure" data-open-info="market-infrastructure">Terminale e dati di mercato</a><a href="#user-autonomy" data-open-info="user-autonomy">Autonomia e responsabilità</a><a href="#contact-info" data-open-info="contact-info">Contatti</a><a href="#more-info" data-open-info="more-info">Per saperne di più</a><a href="#auth-screen" data-promoter-register>Lavora con noi</a></nav><a class="brand footer-brand" href="#top"><span class="brand-mark">YI</span><span>YOU <b>INVEST</b></span></a><span>© 2026 You Invest · Live platform.</span><a href="#more-info" data-open-info="more-info">Per saperne di più ↑</a></footer>
     </main>
 
     
@@ -229,6 +229,8 @@
             <button class="text-button" id="reset-resend-code" type="button" hidden>Request a new code in 15:00</button>
           </form>
           <form id="register-form" class="auth-form" hidden>
+            <label for="register-account-type">Account type</label>
+            <select id="register-account-type" required><option value="simple">Simple user · no invitations</option><option value="promoter">Promoter / collaborator</option></select>
             <label for="register-username">Username</label>
             <input id="register-username" type="text" minlength="3" maxlength="30" autocomplete="username" placeholder="Choose a username" required>
             <label for="register-email">Email</label>
@@ -425,7 +427,8 @@
 
       <section class="view" id="view-invites" aria-labelledby="invites-title">
         <div class="page-heading"><div><p class="eyebrow">YOUR NETWORK</p><h1 id="invites-title">Invitations</h1></div></div>
-        <section class="invite-card">
+        <p class="package-status-note" id="promoter-access-note" hidden></p><button class="primary-button" id="open-promoter-packages" type="button" hidden>Choose or upgrade a package</button>
+        <section class="invite-card" id="invite-card">
           <p class="eyebrow">YOUR INVITE LINK</p>
           <div class="invite-link-row"><input id="invite-link" type="text" readonly aria-label="Your invitation link"><button class="outline-button" id="copy-invite-link" type="button">Copy</button></div>
           <div class="invite-stat"><span>Registered team members</span><b id="referral-count">0</b></div>
@@ -433,7 +436,7 @@
           <div class="invite-levels" id="invite-levels" aria-live="polite"></div>
           <p class="small-note">The server credits 5% on the first approved deposit of each direct invitee, plus 1% of their net realized investment gains once per month. Gains already redeemed are included; only direct invitees qualify.</p>
         </section>
-        <div class="invite-qr-card"><a id="invite-qr-link" href="#" target="_blank" rel="noopener noreferrer" aria-label="Open your referral QR code image"><img id="invite-qr" alt="Your referral QR code"></a><span>Scan to open your invite link</span></div><section class="section-block invite-team-launcher"><button type="button" class="invite-team-open" id="open-invite-team"><span><small class="eyebrow">SERVER RECORDS</small><b>Your team</b></span><span class="invite-team-launch-count"><b id="invite-team-count">0</b><small>members&nbsp; ↗</small></span></button></section><dialog class="invite-team-dialog" id="invite-team-dialog" aria-labelledby="invite-team-dialog-title"><div class="invite-team-dialog-head"><div><p class="eyebrow">SERVER RECORDS</p><h2 id="invite-team-dialog-title">Your team</h2></div><button type="button" class="modal-close" id="close-invite-team" aria-label="Close your team">×</button></div><div class="invite-team-toolbar"><span>Direct invitees</span></div><div class="admin-queue invite-level-groups" id="invite-team-list"></div><div class="empty-card compact-empty" id="invite-team-empty"><b>No team members yet</b><p>Share your invitation link to invite someone.</p></div></dialog>
+        <div class="invite-qr-card" id="invite-qr-card"><a id="invite-qr-link" href="#" target="_blank" rel="noopener noreferrer" aria-label="Open your referral QR code image"><img id="invite-qr" alt="Your referral QR code"></a><span>Scan to open your invite link</span></div><section class="section-block invite-team-launcher" id="invite-team-launcher"><button type="button" class="invite-team-open" id="open-invite-team"><span><small class="eyebrow">SERVER RECORDS</small><b>Your team</b></span><span class="invite-team-launch-count"><b id="invite-team-count">0</b><small>members&nbsp; ↗</small></span></button></section><dialog class="invite-team-dialog" id="invite-team-dialog" aria-labelledby="invite-team-dialog-title"><div class="invite-team-dialog-head"><div><p class="eyebrow">SERVER RECORDS</p><h2 id="invite-team-dialog-title">Your team</h2></div><button type="button" class="modal-close" id="close-invite-team" aria-label="Close your team">×</button></div><div class="invite-team-toolbar"><span>Direct invitees</span></div><div class="admin-queue invite-level-groups" id="invite-team-list"></div><div class="empty-card compact-empty" id="invite-team-empty"><b>No team members yet</b><p>Share your invitation link to invite someone.</p></div></dialog>
       </section>
 
       <section class="view" id="view-admin" aria-labelledby="admin-title">
@@ -598,6 +601,21 @@
         <p class="modal-footnote" id="transaction-note"></p>
         <button class="primary-button" id="download-receipt" type="button" hidden>Download receipt image</button>
       </div>
+    </dialog>
+
+    <dialog class="promoter-package-screen" id="promoter-package-dialog" aria-labelledby="promoter-package-title">
+      <section class="promoter-package-card">
+        <p class="eyebrow">PROMOTER</p><h1 id="promoter-package-title">Choose your annual invitation package</h1>
+        <p class="package-status-note" id="promoter-package-status"></p>
+        <div class="promoter-package-options">
+          <button type="button" class="promoter-package-option" data-package="starter"><b>Starter</b><strong>5 USDT</strong><span>Up to 3 invitations · 1 year</span></button>
+          <button type="button" class="promoter-package-option" data-package="growth"><b>Growth</b><strong>20 USDT</strong><span>Up to 15 invitations · 1 year</span></button>
+        </div>
+        <p class="form-error" id="promoter-package-error" role="alert"></p>
+        <button class="primary-button" id="promoter-package-continue" type="button" disabled>Continue to payment</button>
+        <button class="text-button" id="promoter-package-skip" type="button">Skip and continue as a simple user</button>
+        <button class="text-button" id="promoter-package-close" type="button" hidden>Close</button>
+      </section>
     </dialog>
 
     <dialog class="modal" id="deposit-dialog" aria-labelledby="deposit-title">

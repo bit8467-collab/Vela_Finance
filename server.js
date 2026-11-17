@@ -910,7 +910,7 @@ async function fullState(env, user, request) {
     notifications = !!s.notifications;
   }
   return {
-    user: { id: user.id, username: user.username, identifier: user.identifier, inviteCode: user.invite_code, referredBy: user.referred_by, emailVerified: user.email_verified },
+    user: { id: user.id, username: user.username, identifier: user.identifier, inviteCode: user.invite_code, referredBy: user.referred_by, emailVerified: user.email_verified, accountType: user.account_type || "simple", promoterPackage: user.promoter_package || null, promoterInviteLimit: Number(user.promoter_invite_limit || 0), promoterStartedAt: Number(user.promoter_started_at || 0), promoterExpiresAt: Number(user.promoter_expires_at || 0), promoterActive: user.account_type === "promoter" && Number(user.promoter_expires_at || 0) > Date.now() },
     wallet,
     investments,
     marketPositions,
@@ -971,7 +971,12 @@ const workerHandler = {
           referred_by TEXT,
           created_at INTEGER NOT NULL,
           email_verified INTEGER NOT NULL DEFAULT 0,
-          last_login_at INTEGER
+          last_login_at INTEGER,
+          account_type TEXT NOT NULL DEFAULT 'simple',
+          promoter_package TEXT,
+          promoter_invite_limit INTEGER NOT NULL DEFAULT 0,
+          promoter_started_at INTEGER,
+          promoter_expires_at INTEGER
         );`,
         `CREATE TABLE IF NOT EXISTS sessions (
           token TEXT PRIMARY KEY,
@@ -1184,7 +1189,9 @@ const workerHandler = {
           status TEXT NOT NULL DEFAULT 'approved',
           tx_reference TEXT NOT NULL DEFAULT '',
           deposit_address TEXT NOT NULL DEFAULT '',
-          transfer_status TEXT NOT NULL DEFAULT 'pending'
+          transfer_status TEXT NOT NULL DEFAULT 'pending',
+          purpose TEXT NOT NULL DEFAULT 'deposit',
+          package_id TEXT
         );`,
         `CREATE TABLE IF NOT EXISTS withdrawals (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1297,6 +1304,14 @@ const workerHandler = {
     await env.DB.prepare("CREATE TABLE IF NOT EXISTS support_feedback (thread_id INTEGER PRIMARY KEY, user_id TEXT NOT NULL, username TEXT NOT NULL, operator_id TEXT NOT NULL, operator_username TEXT NOT NULL, rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5), comment TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL)").run();
     await env.DB.prepare("CREATE INDEX IF NOT EXISTS support_feedback_operator_created ON support_feedback(operator_id, created_at DESC)").run();
     try { await env.DB.prepare("ALTER TABLE wallets ADD COLUMN released REAL NOT NULL DEFAULT 0").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE users ADD COLUMN account_type TEXT NOT NULL DEFAULT 'simple'").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE users ADD COLUMN promoter_package TEXT").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE users ADD COLUMN promoter_invite_limit INTEGER NOT NULL DEFAULT 0").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE users ADD COLUMN promoter_started_at INTEGER").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE users ADD COLUMN promoter_expires_at INTEGER").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE deposits ADD COLUMN purpose TEXT NOT NULL DEFAULT 'deposit'").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE deposits ADD COLUMN package_id TEXT").run(); } catch {}
+    try { await env.DB.exec("CREATE TRIGGER IF NOT EXISTS enforce_promoter_invite_limit BEFORE INSERT ON users WHEN NEW.referred_by IS NOT NULL BEGIN SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM users p WHERE p.id = NEW.referred_by AND p.account_type = 'promoter' AND p.promoter_expires_at > CAST(strftime('%s','now') AS INTEGER) * 1000 AND p.promoter_started_at IS NOT NULL AND (SELECT COUNT(*) FROM users invited WHERE invited.referred_by = p.id AND invited.created_at >= p.promoter_started_at) < p.promoter_invite_limit) THEN RAISE(ABORT, 'Invitation limit reached or promoter package inactive') END; END;"); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN source TEXT NOT NULL DEFAULT 'earnings'").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN tx_reference TEXT NOT NULL DEFAULT ''").run(); } catch {}
     await env.DB.prepare("UPDATE withdrawals SET transfer_status = 'sent' WHERE status = 'pending' AND tx_reference != '' AND transfer_status = 'pending'").run();
@@ -1402,6 +1417,7 @@ const workerHandler = {
       const adminSupportThreadMatch = pathName.match(/^\/api\/admin\/support\/(\d+)$/);
       if (method === "GET" && adminSupportThreadMatch) return await adminSupportThread(request, env, Number(adminSupportThreadMatch[1]));
       if (method === "POST" && pathName === "/api/deposit") return await deposit(request, env);
+      if (method === "POST" && pathName === "/api/promoter/skip") return await skipPromoterPackages(request, env);
       if (method === "POST" && pathName === "/api/invest") return Response.json({ error: "I vecchi piani a rendimento fisso non accettano nuovi investimenti. Usa i portafogli market con valore variabile." }, { status: 410 });
       if (method === "POST" && pathName === "/api/market/invest") return await marketInvest(request, env);
       if (method === "POST" && pathName === "/api/market/simple-earn") return await simpleEarnInvest(request, env);
@@ -1700,8 +1716,8 @@ async function register(request, env) {
   if (existing) return Response.json({ error: "Email o nome utente già registrato." }, { status: 400 });
   let referredBy = null;
   if (invite) {
-    const ref = await env.DB.prepare("SELECT id FROM users WHERE invite_code = ?").bind(invite).first();
-    if (!ref) return Response.json({ error: "Codice invito non valido." }, { status: 400 });
+    const ref = await env.DB.prepare("SELECT p.id FROM users p WHERE p.invite_code = ? AND p.account_type = 'promoter' AND p.promoter_expires_at > ? AND p.promoter_started_at IS NOT NULL AND (SELECT COUNT(*) FROM users invited WHERE invited.referred_by = p.id AND invited.created_at >= p.promoter_started_at) < p.promoter_invite_limit").bind(invite, Date.now()).first();
+    if (!ref) return bad("Questo codice invito non è attivo o ha raggiunto il limite.");
     referredBy = ref.id;
   }
   const id = makeToken();
@@ -1710,8 +1726,14 @@ async function register(request, env) {
   const ph = await hash(password, s);
   const now = Date.now();
   const registeredUser = { id, username, identifier: email };
-  await env.DB.prepare("INSERT INTO users (id, username, identifier, password_hash, salt, invite_code, referred_by, created_at, email_verified) VALUES (?,?,?,?,?,?,?,?,0)")
-    .bind(id, username, email, ph, s, inviteCode, referredBy, now).run();
+  const accountType = body.accountType === "promoter" ? "promoter" : "simple";
+  try {
+    await env.DB.prepare("INSERT INTO users (id, username, identifier, password_hash, salt, invite_code, referred_by, created_at, email_verified, account_type) VALUES (?,?,?,?,?,?,?,?,0,?)")
+      .bind(id, username, email, ph, s, inviteCode, referredBy, now, accountType).run();
+  } catch (error) {
+    if (referredBy) return bad("Questo codice invito ha appena raggiunto il limite.");
+    throw error;
+  }
   await recordAntifraudEvent(request, env, registeredUser, 'registration');
   const otp = generateEmailOtp();
   const otpSalt = genSalt();
@@ -1933,7 +1955,7 @@ async function confirmEmailVerification(request, env) {
     env.DB.prepare("INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)").bind(token, user.id, now),
     env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)").bind(user.id, "Email verificata", "La verifica del tuo account è stata completata con successo.", now),
   ]);
-  return Response.json({ ok: true, mode: "user", token });
+  return Response.json({ ok: true, mode: "user", token, promoterPending: user.account_type === "promoter" });
 }
 
 async function setWalletChangeOtp(request, env, userId) {
@@ -2092,6 +2114,17 @@ async function checkDepositTransactionOnChain(network, reference) {
   }
 }
 
+async function skipPromoterPackages(request, env) {
+  const user = await authed(request, env);
+  const account = await env.DB.prepare("SELECT account_type, promoter_package, promoter_expires_at FROM users WHERE id = ?").bind(user.id).first();
+  if (!account || account.account_type !== "promoter") return bad("Il profilo promoter non è disponibile.");
+  if (account.promoter_expires_at > Date.now() && account.promoter_package) return bad("Un pacchetto attivo non può essere convertito in profilo semplice.");
+  const pending = await env.DB.prepare("SELECT id FROM deposits WHERE user_id = ? AND purpose = 'promoter-package' AND status = 'pending'").bind(user.id).first();
+  if (pending) return bad("Un pagamento pacchetto è già in revisione; non è possibile saltare la scelta.");
+  await env.DB.prepare("UPDATE users SET account_type = 'simple' WHERE id = ? AND account_type = 'promoter'").bind(user.id).run();
+  return Response.json({ ok: true });
+}
+
 async function deposit(request, env) {
   const user = await authed(request, env);
   const body = await request.json();
@@ -2099,8 +2132,19 @@ async function deposit(request, env) {
   const net = String(body.net || "").trim();
   const txReference = String(body.txReference || "").trim().slice(0, 180);
   const depositAddress = String(body.depositAddress || "").trim().slice(0, 160);
-  if (!Number.isFinite(amount) || amount < 50) return bad("Il deposito minimo è di 50 USDT.");
+  const purpose = body.purpose === "promoter-package" ? "promoter-package" : "deposit";
+  const packageId = purpose === "promoter-package" ? String(body.packageId || "") : null;
+  const packageTier = packageId === "starter" ? { price: 5, limit: 3 } : packageId === "growth" ? { price: 20, limit: 15 } : null;
+  if (purpose === "promoter-package") {
+    if (!packageTier || amount !== packageTier.price) return bad("Pacchetto o importo non valido.");
+    const account = await env.DB.prepare("SELECT account_type, promoter_package, promoter_expires_at FROM users WHERE id = ?").bind(user.id).first();
+    if (account?.account_type !== "promoter") return bad("Seleziona il profilo promoter prima di acquistare un pacchetto.");
+    if (account.promoter_expires_at > Date.now() && account.promoter_package === "growth" && packageId === "starter") return bad("Non è possibile ridurre un pacchetto ancora attivo.");
+    const pending = await env.DB.prepare("SELECT id FROM deposits WHERE user_id = ? AND purpose = 'promoter-package' AND status = 'pending'").bind(user.id).first();
+    if (pending) return bad("Hai già un pagamento pacchetto in attesa di revisione.");
+  } else if (!Number.isFinite(amount) || amount < 50) return bad("Il deposito minimo è di 50 USDT.");
   if (!["BNB", "TRC20", "BTC", "USDC"].includes(net)) return bad("Rete non valida.");
+  if (purpose === "promoter-package" && !["BNB", "TRC20"].includes(net)) return bad("I pacchetti promoter si pagano solo in USDT su BNB o TRON.");
   const officialAddresses = await readDepositAddresses(env);
   const addressPool = String(officialAddresses[net] || "").split(/[,;]+/).map(address => address.trim()).filter(Boolean);
   if (!addressPool.length) return bad("Questa rete non è ancora configurata per i depositi. Non inviare fondi.");
@@ -2118,14 +2162,14 @@ async function deposit(request, env) {
   const created = Date.now();
   if (automaticDecisions && transactionExists === false) {
     await env.DB.batch([
-      env.DB.prepare("INSERT INTO deposits (user_id, amount, net, date, status, tx_reference, deposit_address, transfer_status) VALUES (?,?,?,?, 'rejected', ?, ?, 'failed')").bind(user.id, amount, net, created, txReference, depositAddress),
+      env.DB.prepare("INSERT INTO deposits (user_id, amount, net, date, status, tx_reference, deposit_address, transfer_status, purpose, package_id) VALUES (?,?,?,?, 'rejected', ?, ?, 'failed', ?, ?)").bind(user.id, amount, net, created, txReference, depositAddress, purpose, packageId),
       env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Deposit request automatically rejected", "The transaction hash was invalid or not found on the selected network. No funds were credited.", created),
     ]);
     await recordAntifraudEvent(request, env, user, 'deposit', txReference);
     return Response.json({ ok: true, status: "rejected", automaticDecision: "rejected" });
   }
   await env.DB.batch([
-    env.DB.prepare("INSERT INTO deposits (user_id, amount, net, date, status, tx_reference, deposit_address) VALUES (?,?,?,?, 'pending', ?, ?)").bind(user.id, amount, net, created, txReference, depositAddress),
+    env.DB.prepare("INSERT INTO deposits (user_id, amount, net, date, status, tx_reference, deposit_address, purpose, package_id) VALUES (?,?,?,?, 'pending', ?, ?, ?, ?)").bind(user.id, amount, net, created, txReference, depositAddress, purpose, packageId),
     env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Deposit request submitted", amount.toFixed(3) + " USDT · " + net + " · Pending review.", created),
   ]);
   await recordAntifraudEvent(request, env, user, 'deposit', txReference);
@@ -3122,9 +3166,22 @@ async function reviewTransaction(request, env) {
 
     if (action === "approve") {
       if (dep.transfer_status !== "received") return bad("Conferma prima la ricezione del trasferimento nel Payment desk.");
+      let packageTier = null;
+      if (dep.purpose === "promoter-package") {
+        packageTier = dep.package_id === "starter" ? { price: 5, limit: 3 } : dep.package_id === "growth" ? { price: 20, limit: 15 } : null;
+        const target = await env.DB.prepare("SELECT account_type, promoter_package, promoter_expires_at FROM users WHERE id = ?").bind(userId).first();
+        if (!packageTier || Number(dep.amount) !== packageTier.price || target?.account_type !== "promoter") return bad("Il pacchetto non è valido per questo account.");
+        if (target.promoter_expires_at > Date.now() && target.promoter_package === "growth" && dep.package_id === "starter") return bad("Non è possibile ridurre un pacchetto attivo.");
+      }
       const approved = await env.DB.prepare("UPDATE deposits SET status = 'approved' WHERE id = ? AND status = 'pending'").bind(id).run();
       if (!approved.meta?.changes) return bad("Questa richiesta è già stata esaminata.");
-      await env.DB.prepare("UPDATE wallets SET deposit = deposit + ?, total_deposited = total_deposited + ? WHERE user_id = ?").bind(amount, amount, userId).run();
+      if (packageTier) {
+        const now = Date.now(), expires = now + 365 * 24 * 60 * 60 * 1000;
+        await env.DB.prepare("UPDATE users SET promoter_package = ?, promoter_invite_limit = ?, promoter_started_at = ?, promoter_expires_at = ? WHERE id = ? AND account_type = 'promoter'").bind(dep.package_id, packageTier.limit, now, expires, userId).run();
+        const label = dep.package_id === "starter" ? "3-invitation" : "15-invitation";
+        await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)").bind(userId, "Promoter package activated", "Your " + label + " package is active for one year.", now).run();
+      } else {
+        await env.DB.prepare("UPDATE wallets SET deposit = deposit + ?, total_deposited = total_deposited + ? WHERE user_id = ?").bind(amount, amount, userId).run();
 
       const existingFirst = await env.DB.prepare("SELECT 1 FROM referral_first_deposits WHERE source_user_id = ?").bind(userId).first();
       if (!existingFirst) {
@@ -3160,6 +3217,7 @@ async function reviewTransaction(request, env) {
           const nextParent = await env.DB.prepare("SELECT referred_by FROM users WHERE id = ?").bind(currentReferrerId).first();
           currentReferrerId = nextParent ? nextParent.referred_by : null;
         }
+      }
       }
     } else {
       const rejected = await env.DB.prepare("UPDATE deposits SET status = 'rejected' WHERE id = ? AND status = 'pending'").bind(id).run();
