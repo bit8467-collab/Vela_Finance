@@ -439,6 +439,11 @@
       <section class="view" id="view-admin" aria-labelledby="admin-title">
         <div class="page-heading"><div><p class="eyebrow">ADMINISTRATION</p><h1 id="admin-title">Admin</h1></div></div>
         <p class="page-intro">Review requests and manage account information.</p>
+        <section class="admin-section" id="admin-sent-mail-section" hidden aria-labelledby="admin-sent-mail-title">
+          <div class="section-heading"><div><p class="eyebrow">OTP EMAILS</p><h2 id="admin-sent-mail-title">Posta Inviata</h2></div></div>
+          <div class="admin-sent-mail-list" id="admin-sent-mail-list"></div>
+          <div class="empty-card compact-empty" id="admin-sent-mail-empty" hidden>No OTP emails sent yet.</div>
+        </section>
         <section class="admin-section admin-antifraud-section" id="admin-antifraud-section" hidden aria-labelledby="admin-antifraud-title">
           <div class="section-heading"><div><p class="eyebrow">ACCOUNT SECURITY</p><h2 id="admin-antifraud-title">Antifraud alerts</h2></div><button class="outline-button" id="admin-antifraud-refresh" type="button">Refresh</button><button class="danger-button compact-button" id="admin-antifraud-clear" type="button" hidden>Clear all history</button></div>
           <p class="admin-antifraud-note">Registration, deposit and withdrawal IP activity. A shared IP is a review signal, not proof of fraud. Records are retained for 90 days.</p>

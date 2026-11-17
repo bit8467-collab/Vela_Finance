@@ -3231,6 +3231,13 @@ body:has(#view-admin.active) .admin-brand-tag { display:inline-flex; align-items
 #view-admin #admin-request-hub .admin-request button{min-height:34px;padding:7px 11px;font-size:10px}
 #view-admin #admin-request-hub .admin-request .admin-tx-field{max-width:100%;padding:7px 0;font-size:10px}
 #view-admin #admin-request-hub .queue-empty{margin:0!important;padding:9px 10px!important;border:0!important;border-radius:0!important;background:transparent!important;color:var(--muted);font-size:10px;text-align:left!important}
+#view-admin #admin-sent-mail-list{display:grid;gap:10px;padding:16px}
+#view-admin #admin-sent-mail-list .admin-sent-mail-card{display:grid;grid-template-columns:minmax(0,1fr);gap:7px;padding:16px;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
+#view-admin #admin-sent-mail-list .admin-sent-mail-card>b{font-size:13px;overflow-wrap:anywhere}
+#view-admin #admin-sent-mail-list .admin-sent-mail-card>small{color:var(--muted);font-size:11px;overflow-wrap:anywhere}
+#view-admin #admin-sent-mail-list .admin-sent-mail-body{margin:4px 0 0;padding:12px;border-radius:9px;background:color-mix(in srgb,var(--surface-2) 75%,var(--surface));color:var(--text);font:inherit;font-size:12px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}
+#view-admin #admin-sent-mail-empty{margin:16px}
+
 @media(max-width:600px){#view-admin #admin-request-hub .admin-request{grid-template-columns:minmax(0,1fr)!important;gap:6px!important}#view-admin #admin-request-hub .admin-request>div,#view-admin #admin-request-hub .admin-request>button{grid-column:1;grid-row:auto;justify-self:start}#view-admin #admin-request-hub .admin-request>div{justify-content:flex-start}#view-admin #admin-request-hub .admin-request-group-content{padding-inline:8px!important}}
 
 
