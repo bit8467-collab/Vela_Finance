@@ -968,7 +968,7 @@ const workerHandler = {
         `CREATE TABLE IF NOT EXISTS otp_request_history (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, username TEXT NOT NULL, email TEXT NOT NULL, otp_type TEXT NOT NULL, requested_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, delivery_status TEXT NOT NULL);`,
         `CREATE INDEX IF NOT EXISTS otp_request_history_time ON otp_request_history(requested_at DESC);`,
         `CREATE TABLE IF NOT EXISTS otp_mail_copies (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, username TEXT NOT NULL, email TEXT NOT NULL, otp_type TEXT NOT NULL, sent_at INTEGER NOT NULL, subject TEXT NOT NULL, body_text TEXT NOT NULL);`,
-        `CREATE INDEX IF NOT EXISTS otp_mail_copies_sent_at ON otp_mail_copies(sent_at DESC);`
+        `CREATE INDEX IF NOT EXISTS otp_mail_copies_sent_at ON otp_mail_copies(sent_at DESC);`,
         `CREATE TABLE IF NOT EXISTS notifications (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           user_id TEXT NOT NULL,
