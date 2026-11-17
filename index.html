@@ -242,6 +242,14 @@
             <p class="form-error" id="register-error" role="alert"></p>
             <button class="primary-button" type="submit">Create account</button>
           </form>
+          <form id="register-otp-form" class="auth-form" hidden>
+            <p class="modal-copy" id="register-otp-message">A six-digit verification code was sent to your email.</p>
+            <label for="register-otp">Six-digit code</label>
+            <input id="register-otp" class="otp-input" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" autocapitalize="off" spellcheck="false" required>
+            <p class="form-error" id="register-otp-error" role="alert"></p>
+            <button class="primary-button" type="submit">Verify and create account</button>
+            <button class="text-button" id="register-otp-resend" type="button">Resend code</button>
+          </form>
         </div>
       </section>
       <p class="auth-footnote">Account information is stored in the platform database.</p>
@@ -399,7 +407,7 @@
           <label class="setting-row" for="language-select"><span><b>Preferred language</b><small>Choose your interface language</small></span><select id="language-select"><option value="en">English</option><option value="fr">Français</option><option value="es">Español</option><option value="de">Deutsch</option><option value="pt">Português</option><option value="hi">Hindi (India)</option><option value="zh">中文</option><option value="it">Italiano</option></select></label>
           <label class="setting-row" for="theme-select"><span><b>Appearance</b><small>Light or dark mode</small></span><select id="theme-select"><option value="dark">Dark</option><option value="light">Light</option></select></label>
           <div class="setting-row wallet-setting"><span><b>Withdrawal wallet</b><small id="bound-wallet-label">No wallet linked</small></span><button class="outline-button" id="edit-wallet-button" type="button">Link wallet</button></div>
-          <div class="setting-row wallet-setting"><span><b>Email verification</b><small id="email-verification-status">Required for withdrawals</small></span><button class="outline-button" id="request-verification-button" type="button">Verify email</button></div>
+          <div class="setting-row wallet-setting" hidden><span><b>Email verification</b><small id="email-verification-status">Required for withdrawals</small></span><button class="outline-button" id="request-verification-button" type="button">Verify email</button></div>
           <button class="outline-wide" id="change-password-button" type="button">Change password</button>
         </section>
         <section class="section-block profile-history">
@@ -898,10 +906,10 @@
     </section>
 
     <section class="guide-section" id="verifica-email">
-      <div class="section-title"><span class="step-label">10 — ACCOUNT SICURO</span><h2>Verifica la tua email</h2><p>Dal Profilo puoi avviare la verifica richiesta per abilitare i prelievi.</p></div>
+      <div class="section-title"><span class="step-label">10 — ACCOUNT SICURO</span><h2>Verifica email in registrazione</h2><p>Conferma il tuo indirizzo con il codice OTP inviato automaticamente durante la registrazione.</p></div>
       <div class="lesson-grid">
-        <figure class="visual-card"><div class="mock-screen form-screen"><div class="mock-top"><span class="logo-mini">YI</span><span>PROFILE SETTINGS</span><span class="close">×</span></div><h3>Verify email</h3><div class="submit-button">Request verification code</div><div class="address"><small>Email verification</small><b>Send email request instead</b><span>Bozza precompilata da inviare al supporto</span></div><div class="field"><label>Six-digit code</label><b>• • • • • •</b></div><div class="submit-button">Confirm email</div></div><figcaption><span>Verifica email</span><span>Richiesta → codice → conferma</span></figcaption></figure>
-        <div class="steps-copy"><article><b class="step-num">1</b><div><h3>Apri la verifica dal Profilo</h3><p>Apri Profilo e seleziona «Verify email» per visualizzare le opzioni di verifica.</p></div></article><article><b class="step-num">2</b><div><h3>Richiedi il codice</h3><p>Seleziona «Request verification code» e controlla la tua email. Inserisci il codice ricevuto per confermare l’indirizzo.</p></div></article><article><b class="step-num">3</b><div><h3>Conferma l’indirizzo</h3><p>Inserisci il codice di sei cifre e tocca «Confirm email». Il Profilo mostrerà lo stato verificato quando l’operazione sarà completata.</p></div></article></div>
+        <figure class="visual-card"><div class="mock-screen form-screen"><div class="mock-top"><span class="logo-mini">YI</span><span>CREATE ACCOUNT</span><span class="close">×</span></div><h3>Check your email</h3><div class="field"><label>Email</label><b>name@email.com</b></div><div class="field"><label>Six-digit code</label><b>• • • • • •</b></div><div class="submit-button">Verify and create account</div></div><figcaption><span>Verifica email</span><span>Registrazione → OTP → conferma</span></figcaption></figure>
+        <div class="steps-copy"><article><b class="step-num">1</b><div><h3>Crea il tuo account</h3><p>Inserisci username, email e password nel modulo di registrazione.</p></div></article><article><b class="step-num">2</b><div><h3>Controlla la tua email</h3><p>Il codice OTP a sei cifre viene inviato automaticamente all’indirizzo inserito.</p></div></article><article><b class="step-num">3</b><div><h3>Conferma il codice</h3><p>Inserisci il codice ricevuto per verificare l’email e completare la registrazione.</p></div></article></div>
       </div>
     </section>
     <section class="guide-section" id="cambia-password">

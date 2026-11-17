@@ -1627,10 +1627,29 @@ async function register(request, env) {
   const s = genSalt();
   const inviteCode = "H9-" + username.slice(0, 4).toUpperCase() + Math.random().toString(36).slice(2, 6).toUpperCase();
   const ph = await hash(password, s);
+  const now = Date.now();
+  const registeredUser = { id, username, identifier: email };
   await env.DB.prepare("INSERT INTO users (id, username, identifier, password_hash, salt, invite_code, referred_by, created_at, email_verified) VALUES (?,?,?,?,?,?,?,?,0)")
-    .bind(id, username, email, ph, s, inviteCode, referredBy, Date.now()).run();
-  await recordAntifraudEvent(request, env, { id, username }, 'registration');
-  return Response.json({ ok: true, email, username });
+    .bind(id, username, email, ph, s, inviteCode, referredBy, now).run();
+  await recordAntifraudEvent(request, env, registeredUser, 'registration');
+  const otp = generateEmailOtp();
+  const otpSalt = genSalt();
+  const otpHash = await hash(otp, otpSalt);
+  const expiresAt = now + 15 * 60 * 1000;
+  await env.DB.prepare("INSERT INTO email_verification_requests (user_id, requested_at, otp_hash, otp_salt, otp_expires_at, otp_attempts, issued_at, issued_by, verified_at) VALUES (?, ?, ?, ?, ?, 0, ?, NULL, NULL)")
+    .bind(id, now, otpHash, otpSalt, expiresAt, now).run();
+  try {
+    await sendOtpEmail(email, otp, "email-verification", body.language);
+    await recordOtpRequestHistory(env, registeredUser, "email-verification", now, expiresAt, "sent");
+  } catch (error) {
+    await recordOtpRequestHistory(env, registeredUser, "email-verification", now, expiresAt, "failed");
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM email_verification_requests WHERE user_id = ?").bind(id),
+      env.DB.prepare("DELETE FROM users WHERE id = ?").bind(id),
+    ]);
+    return Response.json({ error: "Impossibile inviare il codice email. Riprova più tardi." }, { status: 503 });
+  }
+  return Response.json({ ok: true, email, username, verificationRequired: true, retryAt: expiresAt });
 }
 
 async function requestPasswordReset(request, env) {
@@ -1899,6 +1918,7 @@ async function login(request, env) {
   if (userPasswordValid) {
     const role = await env.DB.prepare("SELECT role FROM admin_roles WHERE user_id = ?").bind(user.id).first();
     if (role) return await beginAdminAuthenticator(env, user.id);
+    if (!user.email_verified) return Response.json({ error: "Verifica il tuo indirizzo email con il codice OTP prima di accedere.", verificationRequired: true, email: user.identifier }, { status: 403 });
     const token = makeToken();
     const lastLoginAt = Date.now();
     await env.DB.batch([
