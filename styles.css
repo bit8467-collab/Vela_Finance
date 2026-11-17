@@ -3377,3 +3377,32 @@ body.asset-catalog-open{overflow:hidden}
 
 .otp-email-actions { display: flex; flex-wrap: wrap; gap: 6px; width: 100%; margin-top: 5px; }
 #view-admin .admin-workspace-stage .admin-request .otp-email-actions button { min-height: 32px; padding: 5px 9px; font-size: 11px; line-height: 1.25; white-space: nowrap; }
+
+/* Light/day mode: subtle background tint and stronger text contrast. */
+:root[data-theme="light"] {
+  --bg: #e9eff6;
+  --surface: #f9fbff;
+  --surface-2: #e1eaf4;
+  --line: #b5c6d9;
+  --text: #14283e;
+  --muted: #40566f;
+  --accent: #066f92;
+  --green: #08734d;
+  --red: #b8324e;
+  --amber: #805200;
+}
+:root[data-theme="light"] body {
+  color: var(--text);
+  background: linear-gradient(180deg, #e4ebf3, var(--bg));
+}
+:root[data-theme="light"] .app-shell {
+  color: var(--text);
+  background: #e9eff6;
+}
+:root[data-theme="light"] .landing {
+  color: var(--text);
+  background: linear-gradient(180deg, #edf2f8, #e7edf5);
+}
+:root[data-theme="light"] .nav-item { color: #40566f; }
+:root[data-theme="light"] input::placeholder,
+:root[data-theme="light"] textarea::placeholder { color: #5b7088; opacity: 1; }
