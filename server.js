@@ -559,7 +559,7 @@ const PLANS = [
   { days: 30, rate: 1.2, min: 500 },
   { days: 90, rate: 1.5, min: 1000 },
 ];
-const REFERRAL_PCTS = [0.10, 0.05, 0.03];
+const REFERRAL_PCTS = [0.05];
 const PLAN_BONUSES = [0, 0.05, 0.15, 0.33];
 const PHONE_CALLING_CODES = new Set(("1 20 211 212 213 216 218 220 221 222 223 224 225 226 227 228 229 230 231 232 233 234 235 236 237 238 239 240 241 242 243 244 245 246 247 248 249 250 251 252 253 254 255 256 257 258 260 261 262 263 264 265 266 267 268 269 27 290 291 297 298 299 30 31 32 33 34 350 351 352 353 354 355 356 357 358 359 36 370 371 372 373 374 375 376 377 378 380 381 382 383 385 386 387 389 39 40 41 420 421 423 43 44 45 46 47 48 49 500 501 502 503 504 505 506 507 508 509 51 52 53 54 55 56 57 58 590 591 592 593 594 595 596 597 598 599 60 61 62 63 64 65 66 670 672 673 674 675 676 677 678 679 680 681 682 683 685 686 687 688 689 690 691 692 7 81 82 84 850 852 853 855 856 86 880 881 882 883 886 90 91 92 93 94 95 960 961 962 963 964 965 966 967 968 970 971 972 973 974 975 976 977 98 992 993 994 995 996 998").split(" "));
 
@@ -816,8 +816,44 @@ async function inviterStats(env, userId) {
   return { direct, second, level, planBonus: PLAN_BONUSES[level] };
 }
 
+async function settleMonthlyReferralProfits(env, inviterId) {
+  try {
+    const now = Date.now(), period = new Date(now).toISOString().slice(0, 7);
+    const sources = (await env.DB.prepare(
+      "SELECT u.id, u.username FROM users u WHERE u.referred_by = ? AND NOT EXISTS (SELECT 1 FROM referral_profit_settlements s WHERE s.user_id = ? AND s.source_user_id = u.id AND s.period = ?)"
+    ).bind(inviterId, inviterId, period).all()).results || [];
+    for (const source of sources) {
+      const previous = await env.DB.prepare(
+        "SELECT profit_base FROM referral_profit_settlements WHERE user_id = ? AND source_user_id = ? AND commission_amount > 0 ORDER BY period DESC LIMIT 1"
+      ).bind(inviterId, source.id).first();
+      const totals = await env.DB.prepare(
+        "SELECT " +
+        "COALESCE((SELECT SUM(amount) FROM market_position_redemptions WHERE user_id = ?), 0) + " +
+        "COALESCE((SELECT SUM(interest_paid) FROM simple_earn_positions WHERE user_id = ? AND status = 'redeemed'), 0) + " +
+        "COALESCE((SELECT SUM(amount * rate / 100 * CASE WHEN active = 1 THEN MIN(days, MAX(0, (? - created) / 86400000.0)) ELSE credited END) FROM investments WHERE user_id = ?), 0) + " +
+        "COALESCE((SELECT SUM(last_value - early_close_fee - amount) FROM market_positions WHERE user_id = ? AND status IN ('matured', 'early_closed')), 0) AS profit"
+      ).bind(source.id, source.id, now, source.id, source.id).first();
+      const previousBase = Math.max(0, Number(previous?.profit_base) || 0);
+      const currentBase = Math.max(previousBase, Number(totals?.profit) || 0);
+      const commission = Number((Math.max(0, currentBase - previousBase) * 0.01).toFixed(3));
+      const recordedBase = commission >= 0.001 ? currentBase : previousBase;
+      const eventId = 'monthly-profit:' + inviterId + ':' + source.id + ':' + period;
+      const message = 'Credited ' + commission.toFixed(3) + ' USDT monthly referral commission (1% of net realized investment gains) from @' + String(source.username || 'user') + '.';
+      await env.DB.batch([
+        env.DB.prepare("INSERT OR IGNORE INTO referral_profit_settlements (user_id, source_user_id, period, profit_base, commission_amount, created_at, credited_at) VALUES (?, ?, ?, ?, ?, ?, NULL)").bind(inviterId, source.id, period, recordedBase, commission, now),
+        env.DB.prepare("INSERT OR IGNORE INTO referral_commissions (user_id, source_user_id, event_id, level, amount, created_at) SELECT ?, ?, ?, 1, ?, ? WHERE EXISTS (SELECT 1 FROM referral_profit_settlements WHERE user_id = ? AND source_user_id = ? AND period = ? AND credited_at IS NULL AND commission_amount > 0)").bind(inviterId, source.id, eventId, commission, now, inviterId, source.id, period),
+        env.DB.prepare("INSERT INTO wallets (user_id, deposit, earnings, released, total_deposited, total_earned, total_withdrawn) SELECT ?, 0, ?, 0, 0, ?, 0 WHERE EXISTS (SELECT 1 FROM referral_profit_settlements WHERE user_id = ? AND source_user_id = ? AND period = ? AND credited_at IS NULL AND commission_amount > 0) ON CONFLICT(user_id) DO UPDATE SET earnings = wallets.earnings + excluded.earnings, total_earned = wallets.total_earned + excluded.total_earned").bind(inviterId, commission, commission, inviterId, source.id, period),
+        env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM referral_profit_settlements WHERE user_id = ? AND source_user_id = ? AND period = ? AND credited_at IS NULL AND commission_amount > 0)").bind(inviterId, 'Monthly referral earnings commission', message, now, inviterId, source.id, period),
+        env.DB.prepare("UPDATE referral_profit_settlements SET credited_at = ? WHERE user_id = ? AND source_user_id = ? AND period = ? AND credited_at IS NULL").bind(now, inviterId, source.id, period),
+      ]);
+    }
+  } catch (error) {
+    console.error('Monthly referral commission settlement failed:', error);
+  }
+}
 async function fullState(env, user, request) {
   let wallet = await accrue(env, user.id);
+  await settleMonthlyReferralProfits(env, user.id);
   const marketPositions = await syncMarketPositions(env, user.id);
   const [simpleEarnResult, redemptionResult, walletResult, investmentsResult, depositsResult, withdrawalsResult, teamResult, inviteStats, s, actionRow] = await Promise.all([
     env.DB.prepare("SELECT * FROM simple_earn_positions WHERE user_id = ? ORDER BY created_at DESC").bind(user.id).all(),
@@ -831,7 +867,7 @@ async function fullState(env, user, request) {
       " SELECT id, username, created_at, 1 FROM users WHERE referred_by = ?" +
       " UNION ALL" +
       " SELECT u.id, u.username, u.created_at, t.level + 1 FROM users u" +
-      " JOIN referral_tree t ON u.referred_by = t.id WHERE t.level < 3" +
+      " JOIN referral_tree t ON u.referred_by = t.id WHERE t.level < 1" +
       ") SELECT t.id, t.username, t.created_at AS joined, t.level," +
       " COALESCE(SUM(i.amount), 0) AS invested," +
       " EXISTS (SELECT 1 FROM deposits d WHERE d.user_id = t.id AND d.status = 'approved') AS deposited," +
@@ -1126,6 +1162,16 @@ const workerHandler = {
           source_user_id TEXT PRIMARY KEY,
           deposit_id INTEGER NOT NULL UNIQUE,
           created_at INTEGER NOT NULL
+        );`,
+        `CREATE TABLE IF NOT EXISTS referral_profit_settlements (
+          user_id TEXT NOT NULL,
+          source_user_id TEXT NOT NULL,
+          period TEXT NOT NULL,
+          profit_base REAL NOT NULL,
+          commission_amount REAL NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          credited_at INTEGER,
+          PRIMARY KEY(user_id, source_user_id, period)
         );`,
         `CREATE INDEX IF NOT EXISTS users_referred_by ON users(referred_by);`,
         `CREATE INDEX IF NOT EXISTS investments_user_active ON investments(user_id, active);`,
@@ -2950,6 +2996,7 @@ async function adminDeleteUser(request, env, userId) {
     env.DB.prepare("DELETE FROM wallets WHERE user_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM investments WHERE user_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM referral_commissions WHERE user_id = ? OR source_user_id = ?").bind(userId, userId),
+    env.DB.prepare("DELETE FROM referral_profit_settlements WHERE user_id = ? OR source_user_id = ?").bind(userId, userId),
     env.DB.prepare("DELETE FROM referral_first_deposits WHERE source_user_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM deposits WHERE user_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM withdrawals WHERE user_id = ?").bind(userId),
