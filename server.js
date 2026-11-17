@@ -1,4 +1,5 @@
 import express from 'express';
+import nodemailer from 'nodemailer';
 import { createClient } from '@libsql/client';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -11,6 +12,8 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
+const smtpPort = Number(process.env.SMTP_PORT) || 465;
+const otpMailer = nodemailer.createTransport({ host: process.env.SMTP_HOST || 'authsmtp.securemail.pro', port: smtpPort, secure: smtpPort === 465, auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS } });
 const notificationStreams = new Map();
 const assetPriceStreams = new Set();
 let assetPriceStreamTimer = null;
@@ -580,6 +583,28 @@ function normalizeEmail(value) {
   if (domain.length > 253 || labels.length < 2 || labels.some(label => !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))) return null;
   if (!/^[a-z0-9-]{2,63}$/.test(labels.at(-1))) return null;
   return `${local.toLowerCase()}@${domain}`;
+}
+
+function generateEmailOtp() {
+  const value = new Uint32Array(1);
+  crypto.getRandomValues(value);
+  return String(value[0] % 1000000).padStart(6, "0");
+}
+
+async function sendOtpEmail(to, code, purpose) {
+  const user = process.env.SMTP_USER;
+  const pass = process.env.SMTP_PASS;
+  const recipient = normalizeEmail(to);
+  if (!user || !pass) throw new Error("SMTP_USER and SMTP_PASS must be configured.");
+  if (!recipient) throw new Error("OTP recipient is not a valid email address.");
+  const purposeText = purpose === "password-reset" ? "reimpostare la password" : purpose === "wallet-change" ? "confermare la modifica del wallet" : "verificare il tuo indirizzo email";
+  await otpMailer.sendMail({
+    from: process.env.SMTP_FROM || '"Vela Finance" <' + user + '>',
+    to: recipient,
+    subject: code + " è il tuo codice di verifica Vela Finance",
+    text: "Il tuo codice OTP per " + purposeText + " su Vela Finance è " + code + ". Il codice è valido per 15 minuti. Se non hai richiesto questa operazione, ignora questa email.",
+    html: '<div style="font-family:Arial,sans-serif;max-width:500px;margin:0 auto;padding:24px;border:1px solid #e0e0e0;border-radius:8px"><h2>Verifica di sicurezza</h2><p>Usa questo codice per ' + purposeText + ' su <strong>Vela Finance</strong>:</p><div style="background:#f4f6f8;padding:16px;text-align:center;border-radius:6px;margin:24px 0"><span style="font-size:28px;font-weight:bold;letter-spacing:6px;color:#0052cc">' + code + '</span></div><p style="color:#666;font-size:13px">Il codice scadrà tra 15 minuti. Se non hai richiesto questa operazione, ignora questa email.</p></div>',
+  });
 }
 
 function normalizePhone(value) {
@@ -1585,12 +1610,20 @@ async function requestPasswordReset(request, env) {
   const cooldown = 15 * 60 * 1000;
   if (user) {
     const existing = await env.DB.prepare("SELECT requested_at, otp_expires_at FROM password_reset_requests WHERE user_id = ?").bind(user.id).first();
+    if (existing?.otp_expires_at && now < Number(existing.otp_expires_at)) return Response.json({ error: "Un codice OTP è già stato inviato. Controlla la tua email o attendi la scadenza.", requestedAt: Number(existing.requested_at), retryAt: Number(existing.otp_expires_at) }, { status: 429 });
+    const otp = generateEmailOtp();
+    const salt = genSalt();
+    const otpHash = await hash(otp, salt);
+    const expiresAt = now + cooldown;
     if (!existing) {
-      await env.DB.prepare("INSERT INTO password_reset_requests (user_id, requested_at, otp_attempts) VALUES (?, ?, 0)").bind(user.id, now).run();
+      await env.DB.prepare("INSERT INTO password_reset_requests (user_id, requested_at, otp_hash, otp_salt, otp_expires_at, otp_attempts, issued_at, issued_by) VALUES (?, ?, ?, ?, ?, 0, ?, NULL)").bind(user.id, now, otpHash, salt, expiresAt, now).run();
     } else {
-      const retryAt = Number(existing.otp_expires_at) || (Number(existing.requested_at) + cooldown);
-      if (now < retryAt) return Response.json({ error: "Potrai richiedere un nuovo codice dopo la scadenza del codice o 15 minuti dalla richiesta.", requestedAt: Number(existing.requested_at), retryAt }, { status: 429 });
-      await env.DB.prepare("UPDATE password_reset_requests SET requested_at = ?, otp_hash = NULL, otp_salt = NULL, otp_expires_at = NULL, otp_attempts = 0, issued_at = NULL, issued_by = NULL WHERE user_id = ?").bind(now, user.id).run();
+      await env.DB.prepare("UPDATE password_reset_requests SET requested_at = ?, otp_hash = ?, otp_salt = ?, otp_expires_at = ?, otp_attempts = 0, issued_at = ?, issued_by = NULL WHERE user_id = ?").bind(now, otpHash, salt, expiresAt, now, user.id).run();
+    }
+    try { await sendOtpEmail(user.identifier, otp, "password-reset"); }
+    catch (error) {
+      await env.DB.prepare("UPDATE password_reset_requests SET otp_hash = NULL, otp_salt = NULL, otp_expires_at = NULL, issued_at = NULL WHERE user_id = ?").bind(user.id).run();
+      throw error;
     }
   }
 
@@ -1602,7 +1635,9 @@ async function requestPasswordReset(request, env) {
     requestedAt: now,
     retryAt: now + cooldown
   });
-}async function confirmPasswordReset(request, env) {
+}
+
+async function confirmPasswordReset(request, env) {
   const body = await request.json();
   const email = normalizeEmail(body.email);
   const otp = typeof body.otp === "string" ? body.otp.trim() : "";
@@ -1677,7 +1712,7 @@ async function requestEmailVerification(request, env) {
   const user = await sessionUser(request, env);
   const body = await request.json().catch(() => ({}));
   let targetUser = user;
-  
+
   if (!targetUser) {
     const rawAccount = typeof body.account === "string" ? body.account.trim() : "";
     const password = typeof body.password === "string" ? body.password : "";
@@ -1688,11 +1723,23 @@ async function requestEmailVerification(request, env) {
   }
 
   if (targetUser.email_verified) return bad("Questo indirizzo email è già verificato.");
+  if (!normalizeEmail(targetUser.identifier)) return bad("È necessario un indirizzo email valido per ricevere il codice OTP.");
 
   const now = Date.now();
-  await env.DB.prepare("INSERT INTO email_verification_requests (user_id, requested_at, otp_attempts, verified_at) VALUES (?, ?, 0, NULL) ON CONFLICT(user_id) DO UPDATE SET requested_at = excluded.requested_at, verified_at = NULL").bind(targetUser.id, now).run();
-  await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)").bind(targetUser.id, "Email verification request", "Verification request sent. Wait for the code sent by email, then enter it here.", now).run();
-  return Response.json({ ok: true, email: targetUser.identifier, username: targetUser.username, userId: targetUser.id, requestedAt: now });
+  const existing = await env.DB.prepare("SELECT requested_at, otp_expires_at FROM email_verification_requests WHERE user_id = ?").bind(targetUser.id).first();
+  if (existing?.otp_expires_at && now < Number(existing.otp_expires_at)) return Response.json({ error: "Un codice OTP è già stato inviato. Controlla la tua email o attendi la scadenza." }, { status: 429 });
+  const otp = generateEmailOtp();
+  const salt = genSalt();
+  const otpHash = await hash(otp, salt);
+  const expiresAt = now + 15 * 60 * 1000;
+  await env.DB.prepare("INSERT INTO email_verification_requests (user_id, requested_at, otp_hash, otp_salt, otp_expires_at, otp_attempts, issued_at, issued_by, verified_at) VALUES (?, ?, ?, ?, ?, 0, ?, NULL, NULL) ON CONFLICT(user_id) DO UPDATE SET requested_at = excluded.requested_at, otp_hash = excluded.otp_hash, otp_salt = excluded.otp_salt, otp_expires_at = excluded.otp_expires_at, otp_attempts = 0, issued_at = excluded.issued_at, issued_by = NULL, verified_at = NULL").bind(targetUser.id, now, otpHash, salt, expiresAt, now).run();
+  try { await sendOtpEmail(targetUser.identifier, otp, "email-verification"); }
+  catch (error) {
+    await env.DB.prepare("UPDATE email_verification_requests SET otp_hash = NULL, otp_salt = NULL, otp_expires_at = NULL, issued_at = NULL WHERE user_id = ?").bind(targetUser.id).run();
+    throw error;
+  }
+  await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)").bind(targetUser.id, "Email verification request", "Verification request sent. A code was sent to your email.", now).run();
+  return Response.json({ ok: true, email: targetUser.identifier, username: targetUser.username, userId: targetUser.id, requestedAt: now, retryAt: expiresAt });
 }
 
 async function verifyAccountOtpDirect(request, env) {
@@ -3151,6 +3198,7 @@ async function createWalletChangeOtpRequest(env, user, wallets) {
     requestedWallets[net] = value;
   }
   if (!Object.keys(requestedWallets).length) return bad("Nessuna modifica o nuovo indirizzo valido specificato.");
+  if (!normalizeEmail(user.identifier)) return bad("È necessario un indirizzo email valido per ricevere il codice OTP.");
   const existingAddrs = await env.DB.prepare("SELECT COUNT(*) as cnt FROM user_withdrawal_addresses WHERE user_id = ?").bind(user.id).first();
   if ((!existingAddrs || existingAddrs.cnt === 0) && !user.email_verified) return Response.json({ error: "Verifica l’email prima di salvare l’indirizzo di prelievo per la prima volta.", verificationRequired: true, email: user.identifier }, { status: 403 });
   const currentSettings = await env.DB.prepare("SELECT withdraw_wallets FROM settings WHERE user_id = ?").bind(user.id).first();
@@ -3163,12 +3211,19 @@ async function createWalletChangeOtpRequest(env, user, wallets) {
   const pending = await env.DB.prepare("SELECT action FROM sensitive_action_verifications WHERE user_id = ? AND consumed_at IS NULL").bind(user.id).first();
   if (pending) return Response.json({ error: "È già presente una richiesta wallet in corso. Completa quella in corso prima di inviarne un'altra." }, { status: 409 });
   const now = Date.now();
-  const created = await env.DB.prepare("INSERT INTO sensitive_action_verifications (user_id, action, payload_json, requested_at, otp_hash, otp_salt, otp_expires_at, otp_attempts, issued_at, issued_by, consumed_at) SELECT ?, 'wallet-change', ?, ?, NULL, NULL, NULL, 0, NULL, NULL, NULL WHERE NOT EXISTS (SELECT 1 FROM sensitive_action_verifications WHERE user_id = ? AND consumed_at IS NULL) AND NOT EXISTS (SELECT 1 FROM wallet_change_requests WHERE user_id = ? AND status = 'pending') ON CONFLICT(user_id) DO UPDATE SET action = excluded.action, payload_json = excluded.payload_json, requested_at = excluded.requested_at, otp_hash = NULL, otp_salt = NULL, otp_expires_at = NULL, otp_attempts = 0, issued_at = NULL, issued_by = NULL, consumed_at = NULL")
-    .bind(user.id, JSON.stringify({ wallets: requestedWallets, changes }), now, user.id, user.id).run();
+  const otp = generateEmailOtp();
+  const salt = genSalt();
+  const otpHash = await hash(otp, salt);
+  const expiresAt = now + 15 * 60 * 1000;
+  const created = await env.DB.prepare("INSERT INTO sensitive_action_verifications (user_id, action, payload_json, requested_at, otp_hash, otp_salt, otp_expires_at, otp_attempts, issued_at, issued_by, consumed_at) SELECT ?, 'wallet-change', ?, ?, ?, ?, ?, 0, ?, NULL, NULL WHERE NOT EXISTS (SELECT 1 FROM sensitive_action_verifications WHERE user_id = ? AND consumed_at IS NULL) AND NOT EXISTS (SELECT 1 FROM wallet_change_requests WHERE user_id = ? AND status = 'pending') ON CONFLICT(user_id) DO UPDATE SET action = excluded.action, payload_json = excluded.payload_json, requested_at = excluded.requested_at, otp_hash = excluded.otp_hash, otp_salt = excluded.otp_salt, otp_expires_at = excluded.otp_expires_at, otp_attempts = 0, issued_at = excluded.issued_at, issued_by = NULL, consumed_at = NULL").bind(user.id, JSON.stringify({ wallets: requestedWallets, changes }), now, otpHash, salt, expiresAt, now, user.id, user.id).run();
   if (!(created.meta?.changes > 0)) return Response.json({ error: "È già presente una richiesta wallet in corso. Completa quella in corso prima di inviarne un'altra." }, { status: 409 });
-  await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)")
-    .bind(user.id, "Wallet change verification", "Wallet change requested. Ask the operator to issue a six-digit verification code.", now).run();
-  return Response.json({ ok: true, otpRequired: true, message: "Richiesta OTP wallet inviata all’operatore. Inserisci il codice dopo averlo ricevuto." });
+  try { await sendOtpEmail(user.identifier, otp, "wallet-change"); }
+  catch (error) {
+    await env.DB.prepare("DELETE FROM sensitive_action_verifications WHERE user_id = ? AND action = 'wallet-change' AND consumed_at IS NULL").bind(user.id).run();
+    throw error;
+  }
+  await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)").bind(user.id, "Wallet change verification", "Wallet change requested. A six-digit verification code was sent to your email.", now).run();
+  return Response.json({ ok: true, otpRequired: true, message: "Il codice OTP per la modifica del wallet è stato inviato alla tua email.", expiresAt });
 }
 
 async function queueWalletAddressConflict(env, user, net, oldAddress, newAddress) {
