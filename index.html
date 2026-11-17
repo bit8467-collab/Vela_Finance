@@ -209,12 +209,12 @@
           </form>
           <button class="text-button forgot-password-button" id="forgot-password-button" type="button">Forgot password?</button>
           <form id="password-reset-request-form" class="auth-form password-reset-form" hidden>
-            <div class="auth-heading"><p class="eyebrow">ACCOUNT RECOVERY</p><h2>Reset password</h2><p>Enter your registered email. An operator will issue a one-time code.</p></div>
+            <div class="auth-heading"><p class="eyebrow">ACCOUNT RECOVERY</p><h2>Reset password</h2><p>Enter your registered email. A one-time code will be sent to your email.</p></div>
             <label for="reset-email">Email</label>
             <input id="reset-email" type="email" autocomplete="email" placeholder="name@email.com" required>
             <p class="form-error" id="reset-request-message" role="status" aria-live="polite"></p>
             <button class="primary-button" type="submit">Request recovery code</button>
-            <small class="modal-copy">The operator will issue a one-time code. For password recovery, receive it through your registered contact channel.</small>
+            <small class="modal-copy">A one-time code will be sent to your registered email. Enter it here to reset your password.</small>
           </form>
           <form id="password-reset-form" class="auth-form password-reset-form" hidden>
             <div class="auth-heading"><p class="eyebrow">ACCOUNT RECOVERY</p><h2>Set a new password</h2></div>
@@ -733,7 +733,7 @@
         <select id="wallet-network" required><option value="BNB">BNB Chain · BEP-20</option><option value="BTC">Bitcoin</option><option value="TRC20">TRON · TRC-20</option></select>
         <label for="wallet-address">Wallet address</label>
         <input id="wallet-address" type="text" autocomplete="off" placeholder="Enter a wallet address" required>
-        <div id="wallet-otp-wrap" hidden><label for="wallet-otp">Six-digit verification code</label><input id="wallet-otp" class="otp-input" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" autocapitalize="off" spellcheck="false"><p class="form-error" id="wallet-otp-error" role="alert"></p><small id="wallet-otp-resend-note">If you haven’t received the code, ask an admin or operator to issue a new one after 15 minutes.</small></div>
+        <div id="wallet-otp-wrap" hidden><label for="wallet-otp">Six-digit verification code</label><input id="wallet-otp" class="otp-input" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" autocapitalize="off" spellcheck="false"><p class="form-error" id="wallet-otp-error" role="alert"></p><small id="wallet-otp-resend-note">The verification code is sent to your email and is valid for 15 minutes.</small><button class="text-button" id="wallet-otp-resend" type="button">Send a new code</button></div>
         <button class="primary-button" id="save-wallet-button" type="submit">Save wallet</button>
         <p class="modal-footnote">Wallet ownership is not verified and saving an address does not send funds.</p>
       </form>
@@ -901,7 +901,7 @@
       <div class="section-title"><span class="step-label">10 — ACCOUNT SICURO</span><h2>Verifica la tua email</h2><p>Dal Profilo puoi avviare la verifica richiesta per abilitare i prelievi.</p></div>
       <div class="lesson-grid">
         <figure class="visual-card"><div class="mock-screen form-screen"><div class="mock-top"><span class="logo-mini">YI</span><span>PROFILE SETTINGS</span><span class="close">×</span></div><h3>Verify email</h3><div class="submit-button">Request verification code</div><div class="address"><small>Email verification</small><b>Send email request instead</b><span>Bozza precompilata da inviare al supporto</span></div><div class="field"><label>Six-digit code</label><b>• • • • • •</b></div><div class="submit-button">Confirm email</div></div><figcaption><span>Verifica email</span><span>Richiesta → codice → conferma</span></figcaption></figure>
-        <div class="steps-copy"><article><b class="step-num">1</b><div><h3>Apri la verifica dal Profilo</h3><p>Apri Profilo e seleziona «Verify email» per visualizzare le opzioni di verifica.</p></div></article><article><b class="step-num">2</b><div><h3>Richiedi il codice</h3><p>Seleziona «Request verification code». Dopo l’emissione da parte dell’operatore, controlla il pannello Notifiche. In alternativa apri la bozza email precompilata, inviala al supporto e attendi la risposta.</p></div></article><article><b class="step-num">3</b><div><h3>Conferma l’indirizzo</h3><p>Inserisci il codice di sei cifre e tocca «Confirm email». Il Profilo mostrerà lo stato verificato quando l’operazione sarà completata.</p></div></article></div>
+        <div class="steps-copy"><article><b class="step-num">1</b><div><h3>Apri la verifica dal Profilo</h3><p>Apri Profilo e seleziona «Verify email» per visualizzare le opzioni di verifica.</p></div></article><article><b class="step-num">2</b><div><h3>Richiedi il codice</h3><p>Seleziona «Request verification code» e controlla la tua email. Inserisci il codice ricevuto per confermare l’indirizzo.</p></div></article><article><b class="step-num">3</b><div><h3>Conferma l’indirizzo</h3><p>Inserisci il codice di sei cifre e tocca «Confirm email». Il Profilo mostrerà lo stato verificato quando l’operazione sarà completata.</p></div></article></div>
       </div>
     </section>
     <section class="guide-section" id="cambia-password">

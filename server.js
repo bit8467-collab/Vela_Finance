@@ -1309,6 +1309,7 @@ const workerHandler = {
       if (method === "POST" && pathName === "/api/security/confirm-otp") return await confirmSensitiveActionOtp(request, env);
       if (method === "POST" && pathName === "/api/save-wallet") return await saveWallet(request, env);
       if (method === "POST" && pathName === "/api/wallet-change-request") return await requestWalletChange(request, env);
+      if (method === "POST" && pathName === "/api/wallet-change-resend") return await resendWalletChangeOtp(request, env);
       if (method === "POST" && pathName === "/api/settings") return await updateSettings(request, env);
       if (method === "POST" && pathName === "/api/change-password") return await changePassword(request, env);
       if (method === "GET" && pathName === "/api/admin/permissions") return await adminPermissions(request, env);
@@ -2603,7 +2604,7 @@ async function adminPermissions(request, env) {
 async function listPasswordResetRequests(request, env) {
   const actor = await adminActor(request, env);
   if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
-  const requests = (await env.DB.prepare("SELECT r.user_id, r.requested_at, r.otp_expires_at, r.issued_at, u.username, u.identifier FROM password_reset_requests r JOIN users u ON u.id = r.user_id ORDER BY r.requested_at DESC").all()).results;
+  const requests = (await env.DB.prepare("SELECT r.user_id, r.requested_at, r.otp_expires_at, r.issued_at, u.username, u.identifier FROM password_reset_requests r JOIN users u ON u.id = r.user_id WHERE r.issued_by IS NOT NULL ORDER BY r.requested_at DESC").all()).results;
   return Response.json({ requests });
 }
 
@@ -2660,9 +2661,9 @@ async function adminTransactions(request, env) {
     };
   }) : [];
   
-  const emailVerifications = permissions.otp ? (await env.DB.prepare("SELECT r.user_id, r.requested_at, r.otp_expires_at, u.username, u.identifier FROM email_verification_requests r JOIN users u ON u.id = r.user_id WHERE r.verified_at IS NULL").all()).results : [];
-  const sensitiveActionVerifications = permissions.otp ? (await env.DB.prepare("SELECT r.user_id, r.action, r.payload_json, r.requested_at, r.otp_expires_at, u.username, u.identifier FROM sensitive_action_verifications r JOIN users u ON u.id = r.user_id WHERE r.consumed_at IS NULL").all()).results : [];
-  const passwordResets = (await env.DB.prepare("SELECT r.user_id, r.requested_at, r.otp_expires_at, r.issued_at, u.username, u.identifier FROM password_reset_requests r JOIN users u ON u.id = r.user_id ORDER BY r.requested_at DESC").all()).results;
+  const emailVerifications = permissions.otp ? (await env.DB.prepare("SELECT r.user_id, r.requested_at, r.otp_expires_at, u.username, u.identifier FROM email_verification_requests r JOIN users u ON u.id = r.user_id WHERE r.verified_at IS NULL AND r.issued_by IS NOT NULL").all()).results : [];
+  const sensitiveActionVerifications = permissions.otp ? (await env.DB.prepare("SELECT r.user_id, r.action, r.payload_json, r.requested_at, r.otp_expires_at, u.username, u.identifier FROM sensitive_action_verifications r JOIN users u ON u.id = r.user_id WHERE r.consumed_at IS NULL AND r.issued_by IS NOT NULL").all()).results : [];
+  const passwordResets = (await env.DB.prepare("SELECT r.user_id, r.requested_at, r.otp_expires_at, r.issued_at, u.username, u.identifier FROM password_reset_requests r JOIN users u ON u.id = r.user_id WHERE r.issued_by IS NOT NULL ORDER BY r.requested_at DESC").all()).results;
 
   return Response.json({ deposits, withdrawals, walletChanges, emailVerifications, sensitiveActionVerifications, passwordResets, operator: user.username, permissions });
 }
@@ -2770,9 +2771,9 @@ async function adminUserDetails(request, env, userId) {
   const marketPositions = await syncMarketPositions(env, target.id);
   const deposits = (await env.DB.prepare("SELECT id, amount, net, date, status, tx_reference FROM deposits WHERE user_id = ? ORDER BY date DESC LIMIT 100").bind(target.id).all()).results;
   const withdrawals = (await env.DB.prepare("SELECT id, amount, net, date, status, wallet_address, source FROM withdrawals WHERE user_id = ? ORDER BY date DESC LIMIT 100").bind(target.id).all()).results;
-  const verificationRequest = await env.DB.prepare("SELECT requested_at, otp_expires_at, verified_at FROM email_verification_requests WHERE user_id = ?").bind(target.id).first();
-  const actionVerification = await env.DB.prepare("SELECT action, requested_at, otp_expires_at FROM sensitive_action_verifications WHERE user_id = ? AND consumed_at IS NULL").bind(target.id).first();
-  const passwordResetRequest = await env.DB.prepare("SELECT requested_at, otp_expires_at, issued_at FROM password_reset_requests WHERE user_id = ?").bind(target.id).first();
+  const verificationRequest = await env.DB.prepare("SELECT requested_at, otp_expires_at, verified_at FROM email_verification_requests WHERE user_id = ? AND issued_by IS NOT NULL").bind(target.id).first();
+  const actionVerification = await env.DB.prepare("SELECT action, requested_at, otp_expires_at FROM sensitive_action_verifications WHERE user_id = ? AND consumed_at IS NULL AND issued_by IS NOT NULL").bind(target.id).first();
+  const passwordResetRequest = await env.DB.prepare("SELECT requested_at, otp_expires_at, issued_at FROM password_reset_requests WHERE user_id = ? AND issued_by IS NOT NULL").bind(target.id).first();
   const settings = await env.DB.prepare("SELECT withdraw_wallets FROM settings WHERE user_id = ?").bind(target.id).first();
   const actorRole = isPrimaryAdmin(actor) || (await readAdminPermissions(actor, env)).allAdmin ? "admin" : "operator";
   const targetPermissions = (() => { try { return JSON.parse(target.permissions_json || "{}"); } catch { return {}; } })();
@@ -3178,6 +3179,26 @@ async function saveWallet(request, env) {
   const user = await authed(request, env);
   const body = await request.json();
   return await createWalletChangeOtpRequest(env, user, body.wallets || {});
+}
+
+async function resendWalletChangeOtp(request, env) {
+  const user = await authed(request, env);
+  const pending = await env.DB.prepare("SELECT action, otp_expires_at, issued_at FROM sensitive_action_verifications WHERE user_id = ? AND consumed_at IS NULL").bind(user.id).first();
+  if (!pending || pending.action !== "wallet-change") return bad("Non è presente una richiesta di modifica wallet da verificare.");
+  const now = Date.now();
+  if (pending.otp_expires_at && now < Number(pending.otp_expires_at)) return Response.json({ error: "Il codice è ancora valido. Controlla la tua email." }, { status: 429 });
+  if (pending.issued_at && now - Number(pending.issued_at) < 15 * 60 * 1000) return Response.json({ error: "Attendi la scadenza prima di richiedere un nuovo codice." }, { status: 429 });
+  const otp = generateEmailOtp();
+  const salt = genSalt();
+  const otpHash = await hash(otp, salt);
+  const expiresAt = now + 15 * 60 * 1000;
+  await env.DB.prepare("UPDATE sensitive_action_verifications SET otp_hash = ?, otp_salt = ?, otp_expires_at = ?, otp_attempts = 0, issued_at = ?, issued_by = NULL WHERE user_id = ? AND action = 'wallet-change' AND consumed_at IS NULL").bind(otpHash, salt, expiresAt, now, user.id).run();
+  try { await sendOtpEmail(user.identifier, otp, "wallet-change"); }
+  catch (error) {
+    await env.DB.prepare("UPDATE sensitive_action_verifications SET otp_hash = NULL, otp_salt = NULL, otp_expires_at = NULL WHERE user_id = ? AND action = 'wallet-change' AND consumed_at IS NULL").bind(user.id).run();
+    throw error;
+  }
+  return Response.json({ ok: true, expiresAt });
 }
 
 async function requestWalletChange(request, env) {
