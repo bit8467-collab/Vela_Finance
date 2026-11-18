@@ -705,8 +705,16 @@ async function hashAdminSecret(secret, saltHex, iterations = 20000) {
   return [...new Uint8Array(bits)].map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
+function sessionTokenFromRequest(request) {
+  const direct = (request.headers.get("x-session-token") || "").trim();
+  if (direct) return direct;
+  const authorization = (request.headers.get("authorization") || "").trim();
+  const bearer = authorization.match(/^Bearer\s+(.+)$/i);
+  return bearer ? bearer[1].trim() : "";
+}
+
 async function sessionUser(request, env) {
-  const h = (request.headers.get("x-session-token") || "").trim();
+  const h = sessionTokenFromRequest(request);
   if (!h) return null;
   const s = await env.DB.prepare("SELECT user_id, created_at FROM sessions WHERE token = ?").bind(h).first();
   if (!s) return null;
@@ -2067,7 +2075,7 @@ async function login(request, env) {
 async function logout(request, env) {
   let body = {};
   try { body = await request.json(); } catch {}
-  const h = (request.headers.get("x-session-token") || body.sessionToken || "").trim();
+  const h = (sessionTokenFromRequest(request) || body.sessionToken || "").trim();
   const admin = (request.headers.get("x-admin-token") || body.adminToken || "").trim();
   if (h) await env.DB.prepare("DELETE FROM sessions WHERE token = ?").bind(h).run();
   if (admin) await env.DB.prepare("DELETE FROM admin_sessions WHERE token = ?").bind(admin).run();
@@ -3642,7 +3650,8 @@ app.get('/api/asset-prices/stream', (req, res) => {
 app.all('/api/*', async (req, res) => {
   try {
     if (req.method === 'POST' && req.path === '/api/logout') {
-      const sessionToken = String(req.get('x-session-token') || req.body?.sessionToken || '').trim();
+      const authorization = String(req.get('authorization') || '').match(/^Bearer\s+(.+)$/i);
+      const sessionToken = String(req.get('x-session-token') || authorization?.[1] || req.body?.sessionToken || '').trim();
       const adminToken = String(req.get('x-admin-token') || req.body?.adminToken || '').trim();
       if (sessionToken) await env.DB.prepare("DELETE FROM sessions WHERE token = ?").bind(sessionToken).run();
       if (adminToken) await env.DB.prepare("DELETE FROM admin_sessions WHERE token = ?").bind(adminToken).run();
