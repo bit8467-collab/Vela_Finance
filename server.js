@@ -2363,9 +2363,10 @@ async function syncMarketPositions(env, userId) {
     const deposit=Number(wallet.deposit)||0,earnings=Number(wallet.earnings)||0,available=deposit+earnings;
     const added=mode==='balance_pct'?Math.floor((available*setting/100+1e-9)*1000)/1000:Number(setting.toFixed(3));
     if (!(available>0&&added>=0.001&&added<=available+1e-9&&(mode!=='fixed'||setting<=available+1e-9))) continue;
-    const depositPart=Number(Math.min(deposit,added).toFixed(3)),earningsPart=Number((added-depositPart).toFixed(3)),newAmount=Number((amount+added).toFixed(3)),newValue=Number((value+added).toFixed(3));
+    const investmentFee=Number((added*PLATFORM_INVESTMENT_FEE_RATE).toFixed(3)),investedAdded=Number((added-investmentFee).toFixed(3));
+    const depositPart=Number(Math.min(deposit,added).toFixed(3)),earningsPart=Number((added-depositPart).toFixed(3)),newAmount=Number((amount+investedAdded).toFixed(3)),newValue=Number((value+investedAdded).toFixed(3));
     let allocation=[],basis={};try{allocation=JSON.parse(row.allocations_json||'[]');basis=JSON.parse(row.entry_quotes_json||'{}')}catch{continue}
-    const updatedBasis={...basis};let ready=true;for(const [key] of allocation){const current=Number(quotes[key]?.price),old=Number(basis[key])||current;if(!(current>0&&old>0)){ready=false;break}updatedBasis[key]=newAmount/(amount/old+added/current)}if(!ready||!allocation.length)continue;
+    const updatedBasis={...basis};let ready=true;for(const [key] of allocation){const current=Number(quotes[key]?.price),old=Number(basis[key])||current;if(!(current>0&&old>0)){ready=false;break}updatedBasis[key]=newAmount/(amount/old+investedAdded/current)}if(!ready||!allocation.length)continue;
     const basisJson=JSON.stringify(updatedBasis),depositAnchor=Number(row.auto_add_anchor_value)||value;
     const batch=await env.DB.batch([
       env.DB.prepare("UPDATE market_positions SET amount = ?, last_value = ?, entry_quotes_json = ?, basis_updated_at = ?, auto_add_anchor_value = ? WHERE id = ? AND user_id = ? AND status IN ('active','paused') AND last_value = ? AND amount = ? AND auto_add_enabled = 1 AND auto_add_anchor_value = ? AND auto_add_drawdown_pct = ? AND auto_add_mode = ? AND auto_add_value = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND deposit >= ? AND earnings >= ?)")
@@ -2373,9 +2374,12 @@ async function syncMarketPositions(env, userId) {
       env.DB.prepare("UPDATE wallets SET deposit = deposit - ?, earnings = earnings - ? WHERE user_id = ? AND deposit >= ? AND earnings >= ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status IN ('active','paused') AND amount = ? AND last_value = ? AND basis_updated_at = ? AND auto_add_anchor_value = ?)")
         .bind(depositPart,earningsPart,userId,depositPart,earningsPart,row.id,userId,newAmount,newValue,now,newValue),
       env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND amount = ? AND last_value = ? AND basis_updated_at = ? AND auto_add_anchor_value = ?)")
-        .bind(userId,'Automatic top-up added',added.toFixed(3)+' USDT added automatically after a '+drawdown+'% portfolio decline. Funds were taken from available balances.',now,row.id,userId,newAmount,newValue,now,newValue),
+        .bind(userId,'Automatic top-up added',added.toFixed(3)+' USDT charged · platform fee '+investmentFee.toFixed(3)+' USDT · '+investedAdded.toFixed(3)+' USDT invested automatically after a '+drawdown+'% portfolio decline. Funds were taken from available balances.',now,row.id,userId,newAmount,newValue,now,newValue),
     ]);
-    if(batch[0]?.meta?.changes>0){row.amount=newAmount;row.last_value=newValue;row.entry_quotes_json=basisJson;row.basis_updated_at=now;row.auto_add_anchor_value=newValue;}
+    if(batch[0]?.meta?.changes>0&&batch[1]?.meta?.changes>0){
+      try { await recordPlatformInvestmentFee(env,investmentFee); } catch (error) { console.error('Could not record automatic top-up platform fee:',error); }
+      row.amount=newAmount;row.last_value=newValue;row.entry_quotes_json=basisJson;row.basis_updated_at=now;row.auto_add_anchor_value=newValue;
+    }
   }
   return rows.map(row => ({
     id: row.id, planId: row.plan_id, months: Number(row.months), amount: Number(row.amount),
@@ -2435,22 +2439,38 @@ async function saveAdminDepositAddresses(request, env) {
   return Response.json({ ok: true, addresses: await readDepositAddresses(env) });
 }
 
+const PLATFORM_INVESTMENT_FEE_RATE = 0.20;
+function splitPlatformInvestmentAmount(grossValue) {
+  const raw = Number(grossValue);
+  const grossAmount = Number.isFinite(raw) ? Number(raw.toFixed(3)) : raw;
+  const feeAmount = Number.isFinite(grossAmount) ? Number((grossAmount * PLATFORM_INVESTMENT_FEE_RATE).toFixed(3)) : NaN;
+  const investedAmount = Number.isFinite(grossAmount) && Number.isFinite(feeAmount) ? Number((grossAmount - feeAmount).toFixed(3)) : NaN;
+  return { grossAmount, feeAmount, investedAmount };
+}
+async function recordPlatformInvestmentFee(env, feeAmount) {
+  const fee = Number(feeAmount);
+  if (!Number.isFinite(fee) || fee <= 0) return;
+  await env.DB.prepare("INSERT INTO platform_config (config_key, config_value) VALUES ('platform_investment_fee_total', ?) ON CONFLICT(config_key) DO UPDATE SET config_value = CAST(CAST(platform_config.config_value AS REAL) + CAST(excluded.config_value AS REAL) AS TEXT)")
+    .bind(fee.toFixed(3)).run();
+}
+
 async function simpleEarnInvest(request, env) {
   const user = await authed(request, env);
   const body = await request.json().catch(() => ({}));
-  const amount = Number(Number(body.amount).toFixed(3));
+  const { grossAmount, feeAmount: investmentFee, investedAmount: amount } = splitPlatformInvestmentAmount(body.amount);
   const source = body.source === "earnings" ? "earnings" : "deposit";
-  if (!Number.isFinite(amount) || amount < 200 || amount > 1e12) return bad("L'investimento minimo per Simple Earn è 200 USDT.");
+  if (!Number.isFinite(grossAmount) || grossAmount < 200 || grossAmount > 1e12) return bad("L'investimento minimo per Simple Earn è 200 USDT.");
   const wallet = await accrue(env, user.id);
-  if (amount > Number(wallet[source] || 0) + 1e-9) return bad("Saldo disponibile insufficiente.");
+  if (grossAmount > Number(wallet[source] || 0) + 1e-9) return bad("Saldo disponibile insufficiente.");
   const dailyRate = amount <= 500 ? 0.0019 : amount <= 1000 ? 0.0024 : amount <= 2500 ? 0.0029 : 0.0036;
   const now = Date.now();
   const results = await env.DB.batch([
-    env.DB.prepare("INSERT INTO simple_earn_positions (user_id, principal, source, daily_rate, status, created_at) SELECT ?, ?, ?, ?, 'active', ? WHERE EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + source + " >= ?)").bind(user.id, amount, source, dailyRate, now, user.id, amount),
-    env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?").bind(amount, user.id, amount)
+    env.DB.prepare("INSERT INTO simple_earn_positions (user_id, principal, source, daily_rate, status, created_at) SELECT ?, ?, ?, ?, 'active', ? WHERE EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + source + " >= ?)").bind(user.id, amount, source, dailyRate, now, user.id, grossAmount),
+    env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?").bind(grossAmount, user.id, grossAmount)
   ]);
   if (!(results[0]?.meta?.changes > 0) || !(results[1]?.meta?.changes > 0)) return bad("Saldo insufficiente o account aggiornato. Aggiorna e riprova.");
-  return Response.json({ ok: true, positionId: results[0]?.meta?.last_row_id || null, principal: amount, dailyRate });
+  try { await recordPlatformInvestmentFee(env, investmentFee); } catch (error) { console.error('Could not record Simple Earn platform fee:', error); }
+  return Response.json({ ok: true, positionId: results[0]?.meta?.last_row_id || null, principal: amount, grossAmount, investmentFee, dailyRate });
 }
 
 async function simpleEarnRedeem(request, env) {
@@ -2472,7 +2492,7 @@ async function simpleEarnRedeem(request, env) {
 async function marketInvest(request, env) {
   const user = await authed(request, env);
   const body = await request.json();
-  const amount = Number(Number(body.amount).toFixed(3));
+  const { grossAmount, feeAmount: investmentFee, investedAmount: amount } = splitPlatformInvestmentAmount(body.amount);
   const months = Number(body.months);
   if (body.riskAcknowledged !== true) return bad('È necessario confermare di aver compreso i rischi prima di avviare il piano.');
   const riskLevel = typeof body.riskLevel === 'string' ? body.riskLevel : 'balanced';
@@ -2493,11 +2513,11 @@ async function marketInvest(request, env) {
     }
     if (Math.abs(allocation.reduce((sum, item) => sum + item[1], 0) - 100) > 0.01) return bad('Le percentuali degli asset devono sommare esattamente 100%.');
   }
-  if (!Number.isFinite(amount) || amount < 50) return bad("L'importo minimo è 50 USDT.");
+  if (!Number.isFinite(grossAmount) || grossAmount < 50) return bad("L'importo minimo è 50 USDT.");
   if (!Number.isFinite(stopLossPct)) return bad("Profilo stop-loss non disponibile.");
   const source = body.source === 'earnings' ? 'earnings' : 'deposit';
   const wallet = await accrue(env, user.id);
-  if (amount > Number(wallet[source] || 0) + 1e-9) return bad("Saldo disponibile insufficiente.");
+  if (grossAmount > Number(wallet[source] || 0) + 1e-9) return bad("Saldo disponibile insufficiente.");
   const electricityMarket = normalizeElectricityMarket(body.electricityMarket);
   const quotes = await currentMarketQuotes(electricityMarket);
   const entry = { __electricityMarket: electricityMarket };
@@ -2511,13 +2531,14 @@ async function marketInvest(request, env) {
     env.DB.prepare(
       "INSERT INTO market_positions (user_id, plan_id, months, amount, stop_loss_pct, risk_level, allocations_json, entry_quotes_json, last_value, status, created_at, basis_updated_at) " +
       "SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ? WHERE EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + source + " >= ?)"
-    ).bind(user.id, 'plan-' + months + 'm', months, amount, stopLossPct, riskLevel, JSON.stringify(allocation), JSON.stringify(entry), amount, now, now, user.id, amount),
-    env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?").bind(amount, user.id, amount),
+    ).bind(user.id, 'plan-' + months + 'm', months, amount, stopLossPct, riskLevel, JSON.stringify(allocation), JSON.stringify(entry), amount, now, now, user.id, grossAmount),
+    env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?").bind(grossAmount, user.id, grossAmount),
   ]);
   if (!(results[0]?.meta?.changes > 0) || !(results[1]?.meta?.changes > 0)) return bad("Saldo insufficiente o modifica concorrente dell'account. Aggiorna e riprova.");
+  try { await recordPlatformInvestmentFee(env, investmentFee); } catch (error) { console.error('Could not record market investment platform fee:', error); }
   await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
-    .bind(user.id, "Market plan started", amount.toFixed(3) + " USDT · duration " + months + " months · risk " + riskLevel + " · fixed stop-loss " + stopLossPct + "%.", now).run();
-  return Response.json({ ok: true, positionId: results[0]?.meta?.last_row_id || null });
+    .bind(user.id, "Market plan started", grossAmount.toFixed(3) + " USDT charged · platform fee " + investmentFee.toFixed(3) + " USDT · " + amount.toFixed(3) + " USDT invested · duration " + months + " months · risk " + riskLevel + " · fixed stop-loss " + stopLossPct + "%.", now).run();
+  return Response.json({ ok: true, positionId: results[0]?.meta?.last_row_id || null, amount, grossAmount, investmentFee });
 }
 
 async function customMarketInvest(request, env) {
@@ -2525,11 +2546,12 @@ async function customMarketInvest(request, env) {
   const body = await request.json().catch(() => ({}));
   if (body.riskAcknowledged !== true) return bad('È necessario confermare di aver compreso i rischi prima di avviare il piano.');
   const months = Number(body.months);
-  const principal = Number(Number(body.amount).toFixed(3));
+  const grossPrincipal = Number(Number(body.amount).toFixed(3));
+  const { feeAmount: investmentFee, investedAmount: principal } = splitPlatformInvestmentAmount(grossPrincipal);
   const stopLossPct = Number(body.stopLossPct);
   const fee = CUSTOM_PLAN_FEES[months];
   if (!fee) return bad('Durata del piano personalizzato non valida.');
-  if (!Number.isFinite(principal) || principal < 1000) return bad('L’investimento minimo per un portafoglio personalizzato è 1.000 USDT.');
+  if (!Number.isFinite(grossPrincipal) || grossPrincipal < 1000) return bad('L’investimento minimo per un portafoglio personalizzato è 1.000 USDT.');
   if (!Number.isFinite(stopLossPct) || stopLossPct < 1 || stopLossPct > 90) return bad('Lo stop loss deve essere tra 1% e 90%.');
   const source = body.source === 'earnings' ? 'earnings' : 'deposit';
   const rawAllocations = Array.isArray(body.allocations) ? body.allocations : [];
@@ -2544,7 +2566,7 @@ async function customMarketInvest(request, env) {
   }
   const allocationTotal = allocations.reduce((sum, item) => sum + item[1], 0);
   if (Math.abs(allocationTotal - 100) > 0.01) return bad('Le percentuali degli asset devono sommare esattamente 100%.');
-  const totalCharge = Number((principal + fee).toFixed(3));
+  const totalCharge = Number((grossPrincipal + fee).toFixed(3));
   const wallet = await accrue(env, user.id);
   if (totalCharge > Number(wallet[source] || 0) + 1e-9) return bad('Saldo insufficiente: servono ' + totalCharge.toFixed(3) + ' USDT, inclusa la quota del piano.');
   const electricityMarket = normalizeElectricityMarket(body.electricityMarket);
@@ -2564,15 +2586,17 @@ async function customMarketInvest(request, env) {
       .bind(totalCharge, user.id, totalCharge),
   ]);
   if (!(results[0]?.meta?.changes > 0) || !(results[1]?.meta?.changes > 0)) return bad('Saldo insufficiente o modifica concorrente dell’account. Aggiorna e riprova.');
+  try { await recordPlatformInvestmentFee(env, investmentFee); } catch (error) { console.error('Could not record custom investment platform fee:', error); }
   await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
-    .bind(user.id, 'Custom market portfolio started', principal.toFixed(3) + ' USDT invested · plan fee ' + fee.toFixed(3) + ' USDT · duration ' + months + ' months · stop loss ' + stopLossPct + '%.', now).run();
-  return Response.json({ ok: true, positionId: results[0]?.meta?.last_row_id || null, amount: principal, fee, totalCharged: totalCharge });
+    .bind(user.id, 'Custom market portfolio started', grossPrincipal.toFixed(3) + ' USDT principal charged · platform fee ' + investmentFee.toFixed(3) + ' USDT · ' + principal.toFixed(3) + ' USDT invested · plan fee ' + fee.toFixed(3) + ' USDT · duration ' + months + ' months · stop loss ' + stopLossPct + '%.', now).run();
+  return Response.json({ ok: true, positionId: results[0]?.meta?.last_row_id || null, amount: principal, grossAmount: grossPrincipal, investmentFee, fee, totalCharged: totalCharge });
 }
 
 async function addMarketFunds(request, env) {
   const user = await authed(request, env);
   const body = await request.json();
   const id = Number(body.positionId), amount = Number(Number(body.amount).toFixed(3));
+  const { feeAmount: investmentFee, investedAmount } = splitPlatformInvestmentAmount(amount);
   const source = body.source === 'earnings' ? 'earnings' : 'deposit';
   if (!Number.isInteger(id) || id < 1 || !Number.isFinite(amount) || amount < 1) return bad("Importo o piano non valido.");
   const initialPosition = await env.DB.prepare("SELECT * FROM market_positions WHERE id = ? AND user_id = ? AND status IN ('active','paused')").bind(id, user.id).first();
@@ -2602,12 +2626,12 @@ async function addMarketFunds(request, env) {
       const current = Number(quotes[key]?.price);
       if (!(current > 0)) return await reject("Prezzi live temporaneamente non disponibili.");
       const old = Number(basis[key]) || current;
-      updatedBasis[key] = (Number(position.amount) + amount) / (Number(position.amount) / old + amount / current);
+      updatedBasis[key] = (Number(position.amount) + investedAmount) / (Number(position.amount) / old + investedAmount / current);
     }
     if (!allocation.length) return await reject("Valore di mercato non disponibile.");
     const currentValue = marketPositionValue(position, quotes);
     if (!Number.isFinite(currentValue) || currentValue <= 0) return await reject("Valore di mercato non disponibile.");
-    const now = Date.now(), newAmount = Number((Number(position.amount) + amount).toFixed(3)), newValue = Number((currentValue + amount).toFixed(3));
+    const now = Date.now(), newAmount = Number((Number(position.amount) + investedAmount).toFixed(3)), newValue = Number((currentValue + investedAmount).toFixed(3));
     const updated = await tx.execute({
       sql: "UPDATE market_positions SET amount = ?, last_value = ?, entry_quotes_json = ?, basis_updated_at = ?, auto_add_anchor_value = ?, status = 'active', closed_at = NULL WHERE id = ? AND user_id = ? AND status IN ('active','paused')",
       args: [newAmount, newValue, JSON.stringify(updatedBasis), now, newValue, id, user.id]
@@ -2620,11 +2644,15 @@ async function addMarketFunds(request, env) {
     if (debited.rowsAffected !== 1) return await reject("Saldo disponibile insufficiente.");
     const notification = await tx.execute({
       sql: "INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)",
-      args: [user.id, 'Additional funds added', amount.toFixed(3) + ' USDT added manually to market portfolio #' + id + '.', now]
+      args: [user.id, 'Additional funds added', amount.toFixed(3) + ' USDT charged · platform fee ' + investmentFee.toFixed(3) + ' USDT · ' + investedAmount.toFixed(3) + ' USDT added to market portfolio #' + id + '.', now]
+    });
+    await tx.execute({
+      sql: "INSERT INTO platform_config (config_key, config_value) VALUES ('platform_investment_fee_total', ?) ON CONFLICT(config_key) DO UPDATE SET config_value = CAST(CAST(platform_config.config_value AS REAL) + CAST(excluded.config_value AS REAL) AS TEXT)",
+      args: [investmentFee.toFixed(3)]
     });
     await tx.commit();
     if (notification.lastInsertRowid != null) publishNotification(user.id, notification.lastInsertRowid);
-    return Response.json({ ok: true });
+    return Response.json({ ok: true, grossAmount: amount, investmentFee, amount: investedAmount });
   } catch (error) {
     try { await tx.rollback(); } catch {}
     throw error;
@@ -2679,7 +2707,7 @@ async function closeMarketPositionEarly(request, env) {
   const quotes = await currentMarketQuotes(positionElectricityMarket(position));
   const value = Number(marketPositionValue(position, quotes).toFixed(3));
   if (!(value > 0)) return bad('Il valore di riferimento non è disponibile per la chiusura.');
-  const fee = Number((value * 0.65).toFixed(3));
+  const fee = Number((value * 0.35).toFixed(3));
   const net = Number((value - fee).toFixed(3));
   const now = Date.now();
   const transactionId = makeToken();
@@ -2689,7 +2717,7 @@ async function closeMarketPositionEarly(request, env) {
     env.DB.prepare("UPDATE wallets SET released = MAX(0, released - ?), earnings = earnings + ? WHERE user_id = ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'early_closed' AND last_redemption_id = ?)")
       .bind(value, net, user.id, id, user.id, transactionId),
     env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'early_closed' AND last_redemption_id = ?)")
-      .bind(user.id, 'Plan closed early', 'Current reference value ' + value.toFixed(3) + ' USDT; 65% early-closure fee ' + fee.toFixed(3) + ' USDT; net credited to earnings balance and available for withdrawal request ' + net.toFixed(3) + ' USDT. No external payout was made.', now, id, user.id, transactionId),
+      .bind(user.id, 'Plan closed early', 'Current reference value ' + value.toFixed(3) + ' USDT; 35% early-closure fee ' + fee.toFixed(3) + ' USDT; net credited to earnings balance and available for withdrawal request ' + net.toFixed(3) + ' USDT. No external payout was made.', now, id, user.id, transactionId),
   ]);
   if (!(batch[0]?.meta?.changes > 0)) return Response.json({ error: 'Il piano è cambiato. Aggiorna e riprova.' }, { status: 409 });
   return Response.json({ ok: true, referenceValue: value, fee, net });

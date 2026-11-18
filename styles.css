@@ -1789,7 +1789,7 @@ button[data-redeem-earnings]:disabled { opacity:.55; cursor:not-allowed; }
 .custom-portfolio-fields { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 7px; }
 .custom-portfolio-fields label { min-width: 0; display: grid; gap: 4px; color: var(--muted); font-size: 8px; }
 .custom-portfolio-fields input, .custom-portfolio-fields select { min-width: 0; width: 100%; min-height: 33px; border: 1px solid color-mix(in srgb, var(--line) 78%, #c9ad75 22%); border-radius: 8px; background: var(--bg); padding: 0 7px; color: var(--text); font-size: 9px; }
-.custom-portfolio-billing { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 6px; }
+.custom-portfolio-billing { display: grid; grid-template-columns: repeat(auto-fit,minmax(95px,1fr)); gap: 6px; }
 .custom-portfolio-billing > div { min-width: 0; display: grid; gap: 3px; border: 1px solid var(--line); border-radius: 8px; background: color-mix(in srgb, var(--surface-2) 82%, transparent); padding: 7px 8px; }
 .custom-portfolio-billing small { color: var(--muted); font-size: 7px; }
 .custom-portfolio-billing b { overflow-wrap: anywhere; color: var(--text); font-size: 9px; font-variant-numeric: tabular-nums; }
@@ -3454,3 +3454,8 @@ body.asset-catalog-open{overflow:hidden}
 .payment-admin-config-card .primary-button{margin-top:4px}
 .payment-admin-config-status:empty{display:none}
 @media(max-width:560px){.payment-admin-config{grid-template-columns:minmax(0,1fr)}.payment-admin-config-row{grid-template-columns:1fr}.payment-admin-config-row .outline-button{width:100%}}
+
+/* Clear gross-to-net investment breakdowns. */
+.investment-fee-preview { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 5px 12px; margin: 2px 0 7px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; background: color-mix(in srgb, var(--surface-2) 84%, transparent); }
+.investment-fee-preview p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.4; }
+.investment-fee-preview b { color: var(--text); font-variant-numeric: tabular-nums; }

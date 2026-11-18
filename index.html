@@ -347,7 +347,7 @@
             <p class="simple-earn-copy">Deposita almeno 200 USDT. Il tasso giornaliero dipende dall’importo: 0,19% da 200 a 500 USDT; 0,24% da 501 a 1.000 USDT; 0,29% da 1.001 a 2.500 USDT; 0,36% da 2.501 USDT in su. Puoi riscattare in qualsiasi momento il capitale insieme agli interessi maturati.</p>
             <div class="simple-earn-details">
               <div class="simple-earn-facts"><span>200–500 USDT <b>0,19% / giorno</b></span><span>501–1.000 USDT <b>0,24% / giorno</b></span><span>1.001–2.500 USDT <b>0,29% / giorno</b></span><span>A partire da 2.501 USDT <b>0,36% / giorno</b></span><span>Riscatto flessibile <b>in qualsiasi momento</b></span></div>
-              <form id="simple-earn-form" class="simple-earn-form"><label>Importo (USDT)<input id="simple-earn-amount" type="number" min="200" step="0.001" value="200" required></label><label>Investi da<select id="simple-earn-source"><option value="deposit">Saldo disponibile</option><option value="earnings">Saldo riscattabile</option></select></label><button class="primary-button" type="submit">Attiva Simple Earn</button></form>
+              <form id="simple-earn-form" class="simple-earn-form"><label>Importo (USDT)<input id="simple-earn-amount" type="number" min="200" step="0.001" value="200" required></label><div class="investment-fee-preview"><p><span id="simple-earn-fee-label">Platform fee (20%)</span>: <b id="simple-earn-fee">0.00 USDT</b></p><p><span id="simple-earn-net-label">Net invested</span>: <b id="simple-earn-net">0.00 USDT</b></p></div><label>Investi da<select id="simple-earn-source"><option value="deposit">Saldo disponibile</option><option value="earnings">Saldo riscattabile</option></select></label><button class="primary-button" type="submit">Attiva Simple Earn</button></form>
               <p class="simple-earn-disclaimer">Interessi calcolati in modo semplice al tasso indicato. Il saldo è interno alla piattaforma: Simple Earn qui non è un prodotto Binance o di un exchange esterno e il rendimento non è garantito.</p>
               <p class="form-error" id="simple-earn-error" role="alert"></p>
             </div>
@@ -705,6 +705,7 @@
         <p class="plan-terms" id="plan-terms"></p>
         <label for="invest-amount">Investment amount (USDT)</label>
         <input id="invest-amount" type="number" inputmode="decimal" min="0.000001" step="any" placeholder="Amount" required>
+        <div class="investment-fee-preview"><p><span id="invest-fee-label">Platform fee (20%)</span>: <b id="invest-fee">0.00 USDT</b></p><p><span id="invest-net-label">Net invested</span>: <b id="invest-net">0.00 USDT</b></p></div>
         <label for="invest-source">Pay from</label><select id="invest-source"><option value="deposit">Available balance</option><option value="earnings">Redeemable balance</option></select>
         <p class="available-line">Available: <b id="invest-available">0.00 USDT</b></p>
         <label for="invest-risk">Risk level</label><select id="invest-risk"><option value="conservative">Conservative · 8% stop</option><option value="balanced" selected>Balanced · 18% stop</option><option value="aggressive">Aggressive · 35% stop</option></select>
@@ -712,7 +713,7 @@
         <label class="risk-acknowledgement"><input id="plan-risk-ack" type="checkbox" required><span>I understand that market values can fall, losses are possible, and displayed tracking values are not guaranteed returns or assets held by the platform.</span></label>
         <p class="form-error" id="plan-error" role="alert"></p>
         <button class="primary-button" id="confirm-plan-button" type="submit">Confirm plan</button>
-        <p class="modal-footnote">Plans are market-tracking records based on public quotes; no market orders or external payments are executed. All plans pause at their stop and resume after recovery, with tracked value held at or above the configured stop threshold. Early closure has a 65% fee on the current reference value.</p>
+        <p class="modal-footnote">Plans are market-tracking records based on public quotes; no market orders or external payments are executed. All plans pause at their stop and resume after recovery, with tracked value held at or above the configured stop threshold. Early closure has a 35% fee on the current reference value.</p>
       </form>
     </dialog>
 
@@ -723,6 +724,7 @@
         <p class="plan-terms" id="add-funds-plan-terms"></p>
         <label for="add-funds-amount">Additional amount (USDT)</label>
         <input id="add-funds-amount" type="number" inputmode="decimal" min="0.01" step="0.01" placeholder="Amount" required>
+        <div class="investment-fee-preview"><p><span id="add-funds-fee-label">Platform fee (20%)</span>: <b id="add-funds-fee">0.00 USDT</b></p><p><span id="add-funds-net-label">Net invested</span>: <b id="add-funds-net">0.00 USDT</b></p></div>
         <label for="add-funds-source">Pay from</label><select id="add-funds-source"><option value="deposit">Available balance</option><option value="earnings">Redeemable balance</option></select>
         <p class="available-line">Available: <b id="add-funds-available">0.00 USDT</b></p>
         <p class="form-error" id="add-funds-error" role="alert"></p>
@@ -771,8 +773,8 @@
           <div id="investment-asset-history-list" class="investment-asset-history-grid"></div>
         </details>
         
-        <div class="investment-detail-actions"><button class="primary-button" id="investment-detail-redeem-gains" type="button" hidden>Redeem gains</button><button class="outline-button" id="investment-detail-add-funds" type="button" hidden>Add funds</button><button class="danger-button" id="investment-detail-close-early" type="button" hidden>Close early · 65% fee</button></div>
-        <p class="modal-footnote">The platform tracks reference quotes; it does not purchase or custody these assets. Closing early deducts 65% of current reference value; the remainder stays in the internal balance.</p>
+        <div class="investment-detail-actions"><button class="primary-button" id="investment-detail-redeem-gains" type="button" hidden>Redeem gains</button><button class="outline-button" id="investment-detail-add-funds" type="button" hidden>Add funds</button><button class="danger-button" id="investment-detail-close-early" type="button" hidden>Close early · 35% fee</button></div>
+        <p class="modal-footnote">The platform tracks reference quotes; it does not purchase or custody these assets. Closing early deducts 35% of current reference value; the remainder stays in the internal balance.</p>
       </div>
     </dialog>
 
