@@ -2376,7 +2376,6 @@ window.addEventListener('vela:message',event=>{
 });
 function initSupportVelaBridge(){if(supportVelaFrame.contentWindow)supportVelaFrame.contentWindow.postMessage({type:'vela:init'},supportVelaOrigin)}
 supportVelaFrame.addEventListener('load',()=>{supportVelaReady=false;initSupportVelaBridge()});
-setTimeout(()=>{if(!supportVelaReady)initSupportVelaBridge()},1200);
 window.askVela=(text,id)=>supportVelaFrame.contentWindow.postMessage({type:'vela:send',text,id},supportVelaOrigin);
 function waitForSupportVela(){if(supportVelaReady)return Promise.resolve();return new Promise((resolve,reject)=>{const waiter={resolve,reject,timer:setTimeout(()=>{const index=supportVelaReadyWaiters.indexOf(waiter);if(index>=0)supportVelaReadyWaiters.splice(index,1);reject(new Error('Assistente Vela non connesso. Riprova tra poco.'))},20000)};supportVelaReadyWaiters.push(waiter)})}
 function requestSupportVelaReply(text){return waitForSupportVela().then(()=>new Promise((resolve,reject)=>{const id='support-'+Date.now()+'-'+Math.random().toString(36).slice(2);const pending={resolve:value=>{clearTimeout(pending.timer);supportVelaPending.delete(id);resolve(value)},reject:error=>{clearTimeout(pending.timer);supportVelaPending.delete(id);reject(error)},timer:setTimeout(()=>{supportVelaPending.delete(id);reject(new Error('La risposta di Vela è scaduta. Riprova.'))},60000)};supportVelaPending.set(id,pending);window.askVela(text,id)}))}
