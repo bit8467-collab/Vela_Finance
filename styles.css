@@ -3440,3 +3440,48 @@ body.asset-catalog-open{overflow:hidden}
 .promoter-package-card .text-button { align-self:center; }
 #promoter-package-skip { color:var(--muted); }
 @media(max-width:480px){.promoter-package-options{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.promoter-package-option{padding:10px;border-radius:12px}.promoter-package-option .package-price{font-size:18px}.promoter-package-option .package-limit b{font-size:28px}}
+
+/* Compact admin control panel — intentionally scoped to admin views. */
+#view-admin.active{gap:10px;min-height:0;padding-bottom:12px}
+#view-admin>.page-heading{margin:0 0 2px;min-height:0}
+#view-admin>.page-heading h1{font-size:clamp(22px,2.4vw,30px);line-height:1.08;margin:0}
+#view-admin .admin-workspace-shell{grid-template-columns:minmax(150px,190px) minmax(0,1fr);gap:10px;align-items:start}
+#view-admin .admin-workspace-nav-list{gap:3px;padding:5px}
+#view-admin .admin-workspace-nav-list button,#view-admin .admin-workspace-nav-list a{min-height:34px;padding:7px 9px;border-radius:8px;font-size:12px;line-height:1.25}
+#view-admin .admin-workspace-stage{min-height:0;max-height:calc(100dvh - 138px);overflow:auto;overscroll-behavior:contain;padding:0;border-radius:12px}
+#view-admin .admin-workspace-stage>.admin-section,#view-admin .admin-workspace-stage>.admin-section:not([id]){padding:12px 14px!important;margin:0;gap:10px;border-radius:12px;box-shadow:none}
+#view-admin .admin-section h2,#view-admin .admin-section h3{margin:0;line-height:1.2}
+#view-admin .admin-section .section-heading{margin:0 0 7px;gap:8px}
+#view-admin .admin-section p{margin:4px 0;line-height:1.4}
+#view-admin .admin-section table{font-size:12px}
+#view-admin .admin-section th,#view-admin .admin-section td{padding:7px 8px;line-height:1.3}
+#view-admin .admin-section input:not([type=checkbox]),#view-admin .admin-section select,#view-admin .admin-section textarea{min-height:34px;padding:7px 9px}
+#view-admin .admin-section button{min-height:32px;padding:6px 10px;border-radius:8px}
+#view-admin .admin-section .admin-request,#view-admin .admin-section .admin-stat-card,#view-admin .admin-section .payment-desk-card{box-shadow:none}
+#view-admin .admin-section .admin-request{padding:10px 11px;gap:8px}
+#view-admin .admin-section .role-chip,#view-admin .admin-section .verification-pill{font-size:11px}
+#view-admin .admin-workspace-stage>.admin-section[hidden]{display:none!important}
+#admin-payment-desk{padding:14px!important;gap:10px}
+#admin-payment-desk .payment-auto-control{align-items:flex-start;gap:14px;padding:11px 12px;margin:0;border-radius:10px;box-shadow:none}
+#admin-payment-desk .payment-auto-control>div{display:grid;gap:5px;min-width:0;flex:1}
+#admin-payment-desk .payment-auto-control small{line-height:1.35}
+#admin-payment-desk .payment-delay-control{display:flex;align-items:center;flex-wrap:wrap;gap:7px;margin-top:3px}
+#admin-payment-desk .payment-delay-control span{font-size:12px;font-weight:600}
+#admin-payment-desk .payment-delay-control select{min-height:32px;padding:5px 8px}
+#admin-payment-desk .payment-delay-control button{min-height:31px;padding:5px 10px}
+#admin-payment-desk .payment-desk-sections{gap:10px}
+#admin-payment-desk .payment-desk-group{padding:10px;border-radius:10px;box-shadow:none}
+#admin-payment-desk .payment-desk-card{padding:10px;border-radius:9px;box-shadow:none}
+#admin-payment-desk .payment-desk-card header{margin-bottom:7px}
+#admin-payment-desk .payment-desk-meta{gap:5px 10px;font-size:11px}
+#admin-payment-desk .payment-desk-status{margin:7px 0;font-size:12px}
+#admin-payment-desk .payment-desk-actions{gap:6px}
+#admin-payment-desk .payment-hash-entry{margin:7px 0;gap:4px;font-size:11px}
+@media(max-width:760px){
+ #view-admin .admin-workspace-shell{grid-template-columns:minmax(0,1fr);gap:8px}
+ #view-admin .admin-workspace-nav-list{display:flex;overflow:auto;white-space:nowrap;scrollbar-width:thin}
+ #view-admin .admin-workspace-stage{max-height:none;overflow:visible}
+ #view-admin .admin-workspace-stage>.admin-section,#view-admin .admin-workspace-stage>.admin-section:not([id]){padding:10px!important}
+ #admin-payment-desk .payment-auto-control{flex-direction:column}
+ #admin-payment-desk .payment-desk-sections{grid-template-columns:minmax(0,1fr)}
+}

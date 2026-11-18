@@ -747,9 +747,9 @@ async function privilegedAdminActor(request, env) {
   return permissions.allAdmin ? actor : null;
 }
 
-const ADMIN_PERMISSION_KEYS = ["fullPanel", "requests", "walletChanges", "otp", "support", "users", "antifraud", "allAdmin"];
+const ADMIN_PERMISSION_KEYS = ["fullPanel", "requests", "paymentDesk", "walletChanges", "otp", "support", "users", "antifraud", "allAdmin"];
 async function readAdminPermissions(actor, env) {
-  if (isPrimaryAdmin(actor)) return { fullPanel: true, requests: true, walletChanges: true, otp: true, support: true, users: true, allAdmin: true };
+  if (isPrimaryAdmin(actor)) return { fullPanel: true, requests: true, paymentDesk: true, walletChanges: true, otp: true, support: true, users: true, allAdmin: true };
   const role = await env.DB.prepare("SELECT role, permissions_json FROM admin_roles WHERE user_id = ?").bind(actor.id).first();
   let stored = {};
   try { stored = JSON.parse(role?.permissions_json || "{}"); } catch {}
@@ -762,6 +762,7 @@ async function adminAccess(request, env, permission) {
   const actor = await adminActor(request, env);
   if (!actor) return null;
   const permissions = await readAdminPermissions(actor, env);
+  if (permission === "paymentDesk") return permissions.paymentDesk ? actor : null;
   if (permission === "antifraud") {
     const assignedRole = await env.DB.prepare("SELECT role FROM admin_roles WHERE user_id = ?").bind(actor.id).first();
     if (isPrimaryAdmin(actor) || assignedRole?.role === "admin" || permissions.allAdmin === true || permissions.fullPanel === true || permissions.antifraud === true) return actor;
@@ -903,7 +904,7 @@ async function fullState(env, user, request) {
     env.DB.prepare("SELECT action, payload_json, requested_at, issued_at, otp_expires_at FROM sensitive_action_verifications WHERE user_id = ? AND consumed_at IS NULL").bind(user.id).first(),
   ]);
   const simpleEarnRows = simpleEarnResult.results || [];
-  const simpleEarnPositions = simpleEarnRows.map(position => { const elapsed = Math.max(0, Date.now() - Number(position.created_at)); const accruedInterest = Number((Number(position.principal) * Number(position.daily_rate) * elapsed / 86400000).toFixed(3)); return { ...position, accruedInterest, currentValue: Number((Number(position.principal) + accruedInterest).toFixed(3)) }; });
+  const simpleEarnPositions = simpleEarnRows.map(position => { const elapsed = Math.max(0, Date.now() - Number(position.created_at)); const accruedInterest = Number((Number(position.principal) * Number(position.daily_rate) * elapsed / 86400000).toFixed(3)); return { ...position, openingWithholding: Number(position.opening_withholding || 0), grossAmount: Number((Number(position.principal) + Number(position.opening_withholding || 0)).toFixed(3)), accruedInterest, currentValue: Number((Number(position.principal) + accruedInterest).toFixed(3)) }; });
   const redemptionRows = redemptionResult.results || [];
   const redemptionsByPosition = new Map();
   for (const row of redemptionRows) {
@@ -1133,7 +1134,8 @@ const workerHandler = {
           status TEXT NOT NULL DEFAULT 'active',
           created_at INTEGER NOT NULL,
           closed_at INTEGER,
-          interest_paid REAL NOT NULL DEFAULT 0
+          interest_paid REAL NOT NULL DEFAULT 0,
+          opening_withholding REAL NOT NULL DEFAULT 0
         );`,
         `CREATE INDEX IF NOT EXISTS simple_earn_user_status ON simple_earn_positions(user_id, status, created_at DESC);`,
         `CREATE TABLE IF NOT EXISTS market_positions (
@@ -1156,6 +1158,7 @@ const workerHandler = {
           auto_redeem_enabled INTEGER NOT NULL DEFAULT 0,
           auto_redeem_pct REAL NOT NULL DEFAULT 10,
           custom_fee REAL NOT NULL DEFAULT 0,
+          opening_withholding REAL NOT NULL DEFAULT 0,
           auto_add_enabled INTEGER NOT NULL DEFAULT 0,
           auto_add_drawdown_pct REAL NOT NULL DEFAULT 10,
           auto_add_mode TEXT NOT NULL DEFAULT 'fixed',
@@ -1320,6 +1323,8 @@ const workerHandler = {
     try { await env.DB.prepare("ALTER TABLE settings ADD COLUMN auto_redeem_pct REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN fee_amount REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN charged_amount REAL NOT NULL DEFAULT 0").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN auto_approve_at INTEGER NOT NULL DEFAULT 0").run(); } catch {}
+    try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_withdrawals_auto_approval ON withdrawals(status, transfer_status, auto_approve_at)").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE support_threads ADD COLUMN final_message_id INTEGER").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE support_threads ADD COLUMN support_operator_id TEXT").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE support_threads ADD COLUMN support_operator_username TEXT").run(); } catch {}
@@ -1337,6 +1342,7 @@ const workerHandler = {
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN source TEXT NOT NULL DEFAULT 'earnings'").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN tx_reference TEXT NOT NULL DEFAULT ''").run(); } catch {}
     await env.DB.prepare("UPDATE withdrawals SET transfer_status = 'sent' WHERE status = 'pending' AND tx_reference != '' AND transfer_status = 'pending'").run();
+    try { await env.DB.prepare("ALTER TABLE simple_earn_positions ADD COLUMN opening_withholding REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN risk_level TEXT NOT NULL DEFAULT 'legacy'").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN early_close_fee REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN last_redemption_id TEXT NOT NULL DEFAULT ''").run(); } catch {}
@@ -1344,6 +1350,7 @@ const workerHandler = {
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_redeem_enabled INTEGER NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_redeem_pct REAL NOT NULL DEFAULT 10").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN custom_fee REAL NOT NULL DEFAULT 0").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN opening_withholding REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_add_enabled INTEGER NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_add_drawdown_pct REAL NOT NULL DEFAULT 10").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_add_mode TEXT NOT NULL DEFAULT 'fixed'").run(); } catch {}
@@ -1358,7 +1365,7 @@ const workerHandler = {
         CREATE TRIGGER market_position_release AFTER UPDATE OF status ON market_positions
         WHEN OLD.status IN ('active','paused') AND NEW.status IN ('matured','stop_loss','early_closed')
         BEGIN
-          UPDATE wallets SET released = released + MAX(0, ROUND(NEW.last_value - NEW.early_close_fee - ROUND(MIN(NEW.last_value, NEW.amount * 0.20), 3), 3)) WHERE user_id = NEW.user_id;
+          UPDATE wallets SET released = released + MAX(0, ROUND(NEW.last_value - NEW.early_close_fee, 3)) WHERE user_id = NEW.user_id;
         END;
       `);
     } catch {}
@@ -2369,7 +2376,7 @@ async function syncMarketPositions(env, userId) {
     if(batch[0]?.meta?.changes>0){row.amount=newAmount;row.last_value=newValue;row.entry_quotes_json=basisJson;row.basis_updated_at=now;row.auto_add_anchor_value=newValue;}
   }
   return rows.map(row => ({
-    id: row.id, planId: row.plan_id, months: Number(row.months), amount: Number(row.amount),
+    id: row.id, planId: row.plan_id, months: Number(row.months), amount: Number(row.amount), openingWithholding: Number(row.opening_withholding || 0), grossAmount: Number((Number(row.amount) + Number(row.opening_withholding || 0) + Number(row.custom_fee || 0)).toFixed(3)),
     stopLossPct: Number(row.stop_loss_pct), riskLevel: row.risk_level || 'legacy', earlyCloseFee: Number(row.early_close_fee || 0), basisUpdatedAt: Number(row.basis_updated_at || row.created_at), entryQuotes: (() => { try { return JSON.parse(row.entry_quotes_json || '{}'); } catch { return {}; } })(), currentValue: Number(row.last_value),
     autoRedeemEnabled: Number(row.auto_redeem_enabled) === 1, autoRedeemPct: Number(row.auto_redeem_pct || 10), autoAddEnabled: Number(row.auto_add_enabled) === 1, autoAddDrawdownPct: Number(row.auto_add_drawdown_pct || 10), autoAddMode: row.auto_add_mode === 'balance_pct' ? 'balance_pct' : 'fixed', autoAddValue: Number(row.auto_add_value || 10), autoAddAnchorValue: Number(row.auto_add_anchor_value || row.last_value || row.amount), customFee: Number(row.custom_fee || 0),
     status: row.status, createdAt: Number(row.created_at), closedAt: row.closed_at ? Number(row.closed_at) : null,
@@ -2432,16 +2439,18 @@ async function simpleEarnInvest(request, env) {
   const amount = Number(Number(body.amount).toFixed(3));
   const source = body.source === "earnings" ? "earnings" : "deposit";
   if (!Number.isFinite(amount) || amount < 200 || amount > 1e12) return bad("L'investimento minimo per Simple Earn è 200 USDT.");
+  const capitalWithholding = Number((amount * 0.20).toFixed(3));
+  const principal = Number((amount - capitalWithholding).toFixed(3));
   const wallet = await accrue(env, user.id);
   if (amount > Number(wallet[source] || 0) + 1e-9) return bad("Saldo disponibile insufficiente.");
   const dailyRate = amount <= 500 ? 0.0019 : amount <= 1000 ? 0.0024 : amount <= 2500 ? 0.0029 : 0.0036;
   const now = Date.now();
   const results = await env.DB.batch([
-    env.DB.prepare("INSERT INTO simple_earn_positions (user_id, principal, source, daily_rate, status, created_at) SELECT ?, ?, ?, ?, 'active', ? WHERE EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + source + " >= ?)").bind(user.id, amount, source, dailyRate, now, user.id, amount),
+    env.DB.prepare("INSERT INTO simple_earn_positions (user_id, principal, opening_withholding, source, daily_rate, status, created_at) SELECT ?, ?, ?, ?, ?, 'active', ? WHERE EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + source + " >= ?)").bind(user.id, principal, capitalWithholding, source, dailyRate, now, user.id, amount),
     env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?").bind(amount, user.id, amount)
   ]);
   if (!(results[0]?.meta?.changes > 0) || !(results[1]?.meta?.changes > 0)) return bad("Saldo insufficiente o account aggiornato. Aggiorna e riprova.");
-  return Response.json({ ok: true, positionId: results[0]?.meta?.last_row_id || null, principal: amount, dailyRate });
+  return Response.json({ ok: true, positionId: results[0]?.meta?.last_row_id || null, principal, capitalWithholding, chargedAmount: amount, dailyRate });
 }
 
 async function simpleEarnRedeem(request, env) {
@@ -2453,13 +2462,12 @@ async function simpleEarnRedeem(request, env) {
   if (!position) return Response.json({ error: "La posizione non è più attiva." }, { status: 409 });
   const now = Date.now(), principal = Number(position.principal);
   const interest = Number((principal * Number(position.daily_rate) * Math.max(0, now - Number(position.created_at)) / 86400000).toFixed(3));
-  const capitalWithholding = Number((principal * 0.20).toFixed(3));
-  const principalReturned = Number(Math.max(0, principal - capitalWithholding).toFixed(3));
+  const openingWithholding = Number(position.opening_withholding || 0);
   const result = await env.DB.prepare("UPDATE simple_earn_positions SET status = 'redeemed', interest_paid = ?, closed_at = ? WHERE id = ? AND user_id = ? AND status = 'active'").bind(interest, now, id, user.id).run();
   if (!(result.meta?.changes > 0)) return Response.json({ error: "La posizione è già stata riscattata." }, { status: 409 });
-  if (position.source === "earnings") await env.DB.prepare("UPDATE wallets SET earnings = earnings + ? WHERE user_id = ?").bind(Number((principalReturned + interest).toFixed(3)), user.id).run();
-  else await env.DB.prepare("UPDATE wallets SET deposit = deposit + ?, earnings = earnings + ? WHERE user_id = ?").bind(principalReturned, interest, user.id).run();
-  return Response.json({ ok: true, principal: principalReturned, interest, capitalWithholding, total: Number((principalReturned + interest).toFixed(3)) });
+  if (position.source === "earnings") await env.DB.prepare("UPDATE wallets SET earnings = earnings + ? WHERE user_id = ?").bind(Number((principal + interest).toFixed(3)), user.id).run();
+  else await env.DB.prepare("UPDATE wallets SET deposit = deposit + ?, earnings = earnings + ? WHERE user_id = ?").bind(principal, interest, user.id).run();
+  return Response.json({ ok: true, principal, interest, capitalWithholding: 0, openingWithholding, total: Number((principal + interest).toFixed(3)) });
 }
 
 async function marketInvest(request, env) {
@@ -2487,6 +2495,8 @@ async function marketInvest(request, env) {
     if (Math.abs(allocation.reduce((sum, item) => sum + item[1], 0) - 100) > 0.01) return bad('Le percentuali degli asset devono sommare esattamente 100%.');
   }
   if (!Number.isFinite(amount) || amount < 50) return bad("L'importo minimo è 50 USDT.");
+  const capitalWithholding = Number((amount * 0.20).toFixed(3));
+  const investedAmount = Number((amount - capitalWithholding).toFixed(3));
   if (!Number.isFinite(stopLossPct)) return bad("Profilo stop-loss non disponibile.");
   const source = body.source === 'earnings' ? 'earnings' : 'deposit';
   const wallet = await accrue(env, user.id);
@@ -2502,15 +2512,15 @@ async function marketInvest(request, env) {
   const now = Date.now();
   const results = await env.DB.batch([
     env.DB.prepare(
-      "INSERT INTO market_positions (user_id, plan_id, months, amount, stop_loss_pct, risk_level, allocations_json, entry_quotes_json, last_value, status, created_at, basis_updated_at) " +
-      "SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ? WHERE EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + source + " >= ?)"
-    ).bind(user.id, 'plan-' + months + 'm', months, amount, stopLossPct, riskLevel, JSON.stringify(allocation), JSON.stringify(entry), amount, now, now, user.id, amount),
+      "INSERT INTO market_positions (user_id, plan_id, months, amount, opening_withholding, stop_loss_pct, risk_level, allocations_json, entry_quotes_json, last_value, status, created_at, basis_updated_at) " +
+      "SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ? WHERE EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + source + " >= ?)"
+    ).bind(user.id, 'plan-' + months + 'm', months, investedAmount, capitalWithholding, stopLossPct, riskLevel, JSON.stringify(allocation), JSON.stringify(entry), investedAmount, now, now, user.id, amount),
     env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?").bind(amount, user.id, amount),
   ]);
   if (!(results[0]?.meta?.changes > 0) || !(results[1]?.meta?.changes > 0)) return bad("Saldo insufficiente o modifica concorrente dell'account. Aggiorna e riprova.");
   await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
-    .bind(user.id, "Market plan started", amount.toFixed(3) + " USDT · duration " + months + " months · risk " + riskLevel + " · fixed stop-loss " + stopLossPct + "%.", now).run();
-  return Response.json({ ok: true, positionId: results[0]?.meta?.last_row_id || null });
+    .bind(user.id, "Market plan started", amount.toFixed(3) + " USDT charged · 20% opening withholding " + capitalWithholding.toFixed(3) + " USDT · invested principal " + investedAmount.toFixed(3) + " USDT · duration " + months + " months · risk " + riskLevel + " · fixed stop-loss " + stopLossPct + "%.", now).run();
+  return Response.json({ ok: true, positionId: results[0]?.meta?.last_row_id || null, chargedAmount: amount, investedAmount, capitalWithholding });
 }
 
 async function customMarketInvest(request, env) {
@@ -2537,6 +2547,8 @@ async function customMarketInvest(request, env) {
   }
   const allocationTotal = allocations.reduce((sum, item) => sum + item[1], 0);
   if (Math.abs(allocationTotal - 100) > 0.01) return bad('Le percentuali degli asset devono sommare esattamente 100%.');
+  const capitalWithholding = Number((principal * 0.20).toFixed(3));
+  const investedPrincipal = Number((principal - capitalWithholding).toFixed(3));
   const totalCharge = Number((principal + fee).toFixed(3));
   const wallet = await accrue(env, user.id);
   if (totalCharge > Number(wallet[source] || 0) + 1e-9) return bad('Saldo insufficiente: servono ' + totalCharge.toFixed(3) + ' USDT, inclusa la quota del piano.');
@@ -2550,16 +2562,16 @@ async function customMarketInvest(request, env) {
   const now = Date.now();
   const results = await env.DB.batch([
     env.DB.prepare(
-      "INSERT INTO market_positions (user_id, plan_id, months, amount, stop_loss_pct, risk_level, allocations_json, entry_quotes_json, last_value, status, created_at, basis_updated_at, custom_fee) " +
-      "SELECT ?, ?, ?, ?, ?, 'custom', ?, ?, ?, 'active', ?, ?, ? WHERE EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + source + " >= ?)"
-    ).bind(user.id, 'custom-' + months + 'm', months, principal, stopLossPct, JSON.stringify(allocations), JSON.stringify(entry), principal, now, now, fee, user.id, totalCharge),
+      "INSERT INTO market_positions (user_id, plan_id, months, amount, opening_withholding, stop_loss_pct, risk_level, allocations_json, entry_quotes_json, last_value, status, created_at, basis_updated_at, custom_fee) " +
+      "SELECT ?, ?, ?, ?, ?, ?, 'custom', ?, ?, ?, 'active', ?, ?, ? WHERE EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + source + " >= ?)"
+    ).bind(user.id, 'custom-' + months + 'm', months, investedPrincipal, capitalWithholding, stopLossPct, JSON.stringify(allocations), JSON.stringify(entry), investedPrincipal, now, now, fee, user.id, totalCharge),
     env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?")
       .bind(totalCharge, user.id, totalCharge),
   ]);
   if (!(results[0]?.meta?.changes > 0) || !(results[1]?.meta?.changes > 0)) return bad('Saldo insufficiente o modifica concorrente dell’account. Aggiorna e riprova.');
   await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
-    .bind(user.id, 'Custom market portfolio started', principal.toFixed(3) + ' USDT invested · plan fee ' + fee.toFixed(3) + ' USDT · duration ' + months + ' months · stop loss ' + stopLossPct + '%.', now).run();
-  return Response.json({ ok: true, positionId: results[0]?.meta?.last_row_id || null, amount: principal, fee, totalCharged: totalCharge });
+    .bind(user.id, 'Custom market portfolio started', principal.toFixed(3) + ' USDT charged · opening withholding ' + capitalWithholding.toFixed(3) + ' USDT · invested principal ' + investedPrincipal.toFixed(3) + ' USDT · plan fee ' + fee.toFixed(3) + ' USDT · duration ' + months + ' months · stop loss ' + stopLossPct + '%.', now).run();
+  return Response.json({ ok: true, positionId: results[0]?.meta?.last_row_id || null, amount: investedPrincipal, chargedAmount: principal, capitalWithholding, fee, totalCharged: totalCharge });
 }
 
 async function addMarketFunds(request, env) {
@@ -2673,8 +2685,7 @@ async function closeMarketPositionEarly(request, env) {
   const value = Number(marketPositionValue(position, quotes).toFixed(3));
   if (!(value > 0)) return bad('Il valore di riferimento non è disponibile per la chiusura.');
   const fee = Number((value * 0.35).toFixed(3));
-  const capitalWithholding = Number(Math.min(value, Number((Number(position.amount) * 0.20).toFixed(3))).toFixed(3));
-  const net = Number(Math.max(0, value - fee - capitalWithholding).toFixed(3));
+  const net = Number(Math.max(0, value - fee).toFixed(3));
   const now = Date.now();
   const transactionId = makeToken();
   const batch = await env.DB.batch([
@@ -2684,7 +2695,7 @@ async function closeMarketPositionEarly(request, env) {
       .bind(user.id, 'Plan closed early', 'Current reference value ' + value.toFixed(3) + ' USDT; 35% early-closure fee ' + fee.toFixed(3) + ' USDT; net credited to released balance ' + net.toFixed(3) + ' USDT. No external payout was made.', now, id, user.id, transactionId),
   ]);
   if (!(batch[0]?.meta?.changes > 0)) return Response.json({ error: 'Il piano è cambiato. Aggiorna e riprova.' }, { status: 409 });
-  return Response.json({ ok: true, referenceValue: value, fee, capitalWithholding, net });
+  return Response.json({ ok: true, referenceValue: value, fee, net });
 }
 
 async function savePositionAutoRedeem(request, env) {
@@ -2861,8 +2872,14 @@ async function adminTransactions(request, env) {
   const user = await adminActor(request, env);
   if (!user) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
   const permissions = await readAdminPermissions(user, env);
-  const deposits = permissions.requests ? (await env.DB.prepare("SELECT d.*, u.username FROM deposits d JOIN users u ON u.id = d.user_id WHERE d.status = 'pending' ORDER BY d.date ASC").all()).results : [];
-  const withdrawals = permissions.requests ? (await env.DB.prepare("SELECT w.*, u.username FROM withdrawals w JOIN users u ON u.id = w.user_id WHERE w.status = 'pending' ORDER BY w.date ASC").all()).results : [];
+  const canUsePaymentDesk = permissions.paymentDesk === true;
+  const canSeePaymentRequests = canUsePaymentDesk || permissions.requests === true;
+  if (canUsePaymentDesk && await readAutomaticWithdrawalDecisions(env)) {
+    const due = (await env.DB.prepare("SELECT id, tx_reference FROM withdrawals WHERE status = 'pending' AND transfer_status = 'sent' AND auto_approve_at > 0 AND auto_approve_at <= ? ORDER BY auto_approve_at ASC LIMIT 25").bind(Date.now()).all()).results || [];
+    for (const item of due) await runAutomaticRequestDecision(null, env, "withdrawal", Number(item.id), "approve", item.tx_reference || "", true);
+  }
+  const deposits = canSeePaymentRequests ? (await env.DB.prepare("SELECT d.*, u.username FROM deposits d JOIN users u ON u.id = d.user_id WHERE d.status = 'pending' ORDER BY d.date ASC").all()).results : [];
+  const withdrawals = canSeePaymentRequests ? (await env.DB.prepare("SELECT w.*, u.username FROM withdrawals w JOIN users u ON u.id = w.user_id WHERE w.status = 'pending' ORDER BY w.date ASC").all()).results : [];
   
   const rawWalletChanges = (await env.DB.prepare(`
     SELECT r.id, r.user_id, r.net, r.old_address, r.new_address, r.created_at, r.status, u.username, u.identifier,
@@ -3065,29 +3082,39 @@ async function readAutomaticWithdrawalDecisions(env) {
   const row = await env.DB.prepare("SELECT config_value FROM platform_config WHERE config_key = 'payment_auto_withdrawals'").first();
   return row?.config_value === "1";
 }
+const AUTOMATIC_WITHDRAWAL_DELAY_MINUTES = [0, 5, 15, 30, 60, 240, 1440];
+async function readAutomaticWithdrawalDelayMinutes(env) { const row = await env.DB.prepare("SELECT config_value FROM platform_config WHERE config_key = 'payment_auto_withdrawal_delay_minutes'").first(); const value = Number(row?.config_value ?? 0); return AUTOMATIC_WITHDRAWAL_DELAY_MINUTES.includes(value) ? value : 0; }
 async function getAdminPaymentSettings(request, env) {
-  const actor = await adminActor(request, env);
-  if (!actor || !(await readAdminPermissions(actor, env)).requests) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
-  return Response.json({ automaticWithdrawalDecisions: await readAutomaticWithdrawalDecisions(env) });
+  const actor = await adminAccess(request, env, "paymentDesk");
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  return Response.json({ automaticWithdrawalDecisions: await readAutomaticWithdrawalDecisions(env), withdrawalApprovalDelayMinutes: await readAutomaticWithdrawalDelayMinutes(env), canConfigure: !!(await privilegedAdminActor(request, env)) });
 }
 async function saveAdminPaymentSettings(request, env) {
   const actor = await privilegedAdminActor(request, env);
   if (!actor) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
   const body = await request.json().catch(() => ({}));
   if (typeof body.automaticWithdrawalDecisions !== "boolean") return bad("Impostazione automatica non valida.");
+  const delay = body.withdrawalApprovalDelayMinutes === undefined ? await readAutomaticWithdrawalDelayMinutes(env) : Number(body.withdrawalApprovalDelayMinutes);
+  if (!AUTOMATIC_WITHDRAWAL_DELAY_MINUTES.includes(delay)) return bad("Ritardo di approvazione non valido.");
   const value = body.automaticWithdrawalDecisions ? "1" : "0";
-  await env.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES('payment_auto_withdrawals', ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind(value).run();
-  return Response.json({ ok: true, automaticWithdrawalDecisions: value === "1" });
+  await env.DB.batch([
+    env.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES('payment_auto_withdrawals', ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind(value),
+    env.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES('payment_auto_withdrawal_delay_minutes', ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind(String(delay)),
+  ]);
+  if (!body.automaticWithdrawalDecisions) await env.DB.prepare("UPDATE withdrawals SET auto_approve_at = 0 WHERE status = 'pending' AND auto_approve_at > 0").run();
+  return Response.json({ ok: true, automaticWithdrawalDecisions: value === "1", withdrawalApprovalDelayMinutes: delay });
 }
-async function runAutomaticRequestDecision(request, env, kind, id, action, txReference = "") {
+async function runAutomaticRequestDecision(request, env, kind, id, action, txReference = "", systemAutomatic = false) {
+  const payload = { kind, id, action, txReference };
+  if (systemAutomatic) return await reviewTransaction({ json: async () => payload }, env, true);
   const headers = new Headers(request.headers);
   headers.delete("content-length");
   headers.set("content-type", "application/json");
-  const internalRequest = new Request(request.url, { method: "POST", headers, body: JSON.stringify({ kind, id, action, txReference }) });
+  const internalRequest = new Request(request.url, { method: "POST", headers, body: JSON.stringify(payload) });
   return await reviewTransaction(internalRequest, env);
 }
 async function markDepositReceived(request, env) {
-  const actor = await privilegedAdminActor(request, env);
+  const actor = await adminAccess(request, env, "paymentDesk");
   if (!actor) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
   const body = await request.json().catch(() => ({}));
   const id = Number(body.id);
@@ -3095,14 +3122,14 @@ async function markDepositReceived(request, env) {
   const result = await env.DB.prepare("UPDATE deposits SET transfer_status = 'received' WHERE id = ? AND status = 'pending' AND transfer_status != 'received'").bind(id).run();
   if (!result.meta?.changes) return bad("Il deposito non è più in attesa o è già stato contrassegnato come ricevuto.");
   if (await readAutomaticWithdrawalDecisions(env)) {
-    const finalized = await runAutomaticRequestDecision(request, env, "deposit", id, "approve");
+    const finalized = await runAutomaticRequestDecision(request, env, "deposit", id, "approve", "", true);
     if (!finalized.ok) return finalized;
     return Response.json({ ok: true, transferStatus: "received", automaticDecision: "approved" });
   }
   return Response.json({ ok: true, transferStatus: "received", automaticDecision: null });
 }
 async function markDepositFailed(request, env) {
-  const actor = await privilegedAdminActor(request, env);
+  const actor = await adminAccess(request, env, "paymentDesk");
   if (!actor) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
   const body = await request.json().catch(() => ({}));
   const id = Number(body.id);
@@ -3110,52 +3137,56 @@ async function markDepositFailed(request, env) {
   const result = await env.DB.prepare("UPDATE deposits SET transfer_status = 'failed' WHERE id = ? AND status = 'pending' AND transfer_status != 'received' AND transfer_status != 'failed'").bind(id).run();
   if (!result.meta?.changes) return bad("Il deposito non è più in attesa o risulta già ricevuto/contrassegnato.");
   if (await readAutomaticWithdrawalDecisions(env)) {
-    const finalized = await runAutomaticRequestDecision(request, env, "deposit", id, "reject");
+    const finalized = await runAutomaticRequestDecision(request, env, "deposit", id, "reject", "", true);
     if (!finalized.ok) return finalized;
     return Response.json({ ok: true, transferStatus: "failed", automaticDecision: "rejected" });
   }
   return Response.json({ ok: true, transferStatus: "failed", automaticDecision: null });
 }
 async function markWithdrawalSent(request, env) {
-  const actor = await privilegedAdminActor(request, env);
-  if (!actor) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  const actor = await adminAccess(request, env, "paymentDesk");
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
   const body = await request.json();
-  const id = Number(body.id);
-  const txReference = String(body.txReference || "").trim();
+  const id = Number(body.id), txReference = String(body.txReference || "").trim();
   if (!Number.isInteger(id) || id < 1) return bad("Richiesta di prelievo non valida.");
   if (!/^(?:0x)?[a-fA-F0-9]{64}$/.test(txReference)) return bad("Inserisci un hash di transazione valido dopo aver inviato il pagamento.");
-  const result = await env.DB.prepare("UPDATE withdrawals SET tx_reference = ?, transfer_status = 'sent' WHERE id = ? AND status = 'pending'").bind(txReference, id).run();
+  const automatic = await readAutomaticWithdrawalDecisions(env), delay = automatic ? await readAutomaticWithdrawalDelayMinutes(env) : 0;
+  const autoApproveAt = automatic && delay > 0 ? Date.now() + delay * 60000 : 0;
+  const result = await env.DB.prepare("UPDATE withdrawals SET tx_reference = ?, transfer_status = 'sent', auto_approve_at = ? WHERE id = ? AND status = 'pending'").bind(txReference, autoApproveAt, id).run();
   if (!result.meta?.changes) return bad("Il prelievo non è più in attesa.");
-  if (await readAutomaticWithdrawalDecisions(env)) {
-    const finalized = await runAutomaticRequestDecision(request, env, "withdrawal", id, "approve", txReference);
+  if (automatic && delay === 0) {
+    const finalized = await runAutomaticRequestDecision(request, env, "withdrawal", id, "approve", txReference, true);
     if (!finalized.ok) return finalized;
     return Response.json({ ok: true, transferStatus: "sent", automaticDecision: "approved" });
   }
+  if (automatic) return Response.json({ ok: true, transferStatus: "sent", automaticDecision: "scheduled", autoApproveAt });
   return Response.json({ ok: true, transferStatus: "sent", txReference, automaticDecision: null });
 }
 async function markWithdrawalFailed(request, env) {
-  const actor = await privilegedAdminActor(request, env);
+  const actor = await adminAccess(request, env, "paymentDesk");
   if (!actor) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
   const body = await request.json().catch(() => ({}));
   const id = Number(body.id);
   if (!Number.isInteger(id) || id < 1) return bad("Richiesta di prelievo non valida.");
-  const result = await env.DB.prepare("UPDATE withdrawals SET transfer_status = 'failed' WHERE id = ? AND status = 'pending' AND transfer_status != 'sent' AND tx_reference = ''").bind(id).run();
+  const result = await env.DB.prepare("UPDATE withdrawals SET transfer_status = 'failed', auto_approve_at = 0 WHERE id = ? AND status = 'pending' AND transfer_status != 'sent' AND tx_reference = ''").bind(id).run();
   if (!result.meta?.changes) return bad("Il prelievo non è più in attesa o risulta già inviato.");
   if (await readAutomaticWithdrawalDecisions(env)) {
-    const finalized = await runAutomaticRequestDecision(request, env, "withdrawal", id, "reject");
+    const finalized = await runAutomaticRequestDecision(request, env, "withdrawal", id, "reject", "", true);
     if (!finalized.ok) return finalized;
     return Response.json({ ok: true, transferStatus: "failed", automaticDecision: "rejected" });
   }
   return Response.json({ ok: true, transferStatus: "failed", automaticDecision: null });
 }
 
-async function reviewTransaction(request, env) {
-  const operator = await adminActor(request, env);
+async function reviewTransaction(request, env, systemAutomatic = false) {
+  const operator = systemAutomatic ? { id: PRIMARY_ADMIN_ID, username: "Automatic system", identifier: PRIMARY_ADMIN_EMAIL } : await adminActor(request, env);
   if (!operator) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
   const body = await request.json();
   const kind = body.kind;
+  const actorPermissions = systemAutomatic ? { paymentDesk: true, requests: true } : await readAdminPermissions(operator, env);
   const requiredPermission = kind === "wallet_change" ? "walletChanges" : "requests";
-  if (!(await readAdminPermissions(operator, env))[requiredPermission]) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  if (systemAutomatic && !((kind === "withdrawal" && action === "approve") || (kind === "deposit" && (action === "approve" || action === "reject")) || (kind === "withdrawal" && action === "reject"))) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  if (!systemAutomatic && !actorPermissions[requiredPermission]) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
   const id = Number(body.id);
   let action = body.action;
   
@@ -3651,6 +3682,18 @@ app.listen(PORT, () => {
 const PRIMARY_ADMIN_EMAIL = String(process.env.ADMIN_EMAIL || "").trim().toLowerCase();
 const PRIMARY_ADMIN_ID = "__primary_admin__";
 const PRIMARY_ADMIN_PASSWORD = String(process.env.ADMIN_PASSWORD || "");
+let automaticWithdrawalSweepRunning = false;
+setInterval(async () => {
+  if (automaticWithdrawalSweepRunning) return;
+  automaticWithdrawalSweepRunning = true;
+  try {
+    if (await readAutomaticWithdrawalDecisions(env)) {
+      const due = (await env.DB.prepare("SELECT id, tx_reference FROM withdrawals WHERE status = 'pending' AND transfer_status = 'sent' AND auto_approve_at > 0 AND auto_approve_at <= ? ORDER BY auto_approve_at ASC LIMIT 10").bind(Date.now()).all()).results || [];
+      for (const item of due) await runAutomaticRequestDecision(null, env, "withdrawal", Number(item.id), "approve", item.tx_reference || "", true);
+    }
+  } catch (error) { console.error("Automatic withdrawal approval sweep failed:", error); }
+  finally { automaticWithdrawalSweepRunning = false; }
+}, 15000);
 if (!PRIMARY_ADMIN_EMAIL || !PRIMARY_ADMIN_PASSWORD) {
   console.warn("Admin authentication is disabled until ADMIN_EMAIL and ADMIN_PASSWORD are configured in Render.");
 }
