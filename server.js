@@ -1245,8 +1245,6 @@ const workerHandler = {
           config_key TEXT PRIMARY KEY,
           config_value TEXT NOT NULL
         );`,
-        "CREATE TABLE IF NOT EXISTS payment_auto_approval_queue (request_kind TEXT NOT NULL CHECK (request_kind IN ('deposit','withdrawal')), request_id INTEGER NOT NULL, user_id TEXT NOT NULL, confirmed_at INTEGER NOT NULL, PRIMARY KEY (request_kind, request_id));",
-        "CREATE INDEX IF NOT EXISTS payment_auto_approval_due ON payment_auto_approval_queue(confirmed_at)",
         `CREATE TABLE IF NOT EXISTS settings (
           user_id TEXT PRIMARY KEY,
           withdraw_wallets TEXT NOT NULL DEFAULT '{}',
@@ -3134,7 +3132,7 @@ async function saveAdminPaymentSettings(request, env) {
   if (hasAutomatic) writes.push(env.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES('payment_auto_withdrawals', ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind(body.automaticWithdrawalDecisions ? "1" : "0"));
   if (hasDelay) writes.push(env.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES('payment_auto_approval_delay_hours', ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind(String(Number(body.automaticApprovalDelayHours))));
   await env.DB.batch(writes);
-  if (hasAutomatic && !body.automaticWithdrawalDecisions) await env.DB.prepare("DELETE FROM payment_auto_approval_queue").run();
+  if (hasAutomatic && !body.automaticWithdrawalDecisions) await env.DB.prepare("DELETE FROM platform_config WHERE config_key LIKE 'payment_auto_queue:%'").run();
   const settings = { ok: true, automaticWithdrawalDecisions: await readAutomaticWithdrawalDecisions(env), automaticApprovalDelayHours: await readAutomaticApprovalDelayHours(env) };
   if (hasDelay && settings.automaticWithdrawalDecisions) void processScheduledAutomaticApprovals(env).catch(error => console.error("Scheduled approval worker failed:", error));
   return Response.json(settings);
@@ -3164,7 +3162,9 @@ async function queueAutomaticApproval(env, kind, id) {
   if (!table) return false;
   const record = await env.DB.prepare("SELECT user_id FROM " + table + " WHERE id = ? AND status = 'pending' AND transfer_status = ?").bind(id, transferStatus).first();
   if (!record) return false;
-  await env.DB.prepare("INSERT INTO payment_auto_approval_queue(request_kind, request_id, user_id, confirmed_at) VALUES(?, ?, ?, ?) ON CONFLICT(request_kind, request_id) DO UPDATE SET user_id = excluded.user_id, confirmed_at = excluded.confirmed_at").bind(kind, id, record.user_id, Date.now()).run();
+  const configKey = "payment_auto_queue:" + kind + ":" + id;
+  const value = JSON.stringify({ userId: record.user_id, confirmedAt: Date.now() });
+  await env.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES(?, ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind(configKey, value).run();
   return true;
 }
 async function processScheduledAutomaticApprovals(env) {
@@ -3173,16 +3173,24 @@ async function processScheduledAutomaticApprovals(env) {
     if (!(await readAutomaticWithdrawalDecisions(env))) return;
     const delay = await readAutomaticApprovalDelayHours(env);
     const cutoff = Date.now() - delay * 60 * 60 * 1000;
-    const queue = await env.DB.prepare("SELECT request_kind, request_id FROM payment_auto_approval_queue WHERE confirmed_at <= ? ORDER BY confirmed_at ASC LIMIT 50").bind(cutoff).all();
+    const queue = await env.DB.prepare("SELECT config_key, config_value FROM platform_config WHERE config_key LIKE 'payment_auto_queue:%' ORDER BY config_key LIMIT 100").all();
     for (const row of queue.results || []) {
-      const kind = row.request_kind;
-      const internalRequest = new Request("http://localhost/api/admin/review", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind, id: Number(row.request_id), action: "approve" }) });
+      const match = String(row.config_key).match(/^payment_auto_queue:(deposit|withdrawal):([1-9][0-9]*)$/);
+      let saved;
+      try { saved = JSON.parse(row.config_value); } catch {}
+      if (!match || !Number.isFinite(Number(saved?.confirmedAt))) {
+        await env.DB.prepare("DELETE FROM platform_config WHERE config_key = ?").bind(row.config_key).run();
+        continue;
+      }
+      if (Number(saved.confirmedAt) > cutoff) continue;
+      const kind = match[1], id = Number(match[2]);
+      const internalRequest = new Request("http://localhost/api/admin/review", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind, id, action: "approve" }) });
       const response = await reviewTransaction(internalRequest, env, true);
       if (response.ok || response.status < 500) {
-        if (!response.ok) console.warn("Scheduled approval no longer applicable:", kind, Number(row.request_id), response.status);
-        await env.DB.prepare("DELETE FROM payment_auto_approval_queue WHERE request_kind = ? AND request_id = ?").bind(kind, row.request_id).run();
+        if (!response.ok) console.warn("Scheduled approval no longer applicable:", kind, id, response.status);
+        await env.DB.prepare("DELETE FROM platform_config WHERE config_key = ?").bind(row.config_key).run();
       } else {
-        console.error("Scheduled approval will be retried:", kind, Number(row.request_id), response.status);
+        console.error("Scheduled approval will be retried:", kind, id, response.status);
       }
     }
   })().finally(() => { scheduledApprovalTask = null; });
