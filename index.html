@@ -573,18 +573,57 @@
             <p class="payment-admin-config-status" id="commission-settings-status" role="status" aria-live="polite"></p>
           </form>
         </div>
+        <div class="payment-desk-summary" aria-label="Payment totals">
+          <div><small>Incoming · to receive</small><b id="payment-summary-incoming">0</b></div>
+          <div><small>Received · awaiting review</small><b id="payment-summary-received">0</b></div>
+          <div><small>Upcoming payouts · to send</small><b id="payment-summary-upcoming">0</b></div>
+          <div><small>Sent · awaiting review</small><b id="payment-summary-sent">0</b></div>
+          <div><small>Transfer issues</small><b id="payment-summary-issues">0</b></div>
+        </div>
         <div class="payment-desk-sections">
-          <details class="payment-desk-group">
-            <summary><span>Incoming · deposits to receive</span><b class="count-pill" id="payment-incoming-count">0</b></summary>
+          <details class="payment-desk-group" open>
+            <summary><span>Incoming · deposits awaiting receipt</span><b class="count-pill" id="payment-incoming-count">0</b></summary>
             <div class="payment-desk-list" id="payment-incoming-list"></div>
-            <p class="payment-desk-empty" id="payment-incoming-empty">No pending deposits.</p>
+            <p class="payment-desk-empty" id="payment-incoming-empty">No deposits awaiting receipt.</p>
+          </details>
+          <details class="payment-desk-group" open>
+            <summary><span>Upcoming payments · withdrawals to send</span><b class="count-pill" id="payment-outgoing-count">0</b></summary>
+            <div class="payment-desk-list" id="payment-outgoing-list"></div>
+            <p class="payment-desk-empty" id="payment-outgoing-empty">No upcoming payouts.</p>
           </details>
           <details class="payment-desk-group">
-            <summary><span>Outgoing · withdrawals to pay</span><b class="count-pill" id="payment-outgoing-count">0</b></summary>
-            <div class="payment-desk-list" id="payment-outgoing-list"></div>
-            <p class="payment-desk-empty" id="payment-outgoing-empty">No pending withdrawals.</p>
+            <summary><span>Payments received · awaiting request review</span><b class="count-pill" id="payment-received-count">0</b></summary>
+            <div class="payment-desk-list" id="payment-received-list"></div>
+            <p class="payment-desk-empty" id="payment-received-empty">No received deposits awaiting review.</p>
+          </details>
+          <details class="payment-desk-group">
+            <summary><span>Payments sent · awaiting request review</span><b class="count-pill" id="payment-sent-count">0</b></summary>
+            <div class="payment-desk-list" id="payment-sent-list"></div>
+            <p class="payment-desk-empty" id="payment-sent-empty">No sent withdrawals awaiting review.</p>
+          </details>
+          <details class="payment-desk-group">
+            <summary><span>Transfer issues · needs attention</span><b class="count-pill" id="payment-issues-count">0</b></summary>
+            <div class="payment-desk-list" id="payment-issues-list"></div>
+            <p class="payment-desk-empty" id="payment-issues-empty">No transfer issues.</p>
           </details>
         </div>
+        <section class="payment-history" aria-labelledby="payment-history-title">
+          <h2 id="payment-history-title">Reviewed payments register</h2>
+          <div class="payment-history-sections">
+            <details class="payment-desk-group" data-payment-history="deposits">
+              <summary><span>Incoming payments · received / rejected</span><b class="count-pill" id="payment-history-deposits-count">Open to load</b></summary>
+              <div class="payment-history-scroll"><table class="admin-ledger-table"><thead><tr><th>Date</th><th>User</th><th>Movement</th><th>Amount</th><th>Status</th><th>Reference</th></tr></thead><tbody id="payment-history-deposits-rows"></tbody></table></div>
+              <p class="payment-desk-empty" id="payment-history-deposits-empty" hidden>No reviewed incoming payments.</p>
+              <div class="payment-history-footer"><span></span><button type="button" data-payment-history-more="deposits" hidden>Load older payments</button></div>
+            </details>
+            <details class="payment-desk-group" data-payment-history="withdrawals">
+              <summary><span>Outgoing payments · paid / rejected</span><b class="count-pill" id="payment-history-withdrawals-count">Open to load</b></summary>
+              <div class="payment-history-scroll"><table class="admin-ledger-table"><thead><tr><th>Date</th><th>User</th><th>Movement</th><th>Amount</th><th>Status</th><th>Reference</th></tr></thead><tbody id="payment-history-withdrawals-rows"></tbody></table></div>
+              <p class="payment-desk-empty" id="payment-history-withdrawals-empty" hidden>No reviewed outgoing payments.</p>
+              <div class="payment-history-footer"><span></span><button type="button" data-payment-history-more="withdrawals" hidden>Load older payments</button></div>
+            </details>
+          </div>
+        </section>
       </section>
     </main>
 
