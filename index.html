@@ -338,7 +338,6 @@
           <summary class="simple-earn-summary" data-simple-earn-open>
             <div class="simple-earn-header"><div><p class="eyebrow">FLEXIBLE · USDT</p><h2 id="simple-earn-title">Simple Earn</h2></div><span class="simple-earn-rate">0,19% <small>al giorno</small></span></div>
             <p class="simple-earn-copy">Deposita almeno 200 USDT. Il tasso giornaliero dipende dall’importo: 0,19% da 200 a 500 USDT; 0,24% da 501 a 1.000 USDT; 0,29% da 1.001 a 2.500 USDT; 0,36% da 2.501 USDT in su. Puoi riscattare in qualsiasi momento il capitale insieme agli interessi maturati.</p>
-            <p class="simple-earn-disclaimer simple-earn-opening-fee">20% of the entered amount is retained at opening; the remaining 80% is invested.</p>
           </summary>
         </details>
         <dialog class="modal simple-earn-dialog" id="simple-earn-dialog" aria-labelledby="simple-earn-dialog-title">
@@ -569,7 +568,7 @@
           <div class="payment-desk-controls"><button type="button" id="refresh-payment-desk">Refresh</button><button type="button" id="close-payment-desk">Back to admin</button></div>
         </header>
         <p class="payment-desk-note">Use this desk to verify transfers. When automatic decisions are enabled, confirmed deposits are approved, sent withdrawals are approved, and transfers confirmed as not sent are rejected.</p>
-        <div class="payment-auto-control" id="payment-auto-control"><div><b>Automatic request decisions</b><small id="payment-auto-description">Loading setting…</small><label class="payment-delay-control" id="payment-delay-control"><span>Withdrawal approval delay after transfer is marked sent</span><select id="payment-withdrawal-delay"><option value="0">Immediately</option><option value="5">5 minutes</option><option value="15">15 minutes</option><option value="30">30 minutes</option><option value="60">1 hour</option><option value="240">4 hours</option><option value="1440">24 hours</option></select><button type="button" id="save-payment-delay">Save</button></label></div><button type="button" id="toggle-payment-auto-decisions" aria-pressed="false">Automatic decisions: OFF</button></div>
+        <div class="payment-auto-control"><div><b>Automatic request decisions</b><small id="payment-auto-description">Loading setting…</small></div><button type="button" id="toggle-payment-auto-decisions" aria-pressed="false">Automatic decisions: OFF</button></div>
         <div class="payment-desk-sections">
           <details class="payment-desk-group" open>
             <summary><span>Incoming · deposits to receive</span><b class="count-pill" id="payment-incoming-count">0</b></summary>
@@ -651,7 +650,7 @@
         <button class="modal-close" type="button" data-close="withdraw-dialog" aria-label="Close">×</button>
         <p class="eyebrow">WITHDRAWAL REQUEST</p><h2 id="withdraw-title">Withdraw funds</h2>
         <label for="withdraw-source">Balance</label>
-        <select id="withdraw-source" required><option value="deposit">Deposit balance</option><option value="released">Released capital</option><option value="earnings">Earnings balance</option></select>
+        <select id="withdraw-source" required><option value="earnings">Redeemable balance</option><option value="released">Released capital</option></select>
         <p class="available-line">Available: <b id="withdraw-available">0.00 USDT</b></p>
         <p class="small-note" id="withdraw-fee-note">The selected balance is debited by the entered amount; the payout is reduced by the commission.</p>
         <label for="withdraw-network">Network</label>
@@ -689,7 +688,6 @@
         <p class="plan-terms" id="plan-terms"></p>
         <label for="invest-amount">Investment amount (USDT)</label>
         <input id="invest-amount" type="number" inputmode="decimal" min="0.000001" step="any" placeholder="Amount" required>
-        <p class="plan-stop-note">20% of the entered amount is retained at opening; the remaining 80% is invested.</p>
         <label for="invest-source">Pay from</label><select id="invest-source"><option value="deposit">Available balance</option><option value="earnings">Redeemable balance</option></select>
         <p class="available-line">Available: <b id="invest-available">0.00 USDT</b></p>
         <label for="invest-risk">Risk level</label><select id="invest-risk"><option value="conservative">Conservative · 8% stop</option><option value="balanced" selected>Balanced · 18% stop</option><option value="aggressive">Aggressive · 35% stop</option></select>
@@ -697,7 +695,7 @@
         <label class="risk-acknowledgement"><input id="plan-risk-ack" type="checkbox" required><span>I understand that market values can fall, losses are possible, and displayed tracking values are not guaranteed returns or assets held by the platform.</span></label>
         <p class="form-error" id="plan-error" role="alert"></p>
         <button class="primary-button" id="confirm-plan-button" type="submit">Confirm plan</button>
-        <p class="modal-footnote">Plans are market-tracking records based on public quotes; no market orders or external payments are executed. All plans pause at their stop and resume after recovery, with tracked value held at or above the configured stop threshold. 20% of the entered amount is retained at opening; the remaining 80% is invested. Early closure applies a 35% fee to the current reference value. The 20% opening withholding is not charged again at closure.</p>
+        <p class="modal-footnote">Plans are market-tracking records based on public quotes; no market orders or external payments are executed. All plans pause at their stop and resume after recovery, with tracked value held at or above the configured stop threshold. Early closure has a 65% fee on the current reference value.</p>
       </form>
     </dialog>
 
@@ -756,8 +754,8 @@
           <div id="investment-asset-history-list" class="investment-asset-history-grid"></div>
         </details>
         
-        <div class="investment-detail-actions"><button class="primary-button" id="investment-detail-redeem-gains" type="button" hidden>Redeem gains</button><button class="outline-button" id="investment-detail-add-funds" type="button" hidden>Add funds</button><button class="danger-button" id="investment-detail-close-early" type="button" hidden>Close early · 35% fee</button></div>
-        <p class="modal-footnote">The platform tracks reference quotes; it does not purchase or custody these assets. Closing early deducts 35% of current reference value; the remainder stays in the internal balance.</p>
+        <div class="investment-detail-actions"><button class="primary-button" id="investment-detail-redeem-gains" type="button" hidden>Redeem gains</button><button class="outline-button" id="investment-detail-add-funds" type="button" hidden>Add funds</button><button class="danger-button" id="investment-detail-close-early" type="button" hidden>Close early · 65% fee</button></div>
+        <p class="modal-footnote">The platform tracks reference quotes; it does not purchase or custody these assets. Closing early deducts 65% of current reference value; the remainder stays in the internal balance.</p>
       </div>
     </dialog>
 
