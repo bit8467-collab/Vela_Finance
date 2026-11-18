@@ -718,9 +718,15 @@ async function sessionUser(request, env) {
   if (!h) return null;
   const s = await env.DB.prepare("SELECT user_id, created_at FROM sessions WHERE token = ?").bind(h).first();
   if (!s) return null;
-  if (s.created_at < Date.now() - 30 * DAY) {
+  const now = Date.now();
+  const lastActivity = Number(s.created_at);
+  if (!Number.isFinite(lastActivity) || lastActivity <= 0 || lastActivity < now - 30 * DAY) {
     await env.DB.prepare("DELETE FROM sessions WHERE token = ?").bind(h).run();
     return null;
+  }
+  // Keep an actively used session alive for 30 days after its latest activity.
+  if (now - lastActivity >= 6 * 60 * 60 * 1000) {
+    try { await env.DB.prepare("UPDATE sessions SET created_at = ? WHERE token = ? AND created_at = ?").bind(now, h, s.created_at).run(); } catch {}
   }
   return env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(s.user_id).first();
 }
@@ -728,8 +734,12 @@ async function sessionUser(request, env) {
 async function adminSessionUser(request, env) {
   const token = (request.headers.get("x-admin-token") || "").trim();
   if (!token) return null;
-  const session = await env.DB.prepare("SELECT user_id FROM admin_sessions WHERE token = ? AND expires_at > ?").bind(token, Date.now()).first();
+  const now = Date.now();
+  const session = await env.DB.prepare("SELECT user_id, expires_at FROM admin_sessions WHERE token = ? AND expires_at > ?").bind(token, now).first();
   if (!session) return null;
+  if (Number(session.expires_at) - now < 15 * DAY) {
+    try { await env.DB.prepare("UPDATE admin_sessions SET expires_at = ? WHERE token = ? AND expires_at > ?").bind(now + 30 * DAY, token, now).run(); } catch {}
+  }
   if (session.user_id === PRIMARY_ADMIN_ID) return { id: PRIMARY_ADMIN_ID, username: "Admin", identifier: PRIMARY_ADMIN_EMAIL, email_verified: 1, created_at: 0 };
   return env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(session.user_id).first();
 }
