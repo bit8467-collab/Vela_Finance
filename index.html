@@ -863,7 +863,14 @@
         <p class="support-status" id="support-status" aria-live="polite">Assistente virtuale</p>
         <div class="support-messages" id="support-messages" role="log" aria-live="polite" aria-relevant="additions text"></div>
         <button class="support-escalate" id="support-escalate" type="button" hidden>Non sei soddisfatto? Parla con un operatore</button>
-        <form class="support-composer" id="support-form"><input id="support-input" type="text" maxlength="2000" placeholder="Scrivi la tua domanda…" autocomplete="off" required><button type="submit" aria-label="Invia messaggio">Invia</button></form>
+        <form class="support-composer" id="support-form">
+          <div class="support-attachment-tray" id="support-attachment-tray" hidden></div>
+          <textarea id="support-input" rows="1" maxlength="2000" placeholder="Scrivi la tua domanda…" autocomplete="off"></textarea>
+          <button type="button" class="support-tool-button" id="support-attach" aria-label="Allega file o immagine" title="Allega file o immagine">＋</button>
+          <input id="support-file-input" type="file" accept="image/*,.txt,.md,.csv,.json,.pdf,.docx" multiple hidden>
+          <button type="button" class="support-tool-button" id="support-voice" aria-label="Avvia dialogo vocale" title="Dialogo vocale">◉</button>
+          <button type="submit" aria-label="Invia messaggio">Invia</button>
+        </form>
       </section>
     </dialog>
     <dialog class="modal" id="admin-support-dialog" aria-labelledby="admin-support-title">
