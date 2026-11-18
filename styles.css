@@ -3724,3 +3724,132 @@ body.asset-catalog-open{overflow:hidden}
   #admin-payment-desk .payment-desk-card>button[data-payment-sent] { grid-column:1!important; grid-row:auto!important; }
   #admin-payment-desk .payment-desk-card>.payment-desk-actions { flex-direction:row!important; flex-wrap:wrap; }
 }
+
+
+/* Request Center: prioritize deposit and withdrawal review in a clear worksheet. */
+#view-admin.active #admin-request-hub>.admin-workspace-content { display:flex!important; flex-direction:column!important; gap:0!important; padding:0!important; }
+#view-admin.active #admin-request-hub .admin-request-group,
+#view-admin.active #admin-request-hub .admin-password-reset-requests { min-width:0; margin:0!important; border:0!important; border-top:1px solid var(--line)!important; border-bottom:1px solid var(--line)!important; border-radius:0!important; background:transparent!important; box-shadow:none!important; }
+#view-admin.active #admin-request-hub .admin-request-group>summary,
+#view-admin.active #admin-request-hub .admin-password-reset-requests>summary { min-height:38px!important; padding:6px 10px!important; border:0!important; border-radius:0!important; background:transparent!important; font-size:11px!important; font-weight:750!important; }
+#view-admin.active #request-group-deposits>summary { box-shadow:inset 3px 0 var(--green)!important; }
+#view-admin.active #request-group-withdrawals>summary { box-shadow:inset 3px 0 var(--amber)!important; }
+#view-admin.active #request-group-deposits>summary>span:first-child { color:var(--green)!important; }
+#view-admin.active #request-group-withdrawals>summary>span:first-child { color:var(--amber)!important; }
+#view-admin.active #admin-request-hub .admin-request-group .count-pill { min-width:24px!important; height:22px!important; margin-left:auto!important; padding:2px 6px!important; border-radius:3px!important; font-size:9px!important; box-shadow:none!important; }
+#view-admin.active #admin-request-hub .admin-request-group-content { display:flex!important; flex-direction:column!important; gap:0!important; padding:0 8px 5px!important; background:color-mix(in srgb,var(--surface-2) 23%,transparent)!important; }
+#view-admin.active #admin-request-hub .admin-request-group-content>.admin-queue,
+#view-admin.active #admin-request-hub .admin-request-subsection>.admin-queue { display:flex!important; flex-direction:column!important; gap:0!important; padding:0!important; }
+#view-admin.active #admin-request-hub .admin-request-subsection { margin:0!important; padding:0!important; border:0!important; border-bottom:1px solid var(--line)!important; border-radius:0!important; background:transparent!important; box-shadow:none!important; }
+#view-admin.active #admin-request-hub .admin-request-subsection>summary { min-height:34px!important; padding:5px 9px!important; border:0!important; border-radius:0!important; background:transparent!important; font-size:10px!important; }
+#view-admin.active #admin-request-hub .admin-request { grid-template-columns:minmax(0,1fr) auto!important; gap:5px 12px!important; margin:0!important; padding:8px 8px!important; border:0!important; border-bottom:1px solid color-mix(in srgb,var(--line) 76%,transparent)!important; border-radius:0!important; background:transparent!important; box-shadow:none!important; }
+#view-admin.active #admin-request-hub .admin-request:hover { background:color-mix(in srgb,var(--surface-2) 55%,transparent)!important; }
+#view-admin.active #admin-request-hub .admin-request>b { grid-column:1/-1!important; min-width:0; font-size:11px!important; line-height:1.3!important; overflow-wrap:anywhere; }
+#view-admin.active #admin-request-hub .admin-payment-request>.admin-payment-request-details { grid-column:1/-1!important; display:grid!important; grid-template-columns:repeat(2,minmax(0,1fr)); gap:5px 12px; min-width:0; margin:0!important; padding:4px 0!important; border:0!important; border-radius:0!important; background:transparent!important; font-size:10px!important; }
+#view-admin.active #admin-request-hub .admin-payment-field { display:grid; align-content:start; gap:2px; min-width:0; border-bottom:1px solid color-mix(in srgb,var(--line) 62%,transparent); padding:3px 2px 5px; }
+#view-admin.active #admin-request-hub .admin-payment-field.is-wide { grid-column:1/-1; }
+#view-admin.active #admin-request-hub .admin-payment-field>small { color:var(--muted); font-size:8px!important; line-height:1.2!important; }
+#view-admin.active #admin-request-hub .admin-payment-field>b,
+#view-admin.active #admin-request-hub .admin-payment-field>code { min-width:0; color:var(--text); font-size:10px!important; font-weight:650; line-height:1.35; overflow-wrap:anywhere; }
+#view-admin.active #admin-request-hub .admin-payment-request>small { grid-column:1!important; margin:0!important; color:var(--muted); font-size:9px!important; line-height:1.3!important; }
+#view-admin.active #admin-request-hub .admin-payment-request .admin-tx-field { grid-column:1/-1!important; display:grid; grid-template-columns:minmax(0,1fr); gap:4px; margin:0!important; padding:4px 0!important; font-size:9px!important; }
+#view-admin.active #admin-request-hub .admin-payment-request .admin-tx-field input { min-width:0; min-height:30px!important; height:30px; padding:5px 7px!important; border-radius:3px!important; font-size:10px!important; }
+#view-admin.active #admin-request-hub .admin-payment-request .admin-tx-hint { grid-column:1/-1!important; margin:0!important; color:var(--muted); font-size:8px!important; line-height:1.3!important; }
+#view-admin.active #admin-request-hub .admin-payment-request>div:not(.admin-payment-request-details) { grid-column:2!important; grid-row:2/span 8!important; display:flex!important; flex-direction:column!important; justify-content:center; gap:4px!important; margin:0!important; }
+#view-admin.active #admin-request-hub .admin-request button { min-width:74px; min-height:29px!important; padding:4px 8px!important; border-radius:3px!important; font-size:9px!important; white-space:nowrap; }
+#view-admin.active #admin-request-hub .queue-empty { min-height:0!important; margin:0!important; padding:7px 10px!important; border:0!important; border-bottom:1px solid var(--line)!important; border-radius:0!important; background:transparent!important; color:var(--muted); font-size:9px!important; text-align:left!important; }
+#view-admin.active #admin-request-hub .admin-request-search { grid-template-columns:100px minmax(0,1fr)!important; gap:7px!important; margin:0!important; padding:8px 10px!important; border:0!important; border-bottom:1px solid var(--line)!important; border-radius:0!important; background:transparent!important; font-size:10px!important; }
+#view-admin.active #admin-request-hub .admin-request-search input { min-height:31px!important; height:31px; padding:4px 8px!important; border-radius:3px!important; font-size:10px!important; }
+@media(min-width:900px) {
+  #view-admin.active .admin-workspace-stage>#admin-request-hub.is-workspace-active>.admin-workspace-content { display:grid!important; grid-template-columns:repeat(2,minmax(0,1fr))!important; align-content:start; align-items:start; gap:0 14px!important; padding:0!important; }
+  #view-admin.active #admin-request-hub>.admin-workspace-content>.admin-request-search,
+  #view-admin.active #admin-request-hub>.admin-workspace-content>#request-group-otp,
+  #view-admin.active #admin-request-hub>.admin-workspace-content>.admin-password-reset-requests { grid-column:1/-1!important; }
+  #view-admin.active #admin-request-hub>.admin-workspace-content>#request-group-deposits { order:1!important; }
+  #view-admin.active #admin-request-hub>.admin-workspace-content>#request-group-withdrawals { order:2!important; }
+  #view-admin.active #admin-request-hub>.admin-workspace-content>#request-group-wallet { order:3!important; }
+  #view-admin.active #admin-request-hub>.admin-workspace-content>#request-group-accounts { order:4!important; }
+  #view-admin.active #admin-request-hub>.admin-workspace-content>.admin-password-reset-requests { order:5!important; }
+  #view-admin.active #admin-request-hub>.admin-workspace-content>#request-group-otp { order:6!important; }
+  #view-admin.active #admin-request-hub #request-group-otp>.admin-request-group-content { display:grid!important; grid-template-columns:repeat(2,minmax(0,1fr)); gap:0 12px!important; padding:4px 8px!important; }
+}
+@media(max-width:760px) {
+  #view-admin.active #admin-request-hub .admin-request-search { grid-template-columns:minmax(0,1fr)!important; }
+  #view-admin.active #admin-request-hub .admin-payment-request>.admin-payment-request-details { grid-template-columns:minmax(0,1fr)!important; }
+  #view-admin.active #admin-request-hub .admin-payment-field.is-wide { grid-column:1!important; }
+  #view-admin.active #admin-request-hub .admin-payment-request { grid-template-columns:minmax(0,1fr)!important; }
+  #view-admin.active #admin-request-hub .admin-payment-request>div:not(.admin-payment-request-details) { grid-column:1!important; grid-row:auto!important; flex-direction:row!important; flex-wrap:wrap; justify-content:flex-start; }
+}
+
+
+/* Nested full-screen workspaces for Request Center and Payment Desk. */
+@media(min-width:900px) {
+  #view-admin.active #admin-request-hub>.admin-workspace-content { display:grid!important; grid-template-columns:minmax(0,1fr)!important; grid-template-rows:auto minmax(0,1fr); gap:0!important; padding:0!important; }
+  #view-admin.active #admin-request-hub>.admin-workspace-content>.admin-request-search { grid-row:1; }
+  #view-admin.active .admin-request-control-workspace { display:grid; grid-template-columns:minmax(185px,215px) minmax(0,1fr); gap:0; width:100%; height:calc(100dvh - 235px); min-height:320px; max-height:calc(100dvh - 210px); border-top:1px solid var(--line); }
+  #view-admin.active .admin-request-workspace-nav { display:grid; grid-template-rows:auto minmax(0,1fr); align-content:start; gap:6px; min-width:0; min-height:0; overflow:auto; padding:8px; border-right:1px solid var(--line); background:color-mix(in srgb,var(--surface-2) 25%,transparent); }
+  #view-admin.active .admin-request-workspace-nav-heading { padding:3px 7px 7px; border-bottom:1px solid var(--line); color:var(--muted); font-size:9px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
+  #view-admin.active .admin-request-workspace-nav-list { display:flex; flex-direction:column; align-content:start; gap:0; min-width:0; }
+  #view-admin.active .admin-request-workspace-link { display:grid; grid-template-columns:20px minmax(0,1fr) auto; align-items:center; gap:6px; width:100%; min-height:34px; padding:4px 5px; border:0; border-bottom:1px solid color-mix(in srgb,var(--line) 70%,transparent); border-radius:0; background:transparent; color:var(--text); text-align:left; cursor:pointer; }
+  #view-admin.active .admin-request-workspace-link:hover { background:color-mix(in srgb,var(--surface-2) 65%,transparent); }
+  #view-admin.active .admin-request-workspace-link.is-active { border-left:2px solid var(--accent); background:color-mix(in srgb,var(--accent) 8%,transparent); }
+  #view-admin.active .admin-request-workspace-link .admin-workspace-row-number { color:var(--muted); font-size:8px; }
+  #view-admin.active .admin-request-workspace-link .admin-workspace-link-copy { overflow:hidden; font-size:10px; text-overflow:ellipsis; white-space:nowrap; }
+  #view-admin.active .admin-request-workspace-link .admin-workspace-nav-badge { min-width:18px; padding:2px 4px; font-size:9px; }
+  #view-admin.active .admin-request-workspace-stage { min-width:0; min-height:0; overflow:auto; overscroll-behavior:contain; background:var(--surface); }
+  #view-admin.active .admin-request-workspace-stage>.admin-request-panel:not(.is-request-panel-active) { display:none!important; }
+  #view-admin.active .admin-request-workspace-stage>.admin-request-panel.is-request-panel-active { display:block!important; margin:0!important; border:0!important; border-radius:0!important; background:transparent!important; box-shadow:none!important; }
+  #view-admin.active .admin-request-workspace-stage>.admin-request-panel>summary { position:sticky; top:0; z-index:2; min-height:38px!important; padding:7px 10px!important; border:0!important; border-bottom:1px solid var(--line)!important; border-radius:0!important; background:var(--surface-2)!important; color:var(--text); font-size:11px!important; pointer-events:none; }
+  #view-admin.active .admin-request-workspace-stage>.admin-request-panel>summary::after { display:none!important; }
+  #view-admin.active .admin-request-workspace-stage>.admin-request-panel>.admin-request-group-content { padding:0 8px 8px!important; }
+}
+#view-admin.active .admin-request-control-workspace[hidden],
+#view-admin.active .admin-request-workspace-link[hidden] { display:none!important; }
+
+#admin-payment-desk.payment-desk-screen:not([hidden]) { display:flex!important; flex-direction:column!important; width:100vw!important; height:100dvh!important; max-height:100dvh!important; min-height:0!important; overflow:hidden!important; }
+#admin-payment-desk .payment-desk-header { position:relative!important; top:auto!important; flex:0 0 auto; width:100%; max-width:1500px; min-height:40px; margin:0 auto 5px!important; padding:4px 0!important; backdrop-filter:none!important; }
+#admin-payment-desk .payment-desk-note { flex:0 0 auto; width:100%; max-width:1500px; margin:0 auto 7px!important; }
+#admin-payment-desk .payment-desk-workspace { display:grid; grid-template-columns:minmax(190px,220px) minmax(0,1fr); gap:0; flex:1 1 auto; width:100%; max-width:1500px; min-width:0; min-height:0; margin:0 auto; border-top:1px solid var(--line); }
+#admin-payment-desk .payment-desk-workspace-nav { display:grid; grid-template-rows:auto minmax(0,1fr); align-content:start; gap:6px; min-width:0; min-height:0; overflow:auto; padding:8px 9px 8px 0; border-right:1px solid var(--line); }
+#admin-payment-desk .payment-desk-workspace-nav-heading { padding:3px 7px 7px; border-bottom:1px solid var(--line); color:var(--muted); font-size:9px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
+#admin-payment-desk .payment-desk-workspace-nav-list { display:flex; flex-direction:column; align-content:start; gap:0; min-width:0; }
+#admin-payment-desk .payment-desk-workspace-link { display:grid; grid-template-columns:20px minmax(0,1fr) auto; align-items:center; gap:6px; width:100%; min-height:35px; padding:4px 6px; border:0; border-bottom:1px solid color-mix(in srgb,var(--line) 72%,transparent); border-radius:0; background:transparent; color:var(--text); text-align:left; cursor:pointer; }
+#admin-payment-desk .payment-desk-workspace-link:hover { background:color-mix(in srgb,var(--surface-2) 65%,transparent); }
+#admin-payment-desk .payment-desk-workspace-link.is-active { border-left:2px solid var(--accent); background:color-mix(in srgb,var(--accent) 8%,transparent); }
+#admin-payment-desk .payment-desk-workspace-link .admin-workspace-row-number { color:var(--muted); font-size:8px; }
+#admin-payment-desk .payment-desk-workspace-link .admin-workspace-link-copy { overflow:hidden; font-size:10px; line-height:1.25; text-overflow:ellipsis; }
+#admin-payment-desk .payment-desk-workspace-link .admin-workspace-nav-badge { min-width:18px; padding:2px 4px; font-size:9px; }
+#admin-payment-desk .payment-desk-workspace-stage { display:block; min-width:0; min-height:0; overflow:auto; overscroll-behavior:contain; padding:0 0 10px 12px; }
+#admin-payment-desk .payment-desk-workspace-stage>[hidden] { display:none!important; }
+#admin-payment-desk .payment-desk-workspace-stage>.payment-desk-group { display:block; overflow:visible!important; margin:0!important; border:0!important; border-radius:0!important; background:transparent!important; box-shadow:none!important; }
+#admin-payment-desk .payment-desk-workspace-stage>.payment-desk-group>summary { position:sticky; top:0; z-index:2; min-height:38px!important; padding:7px 9px!important; border:0!important; border-bottom:1px solid var(--line)!important; border-radius:0!important; background:var(--surface-2)!important; pointer-events:none; }
+#admin-payment-desk .payment-desk-workspace-stage>.payment-desk-group>summary::after { display:none!important; }
+#admin-payment-desk .payment-desk-workspace-stage>.payment-desk-group>.payment-history-register-heading { margin:0; padding:6px 8px; border-bottom:1px solid var(--line); color:var(--muted); font-size:9px; font-weight:750; text-transform:uppercase; letter-spacing:.06em; }
+#admin-payment-desk .payment-desk-controls-panel { min-width:0; }
+#admin-payment-desk .payment-desk-panel-title { margin:0; padding:7px 9px; border-bottom:1px solid var(--line); font-size:12px; }
+#admin-payment-desk .payment-desk-controls-panel .payment-admin-config { max-width:none!important; grid-template-columns:repeat(2,minmax(0,1fr)); margin:0!important; padding:9px 0; }
+#admin-payment-desk .payment-desk-controls-panel .payment-desk-summary { max-width:none; margin:0; }
+@media(max-width:899px) {
+  #view-admin.active .admin-request-control-workspace { display:flex; flex-direction:column; height:auto; max-height:none; min-height:0; border-top:1px solid var(--line); }
+  #view-admin.active .admin-request-workspace-nav { display:block; min-height:0; overflow:hidden; padding:6px; border-right:0; border-bottom:1px solid var(--line); }
+  #view-admin.active .admin-request-workspace-nav-heading { display:none; }
+  #view-admin.active .admin-request-workspace-nav-list { display:flex; flex-direction:row; gap:5px; overflow-x:auto; padding-bottom:2px; }
+  #view-admin.active .admin-request-workspace-link { flex:0 0 155px; min-height:36px; }
+  #view-admin.active .admin-request-workspace-stage { min-height:360px; max-height:calc(100dvh - 330px); }
+  #admin-payment-desk .payment-desk-workspace { display:flex; flex-direction:column; }
+  #admin-payment-desk .payment-desk-workspace-nav { display:block; min-height:0; max-height:none; overflow:hidden; padding:6px 0; border-right:0; border-bottom:1px solid var(--line); }
+  #admin-payment-desk .payment-desk-workspace-nav-heading { display:none; }
+  #admin-payment-desk .payment-desk-workspace-nav-list { display:flex; flex-direction:row; gap:5px; overflow-x:auto; padding-bottom:2px; }
+  #admin-payment-desk .payment-desk-workspace-link { flex:0 0 165px; min-height:36px; }
+  #admin-payment-desk .payment-desk-workspace-stage { flex:1; min-height:0; padding:0 0 8px; }
+  #admin-payment-desk .payment-desk-controls-panel .payment-admin-config { grid-template-columns:minmax(0,1fr); }
+}
+
+/* Preserve permission and filter hiding states for nested admin panels. */
+#admin-payment-desk .payment-desk-workspace-stage>.payment-desk-group[hidden] { display:none!important; }
+#view-admin.active .admin-request-workspace-stage>.admin-request-panel[hidden],
+#view-admin.active .admin-request-workspace-stage>.admin-request-panel.request-search-hidden { display:none!important; }
+
+#admin-payment-desk .payment-desk-header,
+#admin-payment-desk .payment-desk-note,
+#admin-payment-desk .payment-desk-workspace { max-width:none!important; }
