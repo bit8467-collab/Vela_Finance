@@ -648,20 +648,28 @@
 
     <dialog class="promoter-package-screen" id="promoter-package-dialog" aria-labelledby="promoter-package-title">
       <section class="promoter-package-card">
-        <p class="eyebrow">PROMOTER</p><h1 id="promoter-package-title">Choose your annual invitation package</h1>
-        <p class="package-status-note" id="promoter-package-status"></p>
-        <div class="promoter-package-options">
-          <button type="button" class="promoter-package-option" data-package="starter" data-price="5" data-invite-limit="3"><b class="package-name">Starter</b><strong class="package-price">5 USDT</strong><span class="package-limit"><b>3</b><small>invites per year</small></span></button>
-          <button type="button" class="promoter-package-option" data-package="growth" data-price="20" data-invite-limit="15"><b class="package-name">Growth</b><strong class="package-price">20 USDT</strong><span class="package-limit"><b>15</b><small>invites per year</small></span></button>
-          <button type="button" class="promoter-package-option" data-package="pro" data-price="50" data-invite-limit="40"><b class="package-name">Pro</b><strong class="package-price">50 USDT</strong><span class="package-limit"><b>40</b><small>invites per year</small></span></button>
-          <button type="button" class="promoter-package-option" data-package="business" data-price="100" data-invite-limit="100"><b class="package-name">Business</b><strong class="package-price">100 USDT</strong><span class="package-limit"><b>100</b><small>invites per year</small></span></button>
-          <button type="button" class="promoter-package-option" data-package="elite" data-price="200" data-invite-limit="250"><b class="package-name">Elite</b><strong class="package-price">200 USDT</strong><span class="package-limit"><b>250</b><small>invites per year</small></span></button>
+        <div class="promoter-package-pitch">
+          <p class="eyebrow">PROMOTER · ANNUAL ACCESS</p>
+          <h1 id="promoter-package-title">Choose your annual invitation package</h1>
+          <p class="promoter-package-copy">Choose the invitation capacity that fits your plans, and build your network at your own pace.</p>
+          <p class="package-status-note" id="promoter-package-status"></p>
         </div>
-        <p class="form-error" id="promoter-package-error" role="alert"></p>
-        <button class="primary-button" id="promoter-package-continue" type="button" disabled>Continue to payment</button>
-        <button class="text-button" id="promoter-package-free" type="button" hidden>Continue as promoter with 1 free invite (no commissions)</button>
-        <button class="text-button" id="promoter-package-skip" type="button">Skip and continue as a simple user</button>
-        <button class="text-button" id="promoter-package-close" type="button" hidden>Close</button>
+        <div class="promoter-package-selection">
+          <div class="promoter-package-options">
+            <button type="button" class="promoter-package-option" data-package="starter" data-price="5" data-invite-limit="3"><b class="package-name">Starter</b><span class="package-tagline">A focused start</span><strong class="package-price">5 <small>USDT</small></strong><span class="package-limit"><b>3</b><small>invites per year</small></span></button>
+            <button type="button" class="promoter-package-option" data-package="growth" data-price="20" data-invite-limit="15"><b class="package-name">Growth</b><span class="package-tagline">Build your circle</span><strong class="package-price">20 <small>USDT</small></strong><span class="package-limit"><b>15</b><small>invites per year</small></span></button>
+            <button type="button" class="promoter-package-option" data-package="pro" data-price="50" data-invite-limit="40"><b class="package-name">Pro</b><span class="package-tagline">Grow your reach</span><strong class="package-price">50 <small>USDT</small></strong><span class="package-limit"><b>40</b><small>invites per year</small></span></button>
+            <button type="button" class="promoter-package-option" data-package="business" data-price="100" data-invite-limit="100"><b class="package-name">Business</b><span class="package-tagline">For broader outreach</span><strong class="package-price">100 <small>USDT</small></strong><span class="package-limit"><b>100</b><small>invites per year</small></span></button>
+            <button type="button" class="promoter-package-option" data-package="elite" data-price="200" data-invite-limit="250"><b class="package-name">Elite</b><span class="package-tagline">Maximum invite capacity</span><strong class="package-price">200 <small>USDT</small></strong><span class="package-limit"><b>250</b><small>invites per year</small></span></button>
+          </div>
+          <p class="form-error" id="promoter-package-error" role="alert"></p>
+          <div class="promoter-package-actions">
+            <button class="primary-button" id="promoter-package-continue" type="button" disabled>Continue to payment</button>
+            <button class="text-button" id="promoter-package-free" type="button" hidden>Continue as promoter with 1 free invite (no commissions)</button>
+            <button class="text-button" id="promoter-package-skip" type="button">Skip and continue as a simple user</button>
+            <button class="text-button" id="promoter-package-close" type="button" hidden>Close</button>
+          </div>
+        </div>
       </section>
     </dialog>
 
