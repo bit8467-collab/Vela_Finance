@@ -705,30 +705,41 @@ async function hashAdminSecret(secret, saltHex, iterations = 20000) {
   return [...new Uint8Array(bits)].map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
+function sessionTokenCandidates(request) {
+  const candidates = [];
+  const add = value => {
+    const token = String(value || "").trim().replace(/^Bearer\s+/i, "").trim();
+    if (token && !candidates.includes(token)) candidates.push(token);
+  };
+  add(request.headers.get("x-session-token"));
+  add(request.headers.get("authorization"));
+  return candidates;
+}
+
 function sessionTokenFromRequest(request) {
-  const direct = (request.headers.get("x-session-token") || "").trim();
-  if (direct) return direct;
-  const authorization = (request.headers.get("authorization") || "").trim();
-  const bearer = authorization.match(/^Bearer\s+(.+)$/i);
-  return bearer ? bearer[1].trim() : "";
+  return sessionTokenCandidates(request)[0] || "";
 }
 
 async function sessionUser(request, env) {
-  const h = sessionTokenFromRequest(request);
-  if (!h) return null;
-  const s = await env.DB.prepare("SELECT user_id, created_at FROM sessions WHERE token = ?").bind(h).first();
-  if (!s) return null;
+  const tokens = sessionTokenCandidates(request);
+  if (!tokens.length) return null;
   const now = Date.now();
-  const lastActivity = Number(s.created_at);
-  if (!Number.isFinite(lastActivity) || lastActivity <= 0 || lastActivity < now - 30 * DAY) {
-    await env.DB.prepare("DELETE FROM sessions WHERE token = ?").bind(h).run();
-    return null;
+  for (const token of tokens) {
+    const session = await env.DB.prepare("SELECT user_id, created_at FROM sessions WHERE token = ?").bind(token).first();
+    if (!session) continue;
+    const lastActivity = Number(session.created_at);
+    if (!Number.isFinite(lastActivity) || lastActivity <= 0 || lastActivity < now - 30 * DAY) {
+      await env.DB.prepare("DELETE FROM sessions WHERE token = ?").bind(token).run();
+      continue;
+    }
+    // Keep an actively used session alive for 30 days after its latest activity.
+    if (now - lastActivity >= 6 * 60 * 60 * 1000) {
+      try { await env.DB.prepare("UPDATE sessions SET created_at = ? WHERE token = ? AND created_at = ?").bind(now, token, session.created_at).run(); } catch {}
+    }
+    const user = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(session.user_id).first();
+    if (user) return user;
   }
-  // Keep an actively used session alive for 30 days after its latest activity.
-  if (now - lastActivity >= 6 * 60 * 60 * 1000) {
-    try { await env.DB.prepare("UPDATE sessions SET created_at = ? WHERE token = ? AND created_at = ?").bind(now, h, s.created_at).run(); } catch {}
-  }
-  return env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(s.user_id).first();
+  return null;
 }
 
 async function adminSessionUser(request, env) {
