@@ -3459,3 +3459,43 @@ body.asset-catalog-open{overflow:hidden}
 .investment-fee-preview { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 5px 12px; margin: 2px 0 7px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; background: color-mix(in srgb, var(--surface-2) 84%, transparent); }
 .investment-fee-preview p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.4; }
 .investment-fee-preview b { color: var(--text); font-variant-numeric: tabular-nums; }
+
+/* Compact dashboard layout for the admin payment desk. */
+.payment-desk-screen{padding:12px clamp(12px,2vw,28px)}
+.payment-desk-header{position:sticky;top:0;max-width:1400px;margin:0 auto 10px;padding:10px 0;gap:12px}
+.payment-desk-header h1{font-size:clamp(20px,2.3vw,27px)}
+.payment-desk-controls{gap:7px}
+.payment-desk-controls button{min-height:34px;padding:7px 11px;font-size:11px}
+.payment-desk-note{max-width:1400px;margin:0 auto 10px;font-size:11px;line-height:1.45}
+.payment-auto-control{max-width:1400px;margin:0 auto 10px;padding:10px 12px;gap:10px;border-radius:11px}
+.payment-auto-control b{font-size:12px}
+.payment-auto-control small{font-size:10px}
+.payment-auto-control button{min-height:33px;padding:6px 10px;font-size:11px}
+.payment-admin-config{max-width:1400px;margin:0 auto 10px;gap:10px}
+.payment-admin-config-card{gap:7px;padding:11px 12px;border-radius:11px}
+.payment-admin-config-card h2{font-size:13px}
+.payment-admin-config-card p{font-size:10px;line-height:1.4}
+.payment-admin-config-card label{font-size:10px}
+.payment-admin-config-card input,.payment-admin-config-card select{min-height:34px;padding:6px 9px;font-size:11px}
+.payment-admin-config-row .outline-button,.payment-admin-config-card .primary-button{min-height:34px;padding:6px 10px;font-size:11px}
+.payment-desk-sections{grid-template-columns:repeat(2,minmax(0,1fr));align-items:start;gap:10px;max-width:1400px}
+.payment-desk-group{border-radius:11px}
+.payment-desk-group>summary{min-height:42px;padding:9px 12px;font-size:12px}
+.payment-desk-list{gap:7px;padding:0 9px 9px}
+.payment-desk-card{gap:8px;padding:10px;border-radius:10px}
+.payment-desk-card>header{align-items:center;gap:8px}
+.payment-desk-card>header b{font-size:11px}
+.payment-desk-card>header small,.payment-desk-meta,.payment-desk-empty{font-size:10px;line-height:1.4}
+.payment-desk-card>header strong{font-size:13px}
+.payment-desk-meta{gap:5px 10px}
+.payment-desk-reference{gap:6px}
+.payment-desk-reference code{font-size:10px}
+.payment-desk-status{font-size:10px}
+.payment-desk-actions{gap:6px}
+.payment-desk-card button{min-height:32px;padding:6px 9px;font-size:10px}
+.payment-hash-entry{gap:4px;font-size:10px}
+.payment-hash-entry input{min-height:33px;padding:7px;font-size:10px}
+.payment-desk-empty{padding:0 12px 12px}
+@media(max-width:800px){.payment-desk-sections{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:600px){.payment-desk-header{align-items:center}.payment-desk-controls{flex-direction:row}.payment-auto-control{align-items:center;flex-direction:row}.payment-desk-card>header{align-items:center}}
+@media(max-width:420px){.payment-desk-header{align-items:flex-start;flex-direction:column}.payment-desk-controls{width:100%}.payment-desk-controls button{flex:1}.payment-auto-control{align-items:stretch;flex-direction:column}.payment-auto-control button{width:100%}.payment-desk-actions{display:grid;grid-template-columns:1fr 1fr}}
