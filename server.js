@@ -2460,21 +2460,14 @@ async function simpleEarnInvest(request, env) {
   const investmentWithholdingPercent = (await readCommissionRates(env)).investmentWithholdingPercent;
   const { grossAmount, feeAmount: investmentFee, investedAmount: amount } = splitPlatformInvestmentAmount(body.amount, investmentWithholdingPercent / 100);
   const source = ['deposit', 'earnings', 'released'].includes(body.source) ? body.source : 'deposit';
-  const redeemablePool = source === 'earnings' || source === 'released';
-  const sourceBalanceSql = redeemablePool ? '(earnings + released)' : source;
-  const walletDebit = redeemablePool
-    ? source === 'released'
-      ? env.DB.prepare("UPDATE wallets SET released = released - MIN(released, ?), earnings = earnings - MAX(0, ? - released) WHERE user_id = ? AND (earnings + released) >= ?")
-      : env.DB.prepare("UPDATE wallets SET earnings = earnings - MIN(earnings, ?), released = released - MAX(0, ? - earnings) WHERE user_id = ? AND (earnings + released) >= ?")
-    : env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?");
   if (!Number.isFinite(grossAmount) || grossAmount < 200 || grossAmount > 1e12) return bad("L'investimento minimo per Simple Earn è 200 USDT.");
   const wallet = await accrue(env, user.id);
-  if (grossAmount > (redeemablePool ? Number(wallet.earnings || 0) + Number(wallet.released || 0) : Number(wallet[source] || 0)) + 1e-9) return bad("Saldo disponibile insufficiente.");
+  if (grossAmount > Number(wallet[source] || 0) + 1e-9) return bad("Saldo disponibile insufficiente.");
   const dailyRate = amount <= 500 ? 0.0019 : amount <= 1000 ? 0.0024 : amount <= 2500 ? 0.0029 : 0.0036;
   const now = Date.now();
   const results = await env.DB.batch([
-    env.DB.prepare("INSERT INTO simple_earn_positions (user_id, principal, source, daily_rate, status, created_at) SELECT ?, ?, ?, ?, 'active', ? WHERE EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + sourceBalanceSql + " >= ?)").bind(user.id, amount, source, dailyRate, now, user.id, grossAmount),
-    redeemablePool ? walletDebit.bind(grossAmount, grossAmount, user.id, grossAmount) : walletDebit.bind(grossAmount, user.id, grossAmount)
+    env.DB.prepare("INSERT INTO simple_earn_positions (user_id, principal, source, daily_rate, status, created_at) SELECT ?, ?, ?, ?, 'active', ? WHERE EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + source + " >= ?)").bind(user.id, amount, source, dailyRate, now, user.id, grossAmount),
+    env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?").bind(grossAmount, user.id, grossAmount)
   ]);
   if (!(results[0]?.meta?.changes > 0) || !(results[1]?.meta?.changes > 0)) return bad("Saldo insufficiente o account aggiornato. Aggiorna e riprova.");
   try { await recordPlatformInvestmentFee(env, investmentFee); } catch (error) { console.error('Could not record Simple Earn platform fee:', error); }
@@ -2526,15 +2519,8 @@ async function marketInvest(request, env) {
   if (!Number.isFinite(grossAmount) || grossAmount < 50) return bad("L'importo minimo è 50 USDT.");
   if (!Number.isFinite(stopLossPct)) return bad("Profilo stop-loss non disponibile.");
   const source = ['deposit', 'earnings', 'released'].includes(body.source) ? body.source : 'deposit';
-  const redeemablePool = source === 'earnings' || source === 'released';
-  const sourceBalanceSql = redeemablePool ? '(earnings + released)' : source;
-  const walletDebit = redeemablePool
-    ? source === 'released'
-      ? env.DB.prepare("UPDATE wallets SET released = released - MIN(released, ?), earnings = earnings - MAX(0, ? - released) WHERE user_id = ? AND (earnings + released) >= ?")
-      : env.DB.prepare("UPDATE wallets SET earnings = earnings - MIN(earnings, ?), released = released - MAX(0, ? - earnings) WHERE user_id = ? AND (earnings + released) >= ?")
-    : env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?");
   const wallet = await accrue(env, user.id);
-  if (grossAmount > (redeemablePool ? Number(wallet.earnings || 0) + Number(wallet.released || 0) : Number(wallet[source] || 0)) + 1e-9) return bad("Saldo disponibile insufficiente.");
+  if (grossAmount > Number(wallet[source] || 0) + 1e-9) return bad("Saldo disponibile insufficiente.");
   const electricityMarket = normalizeElectricityMarket(body.electricityMarket);
   const quotes = await currentMarketQuotes(electricityMarket);
   const entry = { __electricityMarket: electricityMarket };
@@ -2547,9 +2533,9 @@ async function marketInvest(request, env) {
   const results = await env.DB.batch([
     env.DB.prepare(
       "INSERT INTO market_positions (user_id, plan_id, months, amount, stop_loss_pct, risk_level, allocations_json, entry_quotes_json, last_value, status, created_at, basis_updated_at) " +
-      "SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ? WHERE EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + sourceBalanceSql + " >= ?)"
+      "SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ? WHERE EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + source + " >= ?)"
     ).bind(user.id, 'plan-' + months + 'm', months, amount, stopLossPct, riskLevel, JSON.stringify(allocation), JSON.stringify(entry), amount, now, now, user.id, grossAmount),
-    redeemablePool ? walletDebit.bind(grossAmount, grossAmount, user.id, grossAmount) : walletDebit.bind(grossAmount, user.id, grossAmount),
+    env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?").bind(grossAmount, user.id, grossAmount),
   ]);
   if (!(results[0]?.meta?.changes > 0) || !(results[1]?.meta?.changes > 0)) return bad("Saldo insufficiente o modifica concorrente dell'account. Aggiorna e riprova.");
   try { await recordPlatformInvestmentFee(env, investmentFee); } catch (error) { console.error('Could not record market investment platform fee:', error); }
@@ -2572,13 +2558,6 @@ async function customMarketInvest(request, env) {
   if (!Number.isFinite(grossPrincipal) || grossPrincipal < 1000) return bad('L’investimento minimo per un portafoglio personalizzato è 1.000 USDT.');
   if (!Number.isFinite(stopLossPct) || stopLossPct < 1 || stopLossPct > 90) return bad('Lo stop loss deve essere tra 1% e 90%.');
   const source = ['deposit', 'earnings', 'released'].includes(body.source) ? body.source : 'deposit';
-  const redeemablePool = source === 'earnings' || source === 'released';
-  const sourceBalanceSql = redeemablePool ? '(earnings + released)' : source;
-  const walletDebit = redeemablePool
-    ? source === 'released'
-      ? env.DB.prepare("UPDATE wallets SET released = released - MIN(released, ?), earnings = earnings - MAX(0, ? - released) WHERE user_id = ? AND (earnings + released) >= ?")
-      : env.DB.prepare("UPDATE wallets SET earnings = earnings - MIN(earnings, ?), released = released - MAX(0, ? - earnings) WHERE user_id = ? AND (earnings + released) >= ?")
-    : env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?");
   const rawAllocations = Array.isArray(body.allocations) ? body.allocations : [];
   if (rawAllocations.length < 1 || rawAllocations.length > MARKET_CUSTOM_ASSETS.size) return bad('Seleziona almeno 1 asset.');
   const seen = new Set(), allocations = [];
@@ -2593,7 +2572,7 @@ async function customMarketInvest(request, env) {
   if (Math.abs(allocationTotal - 100) > 0.01) return bad('Le percentuali degli asset devono sommare esattamente 100%.');
   const totalCharge = Number((grossPrincipal + fee).toFixed(3));
   const wallet = await accrue(env, user.id);
-  if (totalCharge > (redeemablePool ? Number(wallet.earnings || 0) + Number(wallet.released || 0) : Number(wallet[source] || 0)) + 1e-9) return bad('Saldo insufficiente: servono ' + totalCharge.toFixed(3) + ' USDT, inclusa la quota del piano.');
+  if (totalCharge > Number(wallet[source] || 0) + 1e-9) return bad('Saldo insufficiente: servono ' + totalCharge.toFixed(3) + ' USDT, inclusa la quota del piano.');
   const electricityMarket = normalizeElectricityMarket(body.electricityMarket);
   const quotes = await currentMarketQuotes(electricityMarket), entry = { __electricityMarket: electricityMarket };
   for (const [key] of allocations) {
@@ -2605,9 +2584,9 @@ async function customMarketInvest(request, env) {
   const results = await env.DB.batch([
     env.DB.prepare(
       "INSERT INTO market_positions (user_id, plan_id, months, amount, stop_loss_pct, risk_level, allocations_json, entry_quotes_json, last_value, status, created_at, basis_updated_at, custom_fee) " +
-      "SELECT ?, ?, ?, ?, ?, 'custom', ?, ?, ?, 'active', ?, ?, ? WHERE EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + sourceBalanceSql + " >= ?)"
+      "SELECT ?, ?, ?, ?, ?, 'custom', ?, ?, ?, 'active', ?, ?, ? WHERE EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + source + " >= ?)"
     ).bind(user.id, 'custom-' + months + 'm', months, principal, stopLossPct, JSON.stringify(allocations), JSON.stringify(entry), principal, now, now, fee, user.id, totalCharge),
-    redeemablePool ? walletDebit.bind(totalCharge, totalCharge, user.id, totalCharge) : walletDebit.bind(totalCharge, user.id, totalCharge),
+    env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?").bind(totalCharge, user.id, totalCharge),
   ]);
   if (!(results[0]?.meta?.changes > 0) || !(results[1]?.meta?.changes > 0)) return bad('Saldo insufficiente o modifica concorrente dell’account. Aggiorna e riprova.');
   try { await recordPlatformInvestmentFee(env, investmentFee); } catch (error) { console.error('Could not record custom investment platform fee:', error); }
