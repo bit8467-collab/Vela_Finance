@@ -290,7 +290,7 @@
         <div class="action-grid home-actions" aria-label="Account actions">
           <button class="action-tile" type="button" data-open="deposit-dialog"><span class="action-symbol">↓</span><b>Deposit USDT</b></button>
           <button class="action-tile" type="button" data-open="withdraw-dialog"><span class="action-symbol">↑</span><b>Withdraw funds</b></button>
-         
+          <button class="action-tile" type="button" data-open="transfer-dialog"><span class="action-symbol">⇄</span><b>Move deposit to earnings</b></button>
           <button class="action-tile wide-tile" id="redeem-earnings-button" type="button" data-redeem-earnings disabled><span class="action-symbol">↻</span><b>Redeem available gains</b><span class="tile-arrow" aria-hidden="true">→</span></button>
         </div>
         <section class="home-shortcuts" aria-label="Account sections"><button class="home-shortcut" type="button" data-go="transactions"><span class="shortcut-icon">↕</span><span><b>Movements</b><small>Deposits, withdrawals and investments</small></span><i>→</i></button><button class="home-shortcut" type="button" data-go="investments"><span class="shortcut-icon">↗</span><span><b>Investments</b><small>Open and completed positions</small></span><i>→</i></button><button class="home-shortcut" type="button" data-go="catalog"><span class="shortcut-icon">▤</span><span><b>Plans</b><small>Explore investment plans</small></span><i>→</i></button><button class="home-shortcut" type="button" data-go="profile"><span class="shortcut-icon">◉</span><span><b>Profile</b><small>Account details and settings</small></span><i>→</i></button></section>
@@ -667,7 +667,20 @@
       </form>
     </dialog>
 
-    
+    <dialog class="modal" id="transfer-dialog" aria-labelledby="transfer-title">
+      <form class="modal-card" id="transfer-form">
+        <button class="modal-close" type="button" data-close="transfer-dialog" aria-label="Close">×</button>
+        <p class="eyebrow">INTERNAL TRANSFER</p><h2 id="transfer-title">Move deposit to earnings</h2>
+        <p class="available-line">Deposit balance: <b id="transfer-available">0.00 USDT</b></p>
+        <label for="transfer-amount">Amount (USDT)</label>
+        <input id="transfer-amount" type="number" inputmode="decimal" min="0.001" step="0.001" placeholder="Amount" required>
+        <p class="small-note">A 25% commission is deducted. The remaining 75% is credited to your earnings balance.</p>
+        <p class="available-line">Commission (25%): <b id="transfer-fee-amount">0.00 USDT</b></p>
+        <p class="available-line">Amount credited: <b id="transfer-net-amount">0.00 USDT</b></p>
+        <p class="form-error" id="transfer-error" role="alert"></p>
+        <button class="primary-button" type="submit">Confirm transfer</button>
+      </form>
+    </dialog>
 
     <dialog class="modal" id="plan-dialog" aria-labelledby="plan-dialog-title">
       <form class="modal-card" id="plan-form">
@@ -744,7 +757,7 @@
         </details>
         
         <div class="investment-detail-actions"><button class="primary-button" id="investment-detail-redeem-gains" type="button" hidden>Redeem gains</button><button class="outline-button" id="investment-detail-add-funds" type="button" hidden>Add funds</button><button class="danger-button" id="investment-detail-close-early" type="button" hidden>Close early · 35% fee</button></div>
-        <p class="modal-footnote">The platform tracks reference quotes only and does not purchase or custody these assets. 20% of the entered amount is retained at opening; 80% is invested. Early closure costs 35% of current reference value; the 20% is not charged again. Withdrawals from deposit or released balances have a 25% fee; earnings withdrawals remain 8%.</p>
+        <p class="modal-footnote">The platform tracks reference quotes; it does not purchase or custody these assets. Closing early deducts 35% of current reference value; the remainder stays in the internal balance.</p>
       </div>
     </dialog>
 

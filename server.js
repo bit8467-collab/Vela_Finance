@@ -705,52 +705,23 @@ async function hashAdminSecret(secret, saltHex, iterations = 20000) {
   return [...new Uint8Array(bits)].map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
-function sessionTokenCandidates(request) {
-  const candidates = [];
-  const add = value => {
-    const token = String(value || "").trim().replace(/^Bearer\s+/i, "").trim();
-    if (token && !candidates.includes(token)) candidates.push(token);
-  };
-  add(request.headers.get("x-session-token"));
-  add(request.headers.get("authorization"));
-  return candidates;
-}
-
-function sessionTokenFromRequest(request) {
-  return sessionTokenCandidates(request)[0] || "";
-}
-
 async function sessionUser(request, env) {
-  const tokens = sessionTokenCandidates(request);
-  if (!tokens.length) return null;
-  const now = Date.now();
-  for (const token of tokens) {
-    const session = await env.DB.prepare("SELECT user_id, created_at FROM sessions WHERE token = ?").bind(token).first();
-    if (!session) continue;
-    const lastActivity = Number(session.created_at);
-    if (!Number.isFinite(lastActivity) || lastActivity <= 0 || lastActivity < now - 30 * DAY) {
-      await env.DB.prepare("DELETE FROM sessions WHERE token = ?").bind(token).run();
-      continue;
-    }
-    // Keep an actively used session alive for 30 days after its latest activity.
-    if (now - lastActivity >= 6 * 60 * 60 * 1000) {
-      try { await env.DB.prepare("UPDATE sessions SET created_at = ? WHERE token = ? AND created_at = ?").bind(now, token, session.created_at).run(); } catch {}
-    }
-    const user = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(session.user_id).first();
-    if (user) return user;
+  const h = (request.headers.get("x-session-token") || "").trim();
+  if (!h) return null;
+  const s = await env.DB.prepare("SELECT user_id, created_at FROM sessions WHERE token = ?").bind(h).first();
+  if (!s) return null;
+  if (s.created_at < Date.now() - 30 * DAY) {
+    await env.DB.prepare("DELETE FROM sessions WHERE token = ?").bind(h).run();
+    return null;
   }
-  return null;
+  return env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(s.user_id).first();
 }
 
 async function adminSessionUser(request, env) {
   const token = (request.headers.get("x-admin-token") || "").trim();
   if (!token) return null;
-  const now = Date.now();
-  const session = await env.DB.prepare("SELECT user_id, expires_at FROM admin_sessions WHERE token = ? AND expires_at > ?").bind(token, now).first();
+  const session = await env.DB.prepare("SELECT user_id FROM admin_sessions WHERE token = ? AND expires_at > ?").bind(token, Date.now()).first();
   if (!session) return null;
-  if (Number(session.expires_at) - now < 15 * DAY) {
-    try { await env.DB.prepare("UPDATE admin_sessions SET expires_at = ? WHERE token = ? AND expires_at > ?").bind(now + 30 * DAY, token, now).run(); } catch {}
-  }
   if (session.user_id === PRIMARY_ADMIN_ID) return { id: PRIMARY_ADMIN_ID, username: "Admin", identifier: PRIMARY_ADMIN_EMAIL, email_verified: 1, created_at: 0 };
   return env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(session.user_id).first();
 }
@@ -1163,7 +1134,7 @@ const workerHandler = {
           status TEXT NOT NULL DEFAULT 'active',
           created_at INTEGER NOT NULL,
           closed_at INTEGER,
-          interest_paid REAL NOT NULL DEFAULT 0,
+          interest_paid REAL NOT NULL DEFAULT 0
           opening_withholding REAL NOT NULL DEFAULT 0
         );`,
         `CREATE INDEX IF NOT EXISTS simple_earn_user_status ON simple_earn_positions(user_id, status, created_at DESC);`,
@@ -1173,6 +1144,7 @@ const workerHandler = {
           plan_id TEXT NOT NULL,
           months INTEGER NOT NULL,
           amount REAL NOT NULL,
+          opening_withholding REAL NOT NULL DEFAULT 0,
           stop_loss_pct REAL NOT NULL DEFAULT 20,
           allocations_json TEXT NOT NULL,
           entry_quotes_json TEXT NOT NULL,
@@ -1187,7 +1159,6 @@ const workerHandler = {
           auto_redeem_enabled INTEGER NOT NULL DEFAULT 0,
           auto_redeem_pct REAL NOT NULL DEFAULT 10,
           custom_fee REAL NOT NULL DEFAULT 0,
-          opening_withholding REAL NOT NULL DEFAULT 0,
           auto_add_enabled INTEGER NOT NULL DEFAULT 0,
           auto_add_drawdown_pct REAL NOT NULL DEFAULT 10,
           auto_add_mode TEXT NOT NULL DEFAULT 'fixed',
@@ -1354,6 +1325,8 @@ const workerHandler = {
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN charged_amount REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN auto_approve_at INTEGER NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_withdrawals_auto_approval ON withdrawals(status, transfer_status, auto_approve_at)").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE simple_earn_positions ADD COLUMN opening_withholding REAL NOT NULL DEFAULT 0").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN opening_withholding REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE support_threads ADD COLUMN final_message_id INTEGER").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE support_threads ADD COLUMN support_operator_id TEXT").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE support_threads ADD COLUMN support_operator_username TEXT").run(); } catch {}
@@ -1371,7 +1344,6 @@ const workerHandler = {
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN source TEXT NOT NULL DEFAULT 'earnings'").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN tx_reference TEXT NOT NULL DEFAULT ''").run(); } catch {}
     await env.DB.prepare("UPDATE withdrawals SET transfer_status = 'sent' WHERE status = 'pending' AND tx_reference != '' AND transfer_status = 'pending'").run();
-    try { await env.DB.prepare("ALTER TABLE simple_earn_positions ADD COLUMN opening_withholding REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN risk_level TEXT NOT NULL DEFAULT 'legacy'").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN early_close_fee REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN last_redemption_id TEXT NOT NULL DEFAULT ''").run(); } catch {}
@@ -1379,7 +1351,6 @@ const workerHandler = {
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_redeem_enabled INTEGER NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_redeem_pct REAL NOT NULL DEFAULT 10").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN custom_fee REAL NOT NULL DEFAULT 0").run(); } catch {}
-    try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN opening_withholding REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_add_enabled INTEGER NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_add_drawdown_pct REAL NOT NULL DEFAULT 10").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_add_mode TEXT NOT NULL DEFAULT 'fixed'").run(); } catch {}
@@ -1393,8 +1364,8 @@ const workerHandler = {
       await env.DB.exec(`
         CREATE TRIGGER market_position_release AFTER UPDATE OF status ON market_positions
         WHEN OLD.status IN ('active','paused') AND NEW.status IN ('matured','stop_loss','early_closed')
-        BEGIN
-          UPDATE wallets SET released = released + MAX(0, ROUND(NEW.last_value - NEW.early_close_fee, 3)) WHERE user_id = NEW.user_id;
+        BEGIN 
+          UPDATE wallets SET released = released + MAX(0, ROUND(NEW.last_value - NEW.early_close_fee, 3)) WHERE user_id = NEW.user_id; 
         END;
       `);
     } catch {}
@@ -1490,6 +1461,7 @@ const workerHandler = {
       if (method === "GET" && pathName === "/api/admin/deposit-addresses") return await adminDepositAddresses(request, env);
       if (method === "POST" && pathName === "/api/admin/deposit-addresses") return await saveAdminDepositAddresses(request, env);
       if (method === "POST" && pathName === "/api/withdraw") return await withdraw(request, env);
+      if (method === "POST" && pathName === "/api/transfer-deposit-earnings") return await transferDepositToEarnings(request, env);
       if (method === "POST" && pathName === "/api/security/confirm-otp") return await confirmSensitiveActionOtp(request, env);
       if (method === "POST" && pathName === "/api/save-wallet") return await saveWallet(request, env);
       if (method === "POST" && pathName === "/api/wallet-change-request") return await requestWalletChange(request, env);
@@ -2096,7 +2068,7 @@ async function login(request, env) {
 async function logout(request, env) {
   let body = {};
   try { body = await request.json(); } catch {}
-  const h = (sessionTokenFromRequest(request) || body.sessionToken || "").trim();
+  const h = (request.headers.get("x-session-token") || body.sessionToken || "").trim();
   const admin = (request.headers.get("x-admin-token") || body.adminToken || "").trim();
   if (h) await env.DB.prepare("DELETE FROM sessions WHERE token = ?").bind(h).run();
   if (admin) await env.DB.prepare("DELETE FROM admin_sessions WHERE token = ?").bind(admin).run();
@@ -2757,6 +2729,31 @@ async function savePositionAutoAdd(request, env) {
   return Response.json({ok:true,positionId,enabled,drawdownPct,mode,value,anchor});
 }
 
+async function transferDepositToEarnings(request, env) {
+  const user = await authed(request, env);
+  const body = await request.json().catch(() => ({}));
+  const amount = Number(Number(body.amount).toFixed(3));
+  if (!Number.isFinite(amount) || amount <= 0) return bad("Inserisci un importo valido.");
+  const wallet = await accrue(env, user.id);
+  if (amount > Number(wallet.deposit || 0) + 1e-9) return bad("Saldo deposito insufficiente.");
+  const feeAmount = Number((amount * 0.25).toFixed(3));
+  const creditedAmount = Number((amount - feeAmount).toFixed(3));
+  if (!(creditedAmount > 0)) return bad("L'importo è troppo piccolo dopo la commissione.");
+  const changed = await env.DB.prepare("UPDATE wallets SET deposit = deposit - ?, earnings = earnings + ? WHERE user_id = ? AND deposit >= ?").bind(amount, creditedAmount, user.id, amount).run();
+  if (!(changed.meta?.changes > 0)) return Response.json({ error: "Saldo deposito insufficiente o aggiornato. Riprova." }, { status: 409 });
+  const created = Date.now();
+  try {
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO balance_transfers (user_id, amount, fee_amount, credited_amount, created_at) VALUES (?, ?, ?, ?, ?)").bind(user.id, amount, feeAmount, creditedAmount, created),
+      env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Deposit balance transferred", amount.toFixed(3) + " USDT moved from deposit balance; 25% commission " + feeAmount.toFixed(3) + " USDT; " + creditedAmount.toFixed(3) + " USDT credited to earnings.", created),
+    ]);
+  } catch (error) {
+    await env.DB.prepare("UPDATE wallets SET deposit = deposit + ?, earnings = MAX(0, earnings - ?) WHERE user_id = ?").bind(amount, creditedAmount, user.id).run();
+    throw error;
+  }
+  return Response.json({ ok: true, amount, fee: feeAmount, credited: creditedAmount });
+}
+
 async function validateWithdrawal(env, user, body) {
   const amount = Number(body.amount);
   const net = String(body.net || "").trim();
@@ -3111,8 +3108,6 @@ async function readAutomaticWithdrawalDecisions(env) {
   const row = await env.DB.prepare("SELECT config_value FROM platform_config WHERE config_key = 'payment_auto_withdrawals'").first();
   return row?.config_value === "1";
 }
-const AUTOMATIC_WITHDRAWAL_DELAY_MINUTES = [0, 5, 15, 30, 60, 240, 1440];
-async function readAutomaticWithdrawalDelayMinutes(env) { const row = await env.DB.prepare("SELECT config_value FROM platform_config WHERE config_key = 'payment_auto_withdrawal_delay_minutes'").first(); const value = Number(row?.config_value ?? 0); return AUTOMATIC_WITHDRAWAL_DELAY_MINUTES.includes(value) ? value : 0; }
 async function getAdminPaymentSettings(request, env) {
   const actor = await adminAccess(request, env, "paymentDesk");
   if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
@@ -3671,8 +3666,7 @@ app.get('/api/asset-prices/stream', (req, res) => {
 app.all('/api/*', async (req, res) => {
   try {
     if (req.method === 'POST' && req.path === '/api/logout') {
-      const authorization = String(req.get('authorization') || '').match(/^Bearer\s+(.+)$/i);
-      const sessionToken = String(req.get('x-session-token') || authorization?.[1] || req.body?.sessionToken || '').trim();
+      const sessionToken = String(req.get('x-session-token') || req.body?.sessionToken || '').trim();
       const adminToken = String(req.get('x-admin-token') || req.body?.adminToken || '').trim();
       if (sessionToken) await env.DB.prepare("DELETE FROM sessions WHERE token = ?").bind(sessionToken).run();
       if (adminToken) await env.DB.prepare("DELETE FROM admin_sessions WHERE token = ?").bind(adminToken).run();
@@ -3724,6 +3718,7 @@ setInterval(async () => {
   } catch (error) { console.error("Automatic withdrawal approval sweep failed:", error); }
   finally { automaticWithdrawalSweepRunning = false; }
 }, 15000);
+
 if (!PRIMARY_ADMIN_EMAIL || !PRIMARY_ADMIN_PASSWORD) {
   console.warn("Admin authentication is disabled until ADMIN_EMAIL and ADMIN_PASSWORD are configured in Render.");
 }
