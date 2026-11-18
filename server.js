@@ -9,8 +9,8 @@ import { deflateRawSync } from 'zlib';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const DEFAULT_COMMISSION_RATES = Object.freeze({ withdrawalDepositPercent: 8, withdrawalEarningsPercent: 8, withdrawalReleasedPercent: 25 });
-const COMMISSION_CONFIG_KEYS = Object.freeze({ withdrawalDepositPercent: 'commission_withdrawal_deposit_pct', withdrawalEarningsPercent: 'commission_withdrawal_earnings_pct', withdrawalReleasedPercent: 'commission_withdrawal_released_pct' });
+const DEFAULT_COMMISSION_RATES = Object.freeze({ withdrawalDepositPercent: 8, withdrawalEarningsPercent: 8, withdrawalReleasedPercent: 25, earlyClosePercent: 35, investmentWithholdingPercent: 20 });
+const COMMISSION_CONFIG_KEYS = Object.freeze({ withdrawalDepositPercent: 'commission_withdrawal_deposit_pct', withdrawalEarningsPercent: 'commission_withdrawal_earnings_pct', withdrawalReleasedPercent: 'commission_withdrawal_released_pct', earlyClosePercent: 'commission_early_close_pct', investmentWithholdingPercent: 'commission_investment_withholding_pct' });
 const AUTO_APPROVAL_DELAYS_HOURS = Object.freeze([0, 1, 6, 12, 24, 48]);
 
 const PROMOTER_PACKAGE_TIERS = Object.freeze({
@@ -2363,7 +2363,7 @@ async function syncMarketPositions(env, userId) {
     const deposit=Number(wallet.deposit)||0,earnings=Number(wallet.earnings)||0,released=Number(wallet.released)||0,available=deposit+earnings+released;
     const added=mode==='balance_pct'?Math.floor((available*setting/100+1e-9)*1000)/1000:Number(setting.toFixed(3));
     if (!(available>0&&added>=0.001&&added<=available+1e-9&&(mode!=='fixed'||setting<=available+1e-9))) continue;
-    const investmentFee=Number((added*PLATFORM_INVESTMENT_FEE_RATE).toFixed(3)),investedAdded=Number((added-investmentFee).toFixed(3));
+    const investmentFee=Number((added*(await readCommissionRates(env)).investmentWithholdingPercent/100).toFixed(3)),investedAdded=Number((added-investmentFee).toFixed(3));
     const depositPart=Number(Math.min(deposit,added).toFixed(3)),earningsPart=Number(Math.min(earnings,Math.max(0,added-depositPart)).toFixed(3)),releasedPart=Number((added-depositPart-earningsPart).toFixed(3)),newAmount=Number((amount+investedAdded).toFixed(3)),newValue=Number((value+investedAdded).toFixed(3));
     let allocation=[],basis={};try{allocation=JSON.parse(row.allocations_json||'[]');basis=JSON.parse(row.entry_quotes_json||'{}')}catch{continue}
     const updatedBasis={...basis};let ready=true;for(const [key] of allocation){const current=Number(quotes[key]?.price),old=Number(basis[key])||current;if(!(current>0&&old>0)){ready=false;break}updatedBasis[key]=newAmount/(amount/old+investedAdded/current)}if(!ready||!allocation.length)continue;
@@ -2440,10 +2440,10 @@ async function saveAdminDepositAddresses(request, env) {
 }
 
 const PLATFORM_INVESTMENT_FEE_RATE = 0.20;
-function splitPlatformInvestmentAmount(grossValue) {
+function splitPlatformInvestmentAmount(grossValue, feeRate = PLATFORM_INVESTMENT_FEE_RATE) {
   const raw = Number(grossValue);
   const grossAmount = Number.isFinite(raw) ? Number(raw.toFixed(3)) : raw;
-  const feeAmount = Number.isFinite(grossAmount) ? Number((grossAmount * PLATFORM_INVESTMENT_FEE_RATE).toFixed(3)) : NaN;
+  const feeAmount = Number.isFinite(grossAmount) ? Number((grossAmount * feeRate).toFixed(3)) : NaN;
   const investedAmount = Number.isFinite(grossAmount) && Number.isFinite(feeAmount) ? Number((grossAmount - feeAmount).toFixed(3)) : NaN;
   return { grossAmount, feeAmount, investedAmount };
 }
@@ -2457,16 +2457,24 @@ async function recordPlatformInvestmentFee(env, feeAmount) {
 async function simpleEarnInvest(request, env) {
   const user = await authed(request, env);
   const body = await request.json().catch(() => ({}));
-  const { grossAmount, feeAmount: investmentFee, investedAmount: amount } = splitPlatformInvestmentAmount(body.amount);
+  const investmentWithholdingPercent = (await readCommissionRates(env)).investmentWithholdingPercent;
+  const { grossAmount, feeAmount: investmentFee, investedAmount: amount } = splitPlatformInvestmentAmount(body.amount, investmentWithholdingPercent / 100);
   const source = ['deposit', 'earnings', 'released'].includes(body.source) ? body.source : 'deposit';
+  const redeemablePool = source === 'earnings' || source === 'released';
+  const sourceBalanceSql = redeemablePool ? '(earnings + released)' : source;
+  const walletDebit = redeemablePool
+    ? source === 'released'
+      ? env.DB.prepare("UPDATE wallets SET released = released - MIN(released, ?), earnings = earnings - MAX(0, ? - released) WHERE user_id = ? AND (earnings + released) >= ?")
+      : env.DB.prepare("UPDATE wallets SET earnings = earnings - MIN(earnings, ?), released = released - MAX(0, ? - earnings) WHERE user_id = ? AND (earnings + released) >= ?")
+    : env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?");
   if (!Number.isFinite(grossAmount) || grossAmount < 200 || grossAmount > 1e12) return bad("L'investimento minimo per Simple Earn è 200 USDT.");
   const wallet = await accrue(env, user.id);
-  if (grossAmount > Number(wallet[source] || 0) + 1e-9) return bad("Saldo disponibile insufficiente.");
+  if (grossAmount > (redeemablePool ? Number(wallet.earnings || 0) + Number(wallet.released || 0) : Number(wallet[source] || 0)) + 1e-9) return bad("Saldo disponibile insufficiente.");
   const dailyRate = amount <= 500 ? 0.0019 : amount <= 1000 ? 0.0024 : amount <= 2500 ? 0.0029 : 0.0036;
   const now = Date.now();
   const results = await env.DB.batch([
-    env.DB.prepare("INSERT INTO simple_earn_positions (user_id, principal, source, daily_rate, status, created_at) SELECT ?, ?, ?, ?, 'active', ? WHERE EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + source + " >= ?)").bind(user.id, amount, source, dailyRate, now, user.id, grossAmount),
-    env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?").bind(grossAmount, user.id, grossAmount)
+    env.DB.prepare("INSERT INTO simple_earn_positions (user_id, principal, source, daily_rate, status, created_at) SELECT ?, ?, ?, ?, 'active', ? WHERE EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + sourceBalanceSql + " >= ?)").bind(user.id, amount, source, dailyRate, now, user.id, grossAmount),
+    redeemablePool ? walletDebit.bind(grossAmount, grossAmount, user.id, grossAmount) : walletDebit.bind(grossAmount, user.id, grossAmount)
   ]);
   if (!(results[0]?.meta?.changes > 0) || !(results[1]?.meta?.changes > 0)) return bad("Saldo insufficiente o account aggiornato. Aggiorna e riprova.");
   try { await recordPlatformInvestmentFee(env, investmentFee); } catch (error) { console.error('Could not record Simple Earn platform fee:', error); }
@@ -2493,7 +2501,8 @@ async function simpleEarnRedeem(request, env) {
 async function marketInvest(request, env) {
   const user = await authed(request, env);
   const body = await request.json();
-  const { grossAmount, feeAmount: investmentFee, investedAmount: amount } = splitPlatformInvestmentAmount(body.amount);
+  const investmentWithholdingPercent = (await readCommissionRates(env)).investmentWithholdingPercent;
+  const { grossAmount, feeAmount: investmentFee, investedAmount: amount } = splitPlatformInvestmentAmount(body.amount, investmentWithholdingPercent / 100);
   const months = Number(body.months);
   if (body.riskAcknowledged !== true) return bad('È necessario confermare di aver compreso i rischi prima di avviare il piano.');
   const riskLevel = typeof body.riskLevel === 'string' ? body.riskLevel : 'balanced';
@@ -2517,8 +2526,15 @@ async function marketInvest(request, env) {
   if (!Number.isFinite(grossAmount) || grossAmount < 50) return bad("L'importo minimo è 50 USDT.");
   if (!Number.isFinite(stopLossPct)) return bad("Profilo stop-loss non disponibile.");
   const source = ['deposit', 'earnings', 'released'].includes(body.source) ? body.source : 'deposit';
+  const redeemablePool = source === 'earnings' || source === 'released';
+  const sourceBalanceSql = redeemablePool ? '(earnings + released)' : source;
+  const walletDebit = redeemablePool
+    ? source === 'released'
+      ? env.DB.prepare("UPDATE wallets SET released = released - MIN(released, ?), earnings = earnings - MAX(0, ? - released) WHERE user_id = ? AND (earnings + released) >= ?")
+      : env.DB.prepare("UPDATE wallets SET earnings = earnings - MIN(earnings, ?), released = released - MAX(0, ? - earnings) WHERE user_id = ? AND (earnings + released) >= ?")
+    : env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?");
   const wallet = await accrue(env, user.id);
-  if (grossAmount > Number(wallet[source] || 0) + 1e-9) return bad("Saldo disponibile insufficiente.");
+  if (grossAmount > (redeemablePool ? Number(wallet.earnings || 0) + Number(wallet.released || 0) : Number(wallet[source] || 0)) + 1e-9) return bad("Saldo disponibile insufficiente.");
   const electricityMarket = normalizeElectricityMarket(body.electricityMarket);
   const quotes = await currentMarketQuotes(electricityMarket);
   const entry = { __electricityMarket: electricityMarket };
@@ -2531,9 +2547,9 @@ async function marketInvest(request, env) {
   const results = await env.DB.batch([
     env.DB.prepare(
       "INSERT INTO market_positions (user_id, plan_id, months, amount, stop_loss_pct, risk_level, allocations_json, entry_quotes_json, last_value, status, created_at, basis_updated_at) " +
-      "SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ? WHERE EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + source + " >= ?)"
+      "SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ? WHERE EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + sourceBalanceSql + " >= ?)"
     ).bind(user.id, 'plan-' + months + 'm', months, amount, stopLossPct, riskLevel, JSON.stringify(allocation), JSON.stringify(entry), amount, now, now, user.id, grossAmount),
-    env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?").bind(grossAmount, user.id, grossAmount),
+    redeemablePool ? walletDebit.bind(grossAmount, grossAmount, user.id, grossAmount) : walletDebit.bind(grossAmount, user.id, grossAmount),
   ]);
   if (!(results[0]?.meta?.changes > 0) || !(results[1]?.meta?.changes > 0)) return bad("Saldo insufficiente o modifica concorrente dell'account. Aggiorna e riprova.");
   try { await recordPlatformInvestmentFee(env, investmentFee); } catch (error) { console.error('Could not record market investment platform fee:', error); }
@@ -2548,13 +2564,21 @@ async function customMarketInvest(request, env) {
   if (body.riskAcknowledged !== true) return bad('È necessario confermare di aver compreso i rischi prima di avviare il piano.');
   const months = Number(body.months);
   const grossPrincipal = Number(Number(body.amount).toFixed(3));
-  const { feeAmount: investmentFee, investedAmount: principal } = splitPlatformInvestmentAmount(grossPrincipal);
+  const investmentWithholdingPercent = (await readCommissionRates(env)).investmentWithholdingPercent;
+  const { feeAmount: investmentFee, investedAmount: principal } = splitPlatformInvestmentAmount(grossPrincipal, investmentWithholdingPercent / 100);
   const stopLossPct = Number(body.stopLossPct);
   const fee = CUSTOM_PLAN_FEES[months];
   if (!fee) return bad('Durata del piano personalizzato non valida.');
   if (!Number.isFinite(grossPrincipal) || grossPrincipal < 1000) return bad('L’investimento minimo per un portafoglio personalizzato è 1.000 USDT.');
   if (!Number.isFinite(stopLossPct) || stopLossPct < 1 || stopLossPct > 90) return bad('Lo stop loss deve essere tra 1% e 90%.');
   const source = ['deposit', 'earnings', 'released'].includes(body.source) ? body.source : 'deposit';
+  const redeemablePool = source === 'earnings' || source === 'released';
+  const sourceBalanceSql = redeemablePool ? '(earnings + released)' : source;
+  const walletDebit = redeemablePool
+    ? source === 'released'
+      ? env.DB.prepare("UPDATE wallets SET released = released - MIN(released, ?), earnings = earnings - MAX(0, ? - released) WHERE user_id = ? AND (earnings + released) >= ?")
+      : env.DB.prepare("UPDATE wallets SET earnings = earnings - MIN(earnings, ?), released = released - MAX(0, ? - earnings) WHERE user_id = ? AND (earnings + released) >= ?")
+    : env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?");
   const rawAllocations = Array.isArray(body.allocations) ? body.allocations : [];
   if (rawAllocations.length < 1 || rawAllocations.length > MARKET_CUSTOM_ASSETS.size) return bad('Seleziona almeno 1 asset.');
   const seen = new Set(), allocations = [];
@@ -2569,7 +2593,7 @@ async function customMarketInvest(request, env) {
   if (Math.abs(allocationTotal - 100) > 0.01) return bad('Le percentuali degli asset devono sommare esattamente 100%.');
   const totalCharge = Number((grossPrincipal + fee).toFixed(3));
   const wallet = await accrue(env, user.id);
-  if (totalCharge > Number(wallet[source] || 0) + 1e-9) return bad('Saldo insufficiente: servono ' + totalCharge.toFixed(3) + ' USDT, inclusa la quota del piano.');
+  if (totalCharge > (redeemablePool ? Number(wallet.earnings || 0) + Number(wallet.released || 0) : Number(wallet[source] || 0)) + 1e-9) return bad('Saldo insufficiente: servono ' + totalCharge.toFixed(3) + ' USDT, inclusa la quota del piano.');
   const electricityMarket = normalizeElectricityMarket(body.electricityMarket);
   const quotes = await currentMarketQuotes(electricityMarket), entry = { __electricityMarket: electricityMarket };
   for (const [key] of allocations) {
@@ -2581,10 +2605,9 @@ async function customMarketInvest(request, env) {
   const results = await env.DB.batch([
     env.DB.prepare(
       "INSERT INTO market_positions (user_id, plan_id, months, amount, stop_loss_pct, risk_level, allocations_json, entry_quotes_json, last_value, status, created_at, basis_updated_at, custom_fee) " +
-      "SELECT ?, ?, ?, ?, ?, 'custom', ?, ?, ?, 'active', ?, ?, ? WHERE EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + source + " >= ?)"
+      "SELECT ?, ?, ?, ?, ?, 'custom', ?, ?, ?, 'active', ?, ?, ? WHERE EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + sourceBalanceSql + " >= ?)"
     ).bind(user.id, 'custom-' + months + 'm', months, principal, stopLossPct, JSON.stringify(allocations), JSON.stringify(entry), principal, now, now, fee, user.id, totalCharge),
-    env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?")
-      .bind(totalCharge, user.id, totalCharge),
+    redeemablePool ? walletDebit.bind(totalCharge, totalCharge, user.id, totalCharge) : walletDebit.bind(totalCharge, user.id, totalCharge),
   ]);
   if (!(results[0]?.meta?.changes > 0) || !(results[1]?.meta?.changes > 0)) return bad('Saldo insufficiente o modifica concorrente dell’account. Aggiorna e riprova.');
   try { await recordPlatformInvestmentFee(env, investmentFee); } catch (error) { console.error('Could not record custom investment platform fee:', error); }
@@ -2708,7 +2731,8 @@ async function closeMarketPositionEarly(request, env) {
   const quotes = await currentMarketQuotes(positionElectricityMarket(position));
   const value = Number(marketPositionValue(position, quotes).toFixed(3));
   if (!(value > 0)) return bad('Il valore di riferimento non è disponibile per la chiusura.');
-  const fee = Number((value * 0.35).toFixed(3));
+  const earlyClosePercent = (await readCommissionRates(env)).earlyClosePercent;
+  const fee = Number((value * earlyClosePercent / 100).toFixed(3));
   const net = Number((value - fee).toFixed(3));
   const now = Date.now();
   const transactionId = makeToken();
@@ -2718,10 +2742,10 @@ async function closeMarketPositionEarly(request, env) {
     env.DB.prepare("UPDATE wallets SET released = MAX(0, released - ?), earnings = earnings + ? WHERE user_id = ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'early_closed' AND last_redemption_id = ?)")
       .bind(value, net, user.id, id, user.id, transactionId),
     env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'early_closed' AND last_redemption_id = ?)")
-      .bind(user.id, 'Plan closed early', 'Current reference value ' + value.toFixed(3) + ' USDT; 35% early-closure fee ' + fee.toFixed(3) + ' USDT; net credited to earnings balance and available for withdrawal request ' + net.toFixed(3) + ' USDT. No external payout was made.', now, id, user.id, transactionId),
+      .bind(user.id, 'Plan closed early', 'Current reference value ' + value.toFixed(3) + ' USDT; ' + earlyClosePercent + '% early-closure fee ' + fee.toFixed(3) + ' USDT; net credited to earnings balance and available for withdrawal request ' + net.toFixed(3) + ' USDT. No external payout was made.', now, id, user.id, transactionId),
   ]);
   if (!(batch[0]?.meta?.changes > 0)) return Response.json({ error: 'Il piano è cambiato. Aggiorna e riprova.' }, { status: 409 });
-  return Response.json({ ok: true, referenceValue: value, fee, net });
+  return Response.json({ ok: true, referenceValue: value, fee, net, feePercent: earlyClosePercent });
 }
 
 async function savePositionAutoRedeem(request, env) {
@@ -3109,12 +3133,13 @@ async function readAutomaticApprovalDelayHours(env) {
 }
 async function readCommissionRates(env) {
   const keys = Object.values(COMMISSION_CONFIG_KEYS);
-  const result = await env.DB.prepare("SELECT config_key, config_value FROM platform_config WHERE config_key IN (?, ?, ?)").bind(...keys).all();
+  const result = await env.DB.prepare("SELECT config_key, config_value FROM platform_config WHERE config_key IN (" + keys.map(() => "?").join(",") + ")").bind(...keys).all();
   const stored = new Map((result.results || []).map(row => [row.config_key, Number(row.config_value)]));
   const rates = {};
   for (const [field, key] of Object.entries(COMMISSION_CONFIG_KEYS)) {
     const value = stored.get(key);
-    rates[field] = Number.isFinite(value) && value >= 0 && value <= 50 ? value : DEFAULT_COMMISSION_RATES[field];
+    const maxValue = field === "earlyClosePercent" || field === "investmentWithholdingPercent" ? 100 : 50;
+    rates[field] = Number.isFinite(value) && value >= 0 && value <= maxValue ? value : DEFAULT_COMMISSION_RATES[field];
   }
   return rates;
 }
@@ -3153,7 +3178,8 @@ async function saveAdminCommissionSettings(request, env) {
   for (const field of Object.keys(COMMISSION_CONFIG_KEYS)) {
     if (!Object.prototype.hasOwnProperty.call(body, field)) continue;
     const value = Number(body[field]);
-    if (!Number.isFinite(value) || value < 0 || value > 50 || Math.abs(Math.round(value * 100) - value * 100) > 1e-8) return bad("Le commissioni devono essere comprese tra 0 e 50%, con massimo due decimali.");
+    const maxValue = field === "earlyClosePercent" || field === "investmentWithholdingPercent" ? 100 : 50;
+    if (!Number.isFinite(value) || value < 0 || value > maxValue || Math.abs(Math.round(value * 100) - value * 100) > 1e-8) return bad("Le percentuali devono essere comprese nei limiti consentiti, con massimo due decimali.");
     next[field] = value;
   }
   if (!Object.keys(COMMISSION_CONFIG_KEYS).some(field => Object.prototype.hasOwnProperty.call(body, field))) return bad("Nessuna commissione valida ricevuta.");

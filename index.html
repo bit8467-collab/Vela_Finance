@@ -569,6 +569,8 @@
             <label for="commission-withdraw-deposit">Withdrawal · deposit balance (%)</label><input id="commission-withdraw-deposit" type="number" min="0" max="50" step="0.01" required>
             <label for="commission-withdraw-earnings">Withdrawal · earnings balance (%)</label><input id="commission-withdraw-earnings" type="number" min="0" max="50" step="0.01" required>
             <label for="commission-withdraw-released">Withdrawal · released capital (%)</label><input id="commission-withdraw-released" type="number" min="0" max="50" step="0.01" required>
+            <label for="commission-early-close">Early plan closure fee (%)</label><input id="commission-early-close" type="number" min="0" max="100" step="0.01" required>
+            <label for="commission-investment-withholding">Investment amount withholding (%)</label><input id="commission-investment-withholding" type="number" min="0" max="100" step="0.01" required>
             <button class="primary-button" id="save-commission-settings" type="submit">Save commissions</button>
             <p class="payment-admin-config-status" id="commission-settings-status" role="status" aria-live="polite"></p>
           </form>
@@ -732,7 +734,7 @@
         <label class="risk-acknowledgement"><input id="plan-risk-ack" type="checkbox" required><span>I understand that market values can fall, losses are possible, and displayed tracking values are not guaranteed returns or assets held by the platform.</span></label>
         <p class="form-error" id="plan-error" role="alert"></p>
         <button class="primary-button" id="confirm-plan-button" type="submit">Confirm plan</button>
-        <p class="modal-footnote">Plans are market-tracking records based on public quotes; no market orders or external payments are executed. All plans pause at their stop and resume after recovery, with tracked value held at or above the configured stop threshold. Early closure has a 35% fee on the current reference value.</p>
+        <p class="modal-footnote">Plans are market-tracking records based on public quotes; no market orders or external payments are executed. All plans pause at their stop and resume after recovery, with tracked value held at or above the configured stop threshold. Early closure applies the current fee shown before confirmation.</p>
       </form>
     </dialog>
 
@@ -792,8 +794,8 @@
           <div id="investment-asset-history-list" class="investment-asset-history-grid"></div>
         </details>
         
-        <div class="investment-detail-actions"><button class="primary-button" id="investment-detail-redeem-gains" type="button" hidden>Redeem gains</button><button class="outline-button" id="investment-detail-add-funds" type="button" hidden>Add funds</button><button class="danger-button" id="investment-detail-close-early" type="button" hidden>Close early · 35% fee</button></div>
-        <p class="modal-footnote">The platform tracks reference quotes; it does not purchase or custody these assets. Closing early deducts 35% of current reference value; the remainder stays in the internal balance.</p>
+        <div class="investment-detail-actions"><button class="primary-button" id="investment-detail-redeem-gains" type="button" hidden>Redeem gains</button><button class="outline-button" id="investment-detail-add-funds" type="button" hidden>Add funds</button><button class="danger-button" id="investment-detail-close-early" type="button" hidden>Close early · current fee</button></div>
+        <p class="modal-footnote">The platform tracks reference quotes; it does not purchase or custody these assets. Closing early deducts the current configured percentage of current reference value; the remainder stays in the internal balance.</p>
       </div>
     </dialog>
 
