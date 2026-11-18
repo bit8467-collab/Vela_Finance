@@ -569,6 +569,23 @@
         </header>
         <p class="payment-desk-note">Use this desk to verify transfers. When automatic decisions are enabled, confirmed deposits are approved, sent withdrawals are approved, and transfers confirmed as not sent are rejected.</p>
         <div class="payment-auto-control"><div><b>Automatic request decisions</b><small id="payment-auto-description">Loading setting…</small></div><button type="button" id="toggle-payment-auto-decisions" aria-pressed="false">Automatic decisions: OFF</button></div>
+        <div class="payment-admin-config">
+          <section class="payment-admin-config-card" aria-labelledby="payment-delay-title">
+            <h2 id="payment-delay-title">Automatic approval timing</h2>
+            <p>Delay starts only after an admin confirms the deposit was received or the withdrawal was sent.</p>
+            <label for="payment-auto-delay">Approval delay</label>
+            <div class="payment-admin-config-row"><select id="payment-auto-delay"><option value="0">Immediately</option><option value="1">1 hour</option><option value="6">6 hours</option><option value="12">12 hours</option><option value="24">24 hours</option><option value="48">48 hours</option></select><button class="outline-button" id="save-payment-delay" type="button">Save timing</button></div>
+            <p class="payment-admin-config-status" id="payment-delay-status" role="status" aria-live="polite"></p>
+          </section>
+          <form class="payment-admin-config-card" id="commission-settings-form">
+            <h2>Commission percentages</h2>
+            <label for="commission-withdraw-earnings">Withdrawal · earnings balance (%)</label><input id="commission-withdraw-earnings" type="number" min="0" max="50" step="0.01" required>
+            <label for="commission-withdraw-released">Withdrawal · released capital (%)</label><input id="commission-withdraw-released" type="number" min="0" max="50" step="0.01" required>
+            <label for="commission-deposit-transfer">Deposit-to-earnings transfer (%)</label><input id="commission-deposit-transfer" type="number" min="0" max="50" step="0.01" required>
+            <button class="primary-button" id="save-commission-settings" type="submit">Save commissions</button>
+            <p class="payment-admin-config-status" id="commission-settings-status" role="status" aria-live="polite"></p>
+          </form>
+        </div>
         <div class="payment-desk-sections">
           <details class="payment-desk-group" open>
             <summary><span>Incoming · deposits to receive</span><b class="count-pill" id="payment-incoming-count">0</b></summary>
@@ -673,8 +690,8 @@
         <p class="available-line">Deposit balance: <b id="transfer-available">0.00 USDT</b></p>
         <label for="transfer-amount">Amount (USDT)</label>
         <input id="transfer-amount" type="number" inputmode="decimal" min="0.001" step="0.001" placeholder="Amount" required>
-        <p class="small-note">A 25% commission is deducted. The remaining 75% is credited to your earnings balance.</p>
-        <p class="available-line">Commission (25%): <b id="transfer-fee-amount">0.00 USDT</b></p>
+        <p class="small-note" id="transfer-commission-note">A 25% commission is deducted. The remaining 75% is credited to your earnings balance.</p>
+        <p class="available-line"><span id="transfer-commission-label">Commission (25%):</span> <b id="transfer-fee-amount">0.00 USDT</b></p>
         <p class="available-line">Amount credited: <b id="transfer-net-amount">0.00 USDT</b></p>
         <p class="form-error" id="transfer-error" role="alert"></p>
         <button class="primary-button" type="submit">Confirm transfer</button>

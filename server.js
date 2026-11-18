@@ -9,6 +9,10 @@ import { deflateRawSync } from 'zlib';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const DEFAULT_COMMISSION_RATES = Object.freeze({ withdrawalEarningsPercent: 8, withdrawalReleasedPercent: 25, depositTransferPercent: 25 });
+const COMMISSION_CONFIG_KEYS = Object.freeze({ withdrawalEarningsPercent: 'commission_withdrawal_earnings_pct', withdrawalReleasedPercent: 'commission_withdrawal_released_pct', depositTransferPercent: 'commission_deposit_transfer_pct' });
+const AUTO_APPROVAL_DELAYS_HOURS = Object.freeze([0, 1, 6, 12, 24, 48]);
+
 const PROMOTER_PACKAGE_TIERS = Object.freeze({
   starter: Object.freeze({ price: 5, limit: 3 }),
   growth: Object.freeze({ price: 20, limit: 15 }),
@@ -952,7 +956,7 @@ async function fullState(env, user, request) {
 let persistedMarketHistoryAt = 0;
 let persistedMarketHistoryData = null;
 let persistedMarketHistoryPromise = null;
-let schemaPromise;
+let schemaPromise; let automaticApprovalSchemaReady = false; let scheduledApprovalTask = null;
 
 const workerHandler = {
   async fetch(request, env) {
@@ -1241,6 +1245,8 @@ const workerHandler = {
           config_key TEXT PRIMARY KEY,
           config_value TEXT NOT NULL
         );`,
+        "CREATE TABLE IF NOT EXISTS payment_auto_approval_queue (request_kind TEXT NOT NULL CHECK (request_kind IN ('deposit','withdrawal')), request_id INTEGER NOT NULL, user_id TEXT NOT NULL, confirmed_at INTEGER NOT NULL, PRIMARY KEY (request_kind, request_id));",
+        "CREATE INDEX IF NOT EXISTS payment_auto_approval_due ON payment_auto_approval_queue(confirmed_at)",
         `CREATE TABLE IF NOT EXISTS settings (
           user_id TEXT PRIMARY KEY,
           withdraw_wallets TEXT NOT NULL DEFAULT '{}',
@@ -1404,6 +1410,7 @@ const workerHandler = {
 
     })().catch(err => { schemaPromise = null; throw err; });
     await schemaPromise;
+    automaticApprovalSchemaReady = true;
 
     const url = new URL(request.url);
     const pathName = url.pathname;
@@ -1420,6 +1427,7 @@ const workerHandler = {
       if (method === "POST" && pathName === "/api/verification/verify-otp") return await verifyAccountOtpDirect(request, env);
       if (method === "POST" && pathName === "/api/logout") return await logout(request, env);
       if (method === "GET" && pathName === "/api/me") return await me(request, env);
+      if (method === "GET" && pathName === "/api/commission-rates") return Response.json(await readCommissionRates(env));
       if (method === "GET" && pathName === "/api/notifications") return await getNotifications(request, env);
       if (method === "POST" && pathName === "/api/notifications/read") return await markNotificationsRead(request, env);
       if (method === "GET" && pathName === "/api/support/current") return await supportCurrent(request, env);
@@ -1479,6 +1487,8 @@ const workerHandler = {
       if (method === "POST" && pathName === "/api/admin/payments/mark-deposit-failed") return await markDepositFailed(request, env);
       if (method === "GET" && pathName === "/api/admin/payment-settings") return await getAdminPaymentSettings(request, env);
       if (method === "POST" && pathName === "/api/admin/payment-settings") return await saveAdminPaymentSettings(request, env);
+      if (method === "GET" && pathName === "/api/admin/commission-settings") return await getAdminCommissionSettings(request, env);
+      if (method === "POST" && pathName === "/api/admin/commission-settings") return await saveAdminCommissionSettings(request, env);
       if (method === "GET" && pathName === "/api/admin/statistics") return await adminStatistics(request, env);
       if (method === "GET" && pathName === "/api/admin/users") return await adminUsers(request, env);
       if (method === "GET" && pathName === "/api/admin/operator-audit") return await adminOperatorAudit(request, env);
@@ -2724,7 +2734,7 @@ async function transferDepositToEarnings(request, env) {
   if (!Number.isFinite(amount) || amount <= 0) return bad("Inserisci un importo valido.");
   const wallet = await accrue(env, user.id);
   if (amount > Number(wallet.deposit || 0) + 1e-9) return bad("Saldo deposito insufficiente.");
-  const feeAmount = Number((amount * 0.25).toFixed(3));
+  const commissionRates = await readCommissionRates(env); const feeAmount = Number((amount * commissionRates.depositTransferPercent / 100).toFixed(3));
   const creditedAmount = Number((amount - feeAmount).toFixed(3));
   if (!(creditedAmount > 0)) return bad("L'importo è troppo piccolo dopo la commissione.");
   const changed = await env.DB.prepare("UPDATE wallets SET deposit = deposit - ?, earnings = earnings + ? WHERE user_id = ? AND deposit >= ?").bind(amount, creditedAmount, user.id, amount).run();
@@ -2733,7 +2743,7 @@ async function transferDepositToEarnings(request, env) {
   try {
     await env.DB.batch([
       env.DB.prepare("INSERT INTO balance_transfers (user_id, amount, fee_amount, credited_amount, created_at) VALUES (?, ?, ?, ?, ?)").bind(user.id, amount, feeAmount, creditedAmount, created),
-      env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Deposit balance transferred", amount.toFixed(3) + " USDT moved from deposit balance; 25% commission " + feeAmount.toFixed(3) + " USDT; " + creditedAmount.toFixed(3) + " USDT credited to earnings.", created),
+      env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Deposit balance transferred", amount.toFixed(3) + " USDT moved from deposit balance; " + commissionRates.depositTransferPercent + "% commission " + feeAmount.toFixed(3) + " USDT; " + creditedAmount.toFixed(3) + " USDT credited to earnings.", created),
     ]);
   } catch (error) {
     await env.DB.prepare("UPDATE wallets SET deposit = deposit + ?, earnings = MAX(0, earnings - ?) WHERE user_id = ?").bind(amount, creditedAmount, user.id).run();
@@ -2775,7 +2785,7 @@ async function validateWithdrawal(env, user, body) {
 
   if (!address || address === "Indirizzo non specificato dall'utente") return bad("Collega un indirizzo di prelievo per la rete selezionata nel profilo.");
   const chargedAmount = Number(amount.toFixed(3));
-  const feeRate = source === 'released' ? 0.25 : 0.08;
+  const commissionRates = await readCommissionRates(env); const feeRate = (source === 'released' ? commissionRates.withdrawalReleasedPercent : commissionRates.withdrawalEarningsPercent) / 100;
   const feeAmount = Number((chargedAmount * feeRate).toFixed(3));
   const payoutAmount = Number((chargedAmount - feeAmount).toFixed(3));
   return { amount: payoutAmount, feeAmount, chargedAmount, net, address, source };
@@ -3090,19 +3100,93 @@ async function readAutomaticWithdrawalDecisions(env) {
   const row = await env.DB.prepare("SELECT config_value FROM platform_config WHERE config_key = 'payment_auto_withdrawals'").first();
   return row?.config_value === "1";
 }
+async function readAutomaticApprovalDelayHours(env) {
+  const row = await env.DB.prepare("SELECT config_value FROM platform_config WHERE config_key = 'payment_auto_approval_delay_hours'").first();
+  const value = Number(row?.config_value);
+  return AUTO_APPROVAL_DELAYS_HOURS.includes(value) ? value : 0;
+}
+async function readCommissionRates(env) {
+  const keys = Object.values(COMMISSION_CONFIG_KEYS);
+  const result = await env.DB.prepare("SELECT config_key, config_value FROM platform_config WHERE config_key IN (?, ?, ?)").bind(...keys).all();
+  const stored = new Map((result.results || []).map(row => [row.config_key, Number(row.config_value)]));
+  const rates = {};
+  for (const [field, key] of Object.entries(COMMISSION_CONFIG_KEYS)) {
+    const value = stored.get(key);
+    rates[field] = Number.isFinite(value) && value >= 0 && value <= 50 ? value : DEFAULT_COMMISSION_RATES[field];
+  }
+  return rates;
+}
 async function getAdminPaymentSettings(request, env) {
   const actor = await adminActor(request, env);
   if (!actor || !(await readAdminPermissions(actor, env)).requests) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
-  return Response.json({ automaticWithdrawalDecisions: await readAutomaticWithdrawalDecisions(env) });
+  return Response.json({ automaticWithdrawalDecisions: await readAutomaticWithdrawalDecisions(env), automaticApprovalDelayHours: await readAutomaticApprovalDelayHours(env) });
 }
 async function saveAdminPaymentSettings(request, env) {
   const actor = await privilegedAdminActor(request, env);
   if (!actor) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
   const body = await request.json().catch(() => ({}));
-  if (typeof body.automaticWithdrawalDecisions !== "boolean") return bad("Impostazione automatica non valida.");
-  const value = body.automaticWithdrawalDecisions ? "1" : "0";
-  await env.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES('payment_auto_withdrawals', ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind(value).run();
-  return Response.json({ ok: true, automaticWithdrawalDecisions: value === "1" });
+  const hasAutomatic = Object.prototype.hasOwnProperty.call(body, "automaticWithdrawalDecisions");
+  const hasDelay = Object.prototype.hasOwnProperty.call(body, "automaticApprovalDelayHours");
+  if (!hasAutomatic && !hasDelay) return bad("Impostazioni automatiche non valide.");
+  if (hasAutomatic && typeof body.automaticWithdrawalDecisions !== "boolean") return bad("Impostazione automatica non valida.");
+  if (hasDelay && !AUTO_APPROVAL_DELAYS_HOURS.includes(Number(body.automaticApprovalDelayHours))) return bad("Scegliere un tempo di approvazione consentito.");
+  const writes = [];
+  if (hasAutomatic) writes.push(env.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES('payment_auto_withdrawals', ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind(body.automaticWithdrawalDecisions ? "1" : "0"));
+  if (hasDelay) writes.push(env.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES('payment_auto_approval_delay_hours', ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind(String(Number(body.automaticApprovalDelayHours))));
+  await env.DB.batch(writes);
+  if (hasAutomatic && !body.automaticWithdrawalDecisions) await env.DB.prepare("DELETE FROM payment_auto_approval_queue").run();
+  const settings = { ok: true, automaticWithdrawalDecisions: await readAutomaticWithdrawalDecisions(env), automaticApprovalDelayHours: await readAutomaticApprovalDelayHours(env) };
+  if (hasDelay && settings.automaticWithdrawalDecisions) void processScheduledAutomaticApprovals(env).catch(error => console.error("Scheduled approval worker failed:", error));
+  return Response.json(settings);
+}
+async function getAdminCommissionSettings(request, env) {
+  if (!(await privilegedAdminActor(request, env))) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  return Response.json(await readCommissionRates(env));
+}
+async function saveAdminCommissionSettings(request, env) {
+  if (!(await privilegedAdminActor(request, env))) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  const body = await request.json().catch(() => ({}));
+  const current = await readCommissionRates(env);
+  const next = { ...current };
+  for (const field of Object.keys(COMMISSION_CONFIG_KEYS)) {
+    if (!Object.prototype.hasOwnProperty.call(body, field)) continue;
+    const value = Number(body[field]);
+    if (!Number.isFinite(value) || value < 0 || value > 50 || Math.abs(Math.round(value * 100) - value * 100) > 1e-8) return bad("Le commissioni devono essere comprese tra 0 e 50%, con massimo due decimali.");
+    next[field] = value;
+  }
+  if (!Object.keys(COMMISSION_CONFIG_KEYS).some(field => Object.prototype.hasOwnProperty.call(body, field))) return bad("Nessuna commissione valida ricevuta.");
+  await env.DB.batch(Object.entries(COMMISSION_CONFIG_KEYS).map(([field, key]) => env.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES(?, ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind(key, String(next[field]))));
+  return Response.json({ ok: true, ...next });
+}
+async function queueAutomaticApproval(env, kind, id) {
+  const table = kind === "deposit" ? "deposits" : kind === "withdrawal" ? "withdrawals" : null;
+  const transferStatus = kind === "deposit" ? "received" : kind === "withdrawal" ? "sent" : null;
+  if (!table) return false;
+  const record = await env.DB.prepare("SELECT user_id FROM " + table + " WHERE id = ? AND status = 'pending' AND transfer_status = ?").bind(id, transferStatus).first();
+  if (!record) return false;
+  await env.DB.prepare("INSERT INTO payment_auto_approval_queue(request_kind, request_id, user_id, confirmed_at) VALUES(?, ?, ?, ?) ON CONFLICT(request_kind, request_id) DO UPDATE SET user_id = excluded.user_id, confirmed_at = excluded.confirmed_at").bind(kind, id, record.user_id, Date.now()).run();
+  return true;
+}
+async function processScheduledAutomaticApprovals(env) {
+  if (!automaticApprovalSchemaReady || scheduledApprovalTask) return scheduledApprovalTask;
+  scheduledApprovalTask = (async () => {
+    if (!(await readAutomaticWithdrawalDecisions(env))) return;
+    const delay = await readAutomaticApprovalDelayHours(env);
+    const cutoff = Date.now() - delay * 60 * 60 * 1000;
+    const queue = await env.DB.prepare("SELECT request_kind, request_id FROM payment_auto_approval_queue WHERE confirmed_at <= ? ORDER BY confirmed_at ASC LIMIT 50").bind(cutoff).all();
+    for (const row of queue.results || []) {
+      const kind = row.request_kind;
+      const internalRequest = new Request("http://localhost/api/admin/review", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind, id: Number(row.request_id), action: "approve" }) });
+      const response = await reviewTransaction(internalRequest, env, true);
+      if (response.ok || response.status < 500) {
+        if (!response.ok) console.warn("Scheduled approval no longer applicable:", kind, Number(row.request_id), response.status);
+        await env.DB.prepare("DELETE FROM payment_auto_approval_queue WHERE request_kind = ? AND request_id = ?").bind(kind, row.request_id).run();
+      } else {
+        console.error("Scheduled approval will be retried:", kind, Number(row.request_id), response.status);
+      }
+    }
+  })().finally(() => { scheduledApprovalTask = null; });
+  return scheduledApprovalTask;
 }
 async function runAutomaticRequestDecision(request, env, kind, id, action, txReference = "") {
   const headers = new Headers(request.headers);
@@ -3120,11 +3204,16 @@ async function markDepositReceived(request, env) {
   const result = await env.DB.prepare("UPDATE deposits SET transfer_status = 'received' WHERE id = ? AND status = 'pending' AND transfer_status != 'received'").bind(id).run();
   if (!result.meta?.changes) return bad("Il deposito non è più in attesa o è già stato contrassegnato come ricevuto.");
   if (await readAutomaticWithdrawalDecisions(env)) {
-    const finalized = await runAutomaticRequestDecision(request, env, "deposit", id, "approve");
-    if (!finalized.ok) return finalized;
-    return Response.json({ ok: true, transferStatus: "received", automaticDecision: "approved" });
+    const delay = await readAutomaticApprovalDelayHours(env);
+    if (delay === 0) {
+      const finalized = await runAutomaticRequestDecision(request, env, "deposit", id, "approve");
+      if (!finalized.ok) return finalized;
+      return Response.json({ ok: true, transferStatus: "received", automaticDecision: "approved", automaticApprovalScheduled: false });
+    }
+    await queueAutomaticApproval(env, "deposit", id);
+    return Response.json({ ok: true, transferStatus: "received", automaticDecision: null, automaticApprovalScheduled: true, approvalDelayHours: delay });
   }
-  return Response.json({ ok: true, transferStatus: "received", automaticDecision: null });
+  return Response.json({ ok: true, transferStatus: "received", automaticDecision: null, automaticApprovalScheduled: false });
 }
 async function markDepositFailed(request, env) {
   const actor = await privilegedAdminActor(request, env);
@@ -3152,11 +3241,16 @@ async function markWithdrawalSent(request, env) {
   const result = await env.DB.prepare("UPDATE withdrawals SET tx_reference = ?, transfer_status = 'sent' WHERE id = ? AND status = 'pending'").bind(txReference, id).run();
   if (!result.meta?.changes) return bad("Il prelievo non è più in attesa.");
   if (await readAutomaticWithdrawalDecisions(env)) {
-    const finalized = await runAutomaticRequestDecision(request, env, "withdrawal", id, "approve", txReference);
-    if (!finalized.ok) return finalized;
-    return Response.json({ ok: true, transferStatus: "sent", automaticDecision: "approved" });
+    const delay = await readAutomaticApprovalDelayHours(env);
+    if (delay === 0) {
+      const finalized = await runAutomaticRequestDecision(request, env, "withdrawal", id, "approve", txReference);
+      if (!finalized.ok) return finalized;
+      return Response.json({ ok: true, transferStatus: "sent", automaticDecision: "approved", automaticApprovalScheduled: false });
+    }
+    await queueAutomaticApproval(env, "withdrawal", id);
+    return Response.json({ ok: true, transferStatus: "sent", txReference, automaticDecision: null, automaticApprovalScheduled: true, approvalDelayHours: delay });
   }
-  return Response.json({ ok: true, transferStatus: "sent", txReference, automaticDecision: null });
+  return Response.json({ ok: true, transferStatus: "sent", txReference, automaticDecision: null, automaticApprovalScheduled: false });
 }
 async function markWithdrawalFailed(request, env) {
   const actor = await privilegedAdminActor(request, env);
@@ -3174,13 +3268,13 @@ async function markWithdrawalFailed(request, env) {
   return Response.json({ ok: true, transferStatus: "failed", automaticDecision: null });
 }
 
-async function reviewTransaction(request, env) {
-  const operator = await adminActor(request, env);
-  if (!operator) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+async function reviewTransaction(request, env, internalAutomatic = false) {
+  const operator = internalAutomatic ? null : await adminActor(request, env);
+  if (!internalAutomatic && !operator) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
   const body = await request.json();
   const kind = body.kind;
   const requiredPermission = kind === "wallet_change" ? "walletChanges" : "requests";
-  if (!(await readAdminPermissions(operator, env))[requiredPermission]) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  if (!internalAutomatic && !(await readAdminPermissions(operator, env))[requiredPermission]) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
   const id = Number(body.id);
   let action = body.action;
   
@@ -3668,6 +3762,11 @@ app.all('/api/*', async (req, res) => {
     res.status(500).json({ error: 'Errore interno del server.' });
   }
 });
+
+const automaticApprovalTimer = setInterval(() => {
+  if (automaticApprovalSchemaReady) processScheduledAutomaticApprovals(env).catch(error => console.error("Scheduled approval worker failed:", error));
+}, 30000);
+if (typeof automaticApprovalTimer.unref === "function") automaticApprovalTimer.unref();
 
 app.listen(PORT, () => {
   console.log(`Server avviato correttamente sulla porta ${PORT}`);
