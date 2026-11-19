@@ -10,7 +10,12 @@
   "dependencies": {
     "@libsql/client": "^0.14.0",
     "express": "^4.19.2",
-    "nodemailer": "^6.10.1"
+    "nodemailer": "^6.10.1",
+    "ethers": "^6.13.5",
+    "tronweb": "^6.0.4",
+    "bitcoinjs-lib": "^6.1.7",
+    "ecpair": "^2.1.0",
+    "tiny-secp256k1": "^2.2.3"
   },
   "engines": {
     "node": ">=18.0.0"

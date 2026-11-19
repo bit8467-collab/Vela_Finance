@@ -2152,6 +2152,11 @@ body:has(#view-admin.active){padding:0!important;overflow-x:hidden}body:has(#vie
 .payment-auto-control>div{display:grid;gap:4px}.payment-auto-control small{color:var(--muted);font-size:11px;line-height:1.5}
 .payment-auto-control button{min-height:38px;padding:8px 12px;border:1px solid var(--line);border-radius:9px;background:var(--surface-2);color:var(--text);font-weight:750;cursor:pointer;white-space:nowrap}
 .payment-auto-control button[aria-pressed="true"]{border-color:var(--green);color:var(--green)}
+.payment-auto-control .crypto-auto-copy{display:grid;gap:4px;min-width:165px}
+.payment-auto-control .crypto-auto-copy b{font-size:12px}
+.payment-auto-control .crypto-auto-copy small{color:var(--muted);font-size:11px;line-height:1.5}
+.payment-auto-control #toggle-crypto-automation[aria-pressed="true"]{border-color:var(--green);color:var(--green)}
+.payment-auto-control #toggle-crypto-automation:disabled{opacity:.55;cursor:not-allowed}
 .payment-desk-sections{display:grid;gap:14px;max-width:1000px;margin:0 auto}
 .payment-desk-group{overflow:hidden;border:1px solid var(--line);border-radius:15px;background:var(--surface)}
 .payment-desk-group>summary{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:60px;padding:15px 18px;cursor:pointer;font-weight:750;list-style:none}

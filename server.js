@@ -5,6 +5,15 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { readFileSync } from 'fs';
 import { deflateRawSync } from 'zlib';
+import { ethers } from 'ethers';
+import { TronWeb } from 'tronweb';
+import * as bitcoin from 'bitcoinjs-lib';
+import ECPairFactory from 'ecpair';
+import * as tinySecp256k1 from 'tiny-secp256k1';
+
+bitcoin.initEccLib(tinySecp256k1);
+const ECPair = ECPairFactory(tinySecp256k1);
+const cryptoTransferInterface = new ethers.Interface(['event Transfer(address indexed from, address indexed to, uint256 value)']);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1483,6 +1492,8 @@ const workerHandler = {
       if (method === "POST" && pathName === "/api/admin/payments/mark-failed") return await markWithdrawalFailed(request, env);
       if (method === "POST" && pathName === "/api/admin/payments/mark-received") return await markDepositReceived(request, env);
       if (method === "POST" && pathName === "/api/admin/payments/mark-deposit-failed") return await markDepositFailed(request, env);
+      if (method === "GET" && pathName === "/api/admin/payments/crypto-automation") return await getCryptoAutomationSetting(request, env);
+      if (method === "POST" && pathName === "/api/admin/payments/crypto-automation") return await saveCryptoAutomationSetting(request, env);
       if (method === "GET" && pathName === "/api/admin/payment-settings") return await getAdminPaymentSettings(request, env);
       if (method === "POST" && pathName === "/api/admin/payment-settings") return await saveAdminPaymentSettings(request, env);
       if (method === "GET" && pathName === "/api/admin/commission-settings") return await getAdminCommissionSettings(request, env);
@@ -3795,3 +3806,324 @@ const PRIMARY_ADMIN_PASSWORD = String(process.env.ADMIN_PASSWORD || "");
 if (!PRIMARY_ADMIN_EMAIL || !PRIMARY_ADMIN_PASSWORD) {
   console.warn("Admin authentication is disabled until ADMIN_EMAIL and ADMIN_PASSWORD are configured in Render.");
 }
+
+async function getCryptoAutomationSetting(request, envArg) {
+  const actor = await privilegedAdminActor(request, envArg);
+  if (!actor) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  const masterEnabled = String(process.env.CRYPTO_AUTOMATION_ENABLED || "").toLowerCase() === "true";
+  const row = await envArg.DB.prepare("SELECT config_value FROM platform_config WHERE config_key = ?").bind("crypto_automation_enabled").first();
+  return Response.json({ ok: true, masterEnabled, enabled: masterEnabled && row?.config_value === "true" });
+}
+async function saveCryptoAutomationSetting(request, envArg) {
+  const actor = await privilegedAdminActor(request, envArg);
+  if (!actor) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  const body = await request.json().catch(() => ({}));
+  if (typeof body.enabled !== "boolean") return bad("Stato automazione non valido.");
+  const masterEnabled = String(process.env.CRYPTO_AUTOMATION_ENABLED || "").toLowerCase() === "true";
+  if (body.enabled && !masterEnabled) return Response.json({ error: "Abilita prima CRYPTO_AUTOMATION_ENABLED nei Secrets di Render." }, { status: 409 });
+  await envArg.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES(?, ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind("crypto_automation_enabled", body.enabled ? "true" : "false").run();
+  return Response.json({ ok: true, masterEnabled, enabled: body.enabled && masterEnabled });
+}
+
+
+// On-chain USDT/BTC automation. Keep CRYPTO_AUTOMATION_ENABLED=false until
+// Render secrets, signer addresses, token contracts, and testnet checks are complete.
+async function cryptoAutomationEnabled() {
+  if (String(process.env.CRYPTO_AUTOMATION_ENABLED || "").toLowerCase() !== "true") return false;
+  try {
+    const row = await env.DB.prepare("SELECT config_value FROM platform_config WHERE config_key = ?").bind("crypto_automation_enabled").first();
+    return row?.config_value === "true";
+  } catch (error) { console.error("Crypto automation setting lookup failed; defaulting OFF:", error?.message || error); return false; }
+}
+const BSC_USDT_DEFAULT = "0x55d398326f99059fF775485246999027B3197955";
+const TRON_USDT_DEFAULT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
+const BTC_API_DEFAULT = "https://mempool.space/api";
+const AUTO_TRANSFER_ABI = ["function decimals() view returns (uint8)", "function transfer(address to, uint256 amount) returns (bool)"];
+const AUTO_TRANSFER_LOG_IFACE = new ethers.Interface(["event Transfer(address indexed from, address indexed to, uint256 value)"]);
+let autoDepositSweepRunning = false;
+
+async function cryptoJson(url, options = {}) {
+  const response = await fetch(url, { ...options, signal: options.signal || AbortSignal.timeout(12000) });
+  const body = await response.text();
+  if (!response.ok) throw new Error("Blockchain provider returned HTTP " + response.status);
+  try { return body ? JSON.parse(body) : {}; } catch { throw new Error("Blockchain provider returned invalid JSON"); }
+}
+function cleanHash(value) { return String(value || "").trim().replace(/^0x/i, ""); }
+function addressPoolForNetwork(addresses, net) {
+  return String(addresses?.[net] || "").split(/[,;]+/).map(value => value.trim()).filter(Boolean);
+}
+function sameAddress(a, b) { const left = String(a || "").trim(), right = String(b || "").trim(); if (left.startsWith("T") && right.startsWith("T")) return left === right; return left.toLowerCase() === right.toLowerCase(); }
+function amountTolerance(expected, net) { return net === "BTC" ? Math.max(1.5, Math.abs(expected) * 0.02) : 0.01; }
+async function getBtcUsdPrice() {
+  const data = await cryptoJson((process.env.BTC_API_BASE || BTC_API_DEFAULT).replace(/\/$/, "") + "/v1/prices");
+  const price = Number(data.USD);
+  if (!Number.isFinite(price) || price <= 0) throw new Error("BTC/USD reference price unavailable");
+  return price;
+}
+async function inspectBscUsdtDeposit(row) {
+  const hash = String(row.tx_reference || "").trim();
+  if (!/^(?:0x)?[a-fA-F0-9]{64}$/.test(hash)) return { state: "invalid" };
+  const provider = new ethers.JsonRpcProvider(process.env.BSC_RPC_URL || "https://bsc-dataseed.binance.org/", 56);
+  const receipt = await provider.getTransactionReceipt(hash.startsWith("0x") ? hash : "0x" + hash);
+  if (!receipt) return { state: "pending" };
+  if (Number(receipt.status) !== 1) return { state: "invalid" };
+  const head = await provider.getBlockNumber();
+  const required = Math.max(1, Number(process.env.BSC_MIN_CONFIRMATIONS || 12));
+  if (head - Number(receipt.blockNumber) + 1 < required) return { state: "pending" };
+  const tokenAddress = ethers.getAddress(process.env.BSC_USDT_CONTRACT || BSC_USDT_DEFAULT);
+  let tokenUnits = 0n;
+  for (const log of receipt.logs || []) {
+    if (!sameAddress(log.address, tokenAddress)) continue;
+    try {
+      const parsed = AUTO_TRANSFER_LOG_IFACE.parseLog({ topics: log.topics, data: log.data });
+      if (parsed?.name === "Transfer" && sameAddress(parsed.args.to, row.deposit_address)) tokenUnits += parsed.args.value;
+    } catch {}
+  }
+  if (tokenUnits <= 0n) return { state: "invalid" };
+  const token = new ethers.Contract(tokenAddress, ["function decimals() view returns (uint8)"], provider);
+  const decimals = Number(await token.decimals());
+  return { state: "confirmed", amount: Number(ethers.formatUnits(tokenUnits, decimals)) };
+}
+function tronTopicAddress(tron, topic) {
+  const hex = String(topic || "").replace(/^0x/i, "").slice(-40);
+  if (!/^[0-9a-fA-F]{40}$/.test(hex)) return "";
+  try { return tron.address.fromHex("41" + hex); } catch { return ""; }
+}
+async function inspectTronUsdtDeposit(row) {
+  const hash = cleanHash(row.tx_reference);
+  if (!/^[a-fA-F0-9]{64}$/.test(hash)) return { state: "invalid" };
+  const host = (process.env.TRON_FULL_HOST || "https://api.trongrid.io").replace(/\/$/, "");
+  const headers = { "content-type": "application/json" };
+  if (process.env.TRON_API_KEY) headers["TRON-PRO-API-KEY"] = process.env.TRON_API_KEY;
+  // The solidity endpoint returns only solidified transactions.
+  const info = await cryptoJson(host + "/walletsolidity/gettransactioninfobyid", {
+    method: "POST", headers, body: JSON.stringify({ value: hash })
+  });
+  if (!info || !info.id || !(info.log || []).length) return { state: "pending" };
+  if (info.receipt?.result && info.receipt.result !== "SUCCESS") return { state: "invalid" };
+  const tron = new TronWeb({ fullHost: host, headers });
+  const wantedContract = tron.address.toHex(process.env.TRON_USDT_CONTRACT || TRON_USDT_DEFAULT).replace(/^41/i, "").toLowerCase();
+  const transferTopic = ethers.id("Transfer(address,address,uint256)").replace(/^0x/i, "").toLowerCase();
+  let tokenUnits = 0n;
+  for (const log of info.log || []) {
+    const contractHex = String(log.address || "").replace(/^0x/i, "").replace(/^41/i, "").toLowerCase();
+    const topics = log.topics || [];
+    if (contractHex !== wantedContract || String(topics[0] || "").replace(/^0x/i, "").toLowerCase() !== transferTopic) continue;
+    const to = tronTopicAddress(tron, topics[2]);
+    if (!sameAddress(to, row.deposit_address)) continue;
+    try { tokenUnits += BigInt("0x" + String(log.data || "0").replace(/^0x/i, "")); } catch {}
+  }
+  if (tokenUnits <= 0n) return { state: "invalid" };
+  return { state: "confirmed", amount: Number(tokenUnits) / 1e6 };
+}
+async function inspectBtcDeposit(row) {
+  const hash = cleanHash(row.tx_reference);
+  if (!/^[a-fA-F0-9]{64}$/.test(hash)) return { state: "invalid" };
+  const base = (process.env.BTC_API_BASE || BTC_API_DEFAULT).replace(/\/$/, "");
+  const tx = await cryptoJson(base + "/tx/" + encodeURIComponent(hash));
+  if (!tx || !tx.txid) return { state: "pending" };
+  if (!tx.status?.confirmed) return { state: "pending" };
+  const receivedSats = (tx.vout || []).filter(output => sameAddress(output.scriptpubkey_address, row.deposit_address)).reduce((sum, output) => sum + Number(output.value || 0), 0);
+  if (!Number.isSafeInteger(receivedSats) || receivedSats <= 0) return { state: "invalid" };
+  return { state: "confirmed", amount: receivedSats / 1e8 * await getBtcUsdPrice() };
+}
+async function inspectCryptoDeposit(row) {
+  try {
+    if (row.net === "BNB") return await inspectBscUsdtDeposit(row);
+    if (row.net === "TRC20") return await inspectTronUsdtDeposit(row);
+    if (row.net === "BTC") return await inspectBtcDeposit(row);
+    return { state: "invalid" };
+  } catch (error) {
+    console.warn("Automatic deposit verification unavailable for request", row.id, error?.message || error);
+    return { state: "pending" };
+  }
+}
+async function settleVerifiedCryptoDeposit(row) {
+  if (!row || row.status !== "pending" || row.transfer_status === "received" || !row.tx_reference) return false;
+  const verification = await inspectCryptoDeposit(row);
+  if (verification.state !== "confirmed" || !Number.isFinite(verification.amount) || verification.amount <= 0) return false;
+  const requested = Number(row.amount);
+  const actual = Number(verification.amount);
+  if (!Number.isFinite(requested) || Math.abs(actual - requested) > amountTolerance(requested, row.net)) {
+    console.warn("Deposit hash amount/destination mismatch; left for admin review", row.id);
+    return false;
+  }
+  const amountToCredit = Number(actual.toFixed(3));
+  if (row.purpose === "promoter-package" && Math.abs(amountToCredit - requested) > 0.001) return false;
+  const marked = await env.DB.prepare("UPDATE deposits SET amount = ?, transfer_status = 'received' WHERE id = ? AND status = 'pending' AND transfer_status = 'pending'").bind(amountToCredit, row.id).run();
+  if (!(marked.meta?.changes > 0)) return false;
+  const internalRequest = new Request("http://localhost/api/admin/review", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ kind: "deposit", id: Number(row.id), action: "approve" })
+  });
+  const approved = await reviewTransaction(internalRequest, env, true);
+  if (!approved.ok) console.error("Verified crypto deposit could not be credited; remains in admin queue", row.id, approved.status);
+  return approved.ok;
+}
+async function sweepAutomaticCryptoDeposits() {
+  if (!(await cryptoAutomationEnabled()) || autoDepositSweepRunning || !automaticApprovalSchemaReady) return;
+  autoDepositSweepRunning = true;
+  try {
+    const rows = await env.DB.prepare("SELECT * FROM deposits WHERE status = 'pending' AND transfer_status = 'pending' AND tx_reference != '' AND net IN ('BNB','TRC20','BTC') ORDER BY date ASC LIMIT 20").all();
+    for (const row of rows.results || []) await settleVerifiedCryptoDeposit(row);
+  } catch (error) {
+    console.error("Automatic deposit sweep failed:", error?.message || error);
+  } finally { autoDepositSweepRunning = false; }
+}
+async function assertSignerMatchesPlatformAddress(net, signerAddress) {
+  const configured = await readDepositAddresses(env);
+  const pool = addressPoolForNetwork(configured, net);
+  if (!pool.some(address => sameAddress(address, signerAddress))) throw new Error("The configured signer address does not match the platform deposit address for " + net);
+}
+async function sendBscUsdtPayout(row) {
+  const privateKey = String(process.env.BSC_USDT_PRIVATE_KEY || "").trim();
+  if (!privateKey) throw new Error("BSC_USDT_PRIVATE_KEY is not configured in Render");
+  const provider = new ethers.JsonRpcProvider(process.env.BSC_RPC_URL || "https://bsc-dataseed.binance.org/", 56);
+  const signer = new ethers.Wallet(privateKey, provider);
+  await assertSignerMatchesPlatformAddress("BNB", signer.address);
+  if (!ethers.isAddress(row.wallet_address)) throw new Error("Invalid BNB Smart Chain withdrawal destination");
+  const tokenAddress = ethers.getAddress(process.env.BSC_USDT_CONTRACT || BSC_USDT_DEFAULT);
+  const token = new ethers.Contract(tokenAddress, AUTO_TRANSFER_ABI, signer);
+  const decimals = Number(await token.decimals());
+  const units = ethers.parseUnits(Number(row.amount).toFixed(3), decimals);
+  if (units <= 0n) throw new Error("Invalid USDT payout amount");
+  const tx = await token.transfer(ethers.getAddress(row.wallet_address), units);
+  return tx.hash;
+}
+async function sendTronUsdtPayout(row) {
+  const privateKey = String(process.env.TRON_USDT_PRIVATE_KEY || "").trim().replace(/^0x/i, "");
+  if (!privateKey) throw new Error("TRON_USDT_PRIVATE_KEY is not configured in Render");
+  const host = (process.env.TRON_FULL_HOST || "https://api.trongrid.io").replace(/\/$/, "");
+  const headers = {};
+  if (process.env.TRON_API_KEY) headers["TRON-PRO-API-KEY"] = process.env.TRON_API_KEY;
+  const tron = new TronWeb({ fullHost: host, privateKey, headers });
+  const from = tron.address.fromPrivateKey(privateKey);
+  await assertSignerMatchesPlatformAddress("TRC20", from);
+  if (!TronWeb.isAddress(row.wallet_address)) throw new Error("Invalid TRON withdrawal destination");
+  const tokenAddress = process.env.TRON_USDT_CONTRACT || TRON_USDT_DEFAULT;
+  const amountUnits = BigInt(Math.round(Number(row.amount) * 1e6));
+  if (amountUnits <= 0n) throw new Error("Invalid USDT payout amount");
+  const contract = await tron.contract().at(tokenAddress);
+  const sent = await contract.transfer(row.wallet_address, amountUnits.toString()).send({ feeLimit: Number(process.env.TRON_FEE_LIMIT_SUN || 100000000) });
+  const txHash = typeof sent === "string" ? sent : sent?.txid || sent?.txID || sent?.transaction?.txID || "";
+  if (!/^[a-fA-F0-9]{64}$/.test(cleanHash(txHash))) throw new Error("TRON provider did not return a transaction hash");
+  return cleanHash(txHash);
+}
+async function getBtcSigner() {
+  const wif = String(process.env.BTC_PRIVATE_KEY_WIF || "").trim();
+  if (!wif) throw new Error("BTC_PRIVATE_KEY_WIF is not configured in Render");
+  const keyPair = ECPair.fromWIF(wif, bitcoin.networks.bitcoin);
+  const source = bitcoin.payments.p2wpkh({ pubkey: Buffer.from(keyPair.publicKey), network: bitcoin.networks.bitcoin });
+  if (!source.address || !source.output) throw new Error("BTC signer must be a compressed native-SegWit (bc1q) wallet");
+  await assertSignerMatchesPlatformAddress("BTC", source.address);
+  return { keyPair, source };
+}
+async function sendBtcPayout(row) {
+  const { keyPair, source } = await getBtcSigner();
+  bitcoin.address.toOutputScript(row.wallet_address, bitcoin.networks.bitcoin);
+  const base = (process.env.BTC_API_BASE || BTC_API_DEFAULT).replace(/\/$/, "");
+  const [utxos, feeData, btcUsd] = await Promise.all([
+    cryptoJson(base + "/address/" + encodeURIComponent(source.address) + "/utxo"),
+    cryptoJson(base + "/v1/fees/recommended"),
+    getBtcUsdPrice()
+  ]);
+  const payoutSats = Math.floor(Number(row.amount) / btcUsd * 1e8);
+  if (!Number.isSafeInteger(payoutSats) || payoutSats < 546) throw new Error("BTC payout is below the minimum output size");
+  const feeRate = Math.max(1, Math.ceil(Number(feeData.fastestFee || feeData.halfHourFee || 5)));
+  const available = (utxos || []).filter(u => u.status?.confirmed === true && Number(u.value) > 0).sort((a,b) => Number(b.value)-Number(a.value));
+  const selected = [];
+  let total = 0, fee = 0;
+  for (const utxo of available) {
+    selected.push(utxo); total += Number(utxo.value);
+    fee = Math.ceil((10 + selected.length * 68 + 2 * 31) * feeRate);
+    if (total >= payoutSats + fee) break;
+    if (selected.length >= 100) break;
+  }
+  if (total < payoutSats + fee) throw new Error("Insufficient confirmed BTC for payout and miner fee");
+  let change = total - payoutSats - fee;
+  const psbt = new bitcoin.Psbt({ network: bitcoin.networks.bitcoin });
+  for (const u of selected) psbt.addInput({ hash: u.txid, index: Number(u.vout), witnessUtxo: { script: source.output, value: Number(u.value) } });
+  psbt.addOutput({ address: row.wallet_address, value: payoutSats });
+  if (change >= 546) psbt.addOutput({ address: source.address, value: change });
+  else { fee += change; change = 0; }
+  psbt.signAllInputs(keyPair);
+  psbt.finalizeAllInputs();
+  const raw = psbt.extractTransaction().toHex();
+  const response = await fetch(base + "/tx", { method: "POST", headers: { "content-type": "text/plain" }, body: raw, signal: AbortSignal.timeout(20000) });
+  const txid = (await response.text()).trim();
+  if (!response.ok || !/^[a-fA-F0-9]{64}$/.test(txid)) throw new Error("BTC broadcaster did not accept the transaction");
+  return txid;
+}
+async function sendAutomaticCryptoPayout(row) {
+  if (row.net === "BNB") return await sendBscUsdtPayout(row);
+  if (row.net === "TRC20") return await sendTronUsdtPayout(row);
+  if (row.net === "BTC") return await sendBtcPayout(row);
+  throw new Error("Automatic payout is not configured for network " + row.net);
+}
+function cryptoSignerConfiguredFor(net) {
+  if (net === "BNB") return Boolean(process.env.BSC_USDT_PRIVATE_KEY);
+  if (net === "TRC20") return Boolean(process.env.TRON_USDT_PRIVATE_KEY);
+  if (net === "BTC") return Boolean(process.env.BTC_PRIVATE_KEY_WIF);
+  return false;
+}
+const existingDepositHandlerForCrypto = deposit;
+deposit = async function(request, envArg) {
+  const response = await existingDepositHandlerForCrypto(request, envArg);
+  if (!(await cryptoAutomationEnabled()) || !response.ok) return response;
+  let body = {}, result = {};
+  try { body = await request.clone().json(); result = await response.clone().json(); } catch { return response; }
+  if (result.status !== "pending" || !body.txReference) return response;
+  try {
+    const user = await sessionUser(request, envArg);
+    if (!user) return response;
+    const row = await env.DB.prepare("SELECT * FROM deposits WHERE user_id = ? AND lower(tx_reference) = lower(?) ORDER BY id DESC LIMIT 1").bind(user.id, String(body.txReference).trim()).first();
+    if (!row) return response;
+    const approved = await settleVerifiedCryptoDeposit(row);
+    if (approved) return Response.json({ ...result, status: "approved", automaticDecision: "approved", txReference: row.tx_reference });
+  } catch (error) { console.error("Automatic deposit processing deferred:", error?.message || error); }
+  return response;
+};
+const existingWithdrawHandlerForCrypto = withdraw;
+withdraw = async function(request, envArg) {
+  const startedAt = Date.now() - 2000;
+  const response = await existingWithdrawHandlerForCrypto(request, envArg);
+  if (!(await cryptoAutomationEnabled()) || !response.ok) return response;
+  let result = {};
+  try { result = await response.clone().json(); } catch { return response; }
+  if (result.status !== "pending") return response;
+  let user;
+  try { user = await sessionUser(request, envArg); } catch { return response; }
+  if (!user) return response;
+  let row;
+  try {
+    row = await env.DB.prepare("SELECT * FROM withdrawals WHERE user_id = ? AND status = 'pending' AND date >= ? AND tx_reference = '' ORDER BY id DESC LIMIT 1").bind(user.id, startedAt).first();
+  } catch { return response; }
+  if (!row || !["BNB", "TRC20", "BTC"].includes(row.net) || !cryptoSignerConfiguredFor(row.net)) return response;
+  const claimed = await env.DB.prepare("UPDATE withdrawals SET transfer_status = 'sending' WHERE id = ? AND status = 'pending' AND transfer_status = 'pending' AND tx_reference = ''").bind(row.id).run();
+  if (!(claimed.meta?.changes > 0)) return response;
+  try {
+    const txHash = await sendAutomaticCryptoPayout(row);
+    const saved = await env.DB.prepare("UPDATE withdrawals SET tx_reference = ?, transfer_status = 'sent' WHERE id = ? AND status = 'pending' AND transfer_status = 'sending' AND tx_reference = ''").bind(txHash, row.id).run();
+    if (!(saved.meta?.changes > 0)) {
+      console.error("Broadcast succeeded but its hash could not be attached to withdrawal", row.id, txHash);
+      return Response.json({ ...result, automaticTransferPending: true, txReference: txHash });
+    }
+    const internalRequest = new Request("http://localhost/api/admin/review", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "withdrawal", id: Number(row.id), action: "approve", txReference: txHash })
+    });
+    const approved = await reviewTransaction(internalRequest, env, true);
+    let approvalBody = {};
+    try { approvalBody = await approved.clone().json(); } catch {}
+    return Response.json({ ...result, ...approvalBody, status: approved.ok ? "approved" : "pending", automaticTransfer: true, txReference: txHash, txHash });
+  } catch (error) {
+    // Leave it pending for reconciliation: a provider timeout can occur after broadcast.
+    console.error("Automatic payout needs reconciliation for withdrawal", row.id, error?.message || error);
+    return Response.json({ ...result, status: "pending", automaticTransferPending: true });
+  }
+};
+const automaticCryptoDepositTimer = setInterval(() => {
+  sweepAutomaticCryptoDeposits().catch(error => console.error("Automatic deposit sweep error:", error?.message || error));
+}, Math.max(15000, Number(process.env.CRYPTO_DEPOSIT_POLL_MS || 30000)));
+if (typeof automaticCryptoDepositTimer.unref === "function") automaticCryptoDepositTimer.unref();
+
