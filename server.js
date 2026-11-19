@@ -1330,6 +1330,7 @@ const workerHandler = {
     try { await env.DB.prepare("ALTER TABLE deposits ADD COLUMN transfer_status TEXT NOT NULL DEFAULT 'pending'").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN transfer_status TEXT NOT NULL DEFAULT 'pending'").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN auto_transfer_at INTEGER NOT NULL DEFAULT 0").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN auto_transfer_override INTEGER NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.exec("CREATE INDEX IF NOT EXISTS withdrawals_auto_due ON withdrawals(status, transfer_status, auto_transfer_at)"); } catch {}
 
     try { await env.DB.prepare("ALTER TABLE settings ADD COLUMN auto_redeem_pct REAL NOT NULL DEFAULT 0").run(); } catch {}
@@ -1496,6 +1497,9 @@ const workerHandler = {
       if (method === "POST" && pathName === "/api/admin/payments/mark-deposit-failed") return await markDepositFailed(request, env);
       if (method === "GET" && pathName === "/api/admin/payments/crypto-automation") return await getCryptoAutomationSetting(request, env);
       if (method === "POST" && pathName === "/api/admin/payments/crypto-automation") return await saveCryptoAutomationSetting(request, env);
+      if (method === "GET" && pathName === "/api/admin/payments/auto-limits") return await getCryptoPayoutLimits(request, env);
+      if (method === "POST" && pathName === "/api/admin/payments/auto-limits") return await saveCryptoPayoutLimits(request, env);
+      if (method === "POST" && pathName === "/api/admin/payments/delegate-withdrawal") return await delegateWithdrawalToAutoTransfer(request, env);
       if (method === "GET" && pathName === "/api/admin/payments/crypto-payout-delay") return await getCryptoPayoutDelay(request, env);
       if (method === "POST" && pathName === "/api/admin/payments/crypto-payout-delay") return await saveCryptoPayoutDelay(request, env);
       if (method === "GET" && pathName === "/api/payment-minimums") return await getPaymentMinimums(env);
@@ -3883,6 +3887,33 @@ async function cryptoAutomationEnabled() {
     return row?.config_value === "true";
   } catch (error) { console.error("Crypto automation setting lookup failed; defaulting OFF:", error?.message || error); return false; }
 }
+
+const CRYPTO_PAYOUT_LIMIT_DEFAULTS = Object.freeze({ minimum: 0, maximum: 1000000000 });
+async function readCryptoPayoutLimits(envArg) {
+  const rows = await envArg.DB.prepare("SELECT config_key, config_value FROM platform_config WHERE config_key IN (?, ?)").bind("crypto_payout_minimum", "crypto_payout_maximum").all();
+  const values = new Map((rows.results || []).map(row => [row.config_key, Number(row.config_value)]));
+  const minimum = values.get("crypto_payout_minimum"), maximum = values.get("crypto_payout_maximum");
+  return {
+    minimum: Number.isFinite(minimum) && minimum >= 0 ? minimum : CRYPTO_PAYOUT_LIMIT_DEFAULTS.minimum,
+    maximum: Number.isFinite(maximum) && maximum > 0 ? maximum : CRYPTO_PAYOUT_LIMIT_DEFAULTS.maximum
+  };
+}
+async function getCryptoPayoutLimits(request, envArg) {
+  if (!(await privilegedAdminActor(request, envArg))) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  return Response.json({ ok: true, ...(await readCryptoPayoutLimits(envArg)) });
+}
+async function saveCryptoPayoutLimits(request, envArg) {
+  if (!(await privilegedAdminActor(request, envArg))) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  const body = await request.json().catch(() => ({}));
+  const minimum = Number(body.minimum), maximum = Number(body.maximum);
+  const validMoney = value => Number.isFinite(value) && value >= 0 && value <= 1000000000 && Math.abs(Math.round(value * 100) - value * 100) < 1e-8;
+  if (!validMoney(minimum) || !validMoney(maximum) || maximum <= 0 || minimum > maximum) return bad("Inserisci limiti di payout validi: importi non negativi, massimo due decimali e minimo non superiore al massimo.");
+  await envArg.DB.batch([
+    envArg.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES(?, ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind("crypto_payout_minimum", String(minimum)),
+    envArg.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES(?, ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind("crypto_payout_maximum", String(maximum))
+  ]);
+  return Response.json({ ok: true, minimum, maximum });
+}
 const BSC_USDT_DEFAULT = "0x55d398326f99059fF775485246999027B3197955";
 const TRON_USDT_DEFAULT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 const BTC_API_DEFAULT = "https://mempool.space/api";
@@ -4114,6 +4145,26 @@ function cryptoSignerConfiguredFor(net) {
   if (net === "BTC") return Boolean(process.env.BTC_PRIVATE_KEY_WIF);
   return false;
 }
+
+async function delegateWithdrawalToAutoTransfer(request, envArg) {
+  if (!(await privilegedAdminActor(request, envArg))) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  if (String(process.env.CRYPTO_AUTOMATION_ENABLED || "").toLowerCase() !== "true") return Response.json({ error: "L'automazione crypto deve essere abilitata nei Secrets del server prima di delegare un prelievo." }, { status: 409 });
+  const body = await request.json().catch(() => ({})), id = Number(body.id), delayMs = Number(body.delayMs);
+  if (!Number.isSafeInteger(id) || id < 1 || !Number.isSafeInteger(delayMs) || delayMs < 0 || delayMs > 315360000000) return bad("Richiesta o tempistica del payout non valida.");
+  const row = await envArg.DB.prepare("SELECT * FROM withdrawals WHERE id = ? AND status = 'pending'").bind(id).first();
+  if (!row || row.transfer_status !== "pending" || String(row.tx_reference || "")) return Response.json({ error: "Il prelievo non è più disponibile per la delega automatica." }, { status: 409 });
+  if (!cryptoSignerConfiguredFor(row.net)) return bad("Automazione o wallet di firma non configurato per questa rete.");
+  const limits = await readCryptoPayoutLimits(envArg), requestedAmount = Number(row.amount);
+  if (requestedAmount < limits.minimum || requestedAmount > limits.maximum) return bad("L'importo del prelievo è fuori dai limiti dei pagamenti automatici.");
+  const autoTransferAt = Date.now() + delayMs;
+  const updated = await envArg.DB.prepare("UPDATE withdrawals SET transfer_status = 'scheduled', auto_transfer_at = ?, auto_transfer_override = 1 WHERE id = ? AND status = 'pending' AND transfer_status = 'pending' AND tx_reference = ''").bind(autoTransferAt, id).run();
+  if (!(updated.meta?.changes > 0)) return Response.json({ error: "Il prelievo è già stato aggiornato." }, { status: 409 });
+  try {
+    await envArg.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
+      .bind(row.user_id, "Withdrawal delegated to automatic payout", "Your " + Number(row.amount).toFixed(3) + " USDT payout is scheduled for " + new Date(autoTransferAt).toLocaleString("en-US") + ".", Date.now()).run();
+  } catch (error) { console.error("Automatic payout scheduling notification failed:", error?.message || error); }
+  return Response.json({ ok: true, autoTransferAt, delayMs });
+}
 const existingDepositHandlerForCrypto = deposit;
 deposit = async function(request, envArg) {
   const response = await existingDepositHandlerForCrypto(request, envArg);
@@ -4147,6 +4198,8 @@ withdraw = async function(request, envArg) {
     row = await env.DB.prepare("SELECT * FROM withdrawals WHERE user_id = ? AND status = 'pending' AND date >= ? AND tx_reference = '' ORDER BY id DESC LIMIT 1").bind(user.id, startedAt).first();
   } catch { return response; }
   if (!row || !["BNB", "TRC20", "BTC"].includes(row.net) || !cryptoSignerConfiguredFor(row.net)) return response;
+  const payoutLimits = await readCryptoPayoutLimits(env), requestAmount = Number(row.amount);
+  if (requestAmount < payoutLimits.minimum || requestAmount > payoutLimits.maximum) return response;
   const delay = await readCryptoPayoutDelay(env);
   const scheduledAt = Number(row.date) + delay.delayMs;
   const scheduled = await env.DB.prepare("UPDATE withdrawals SET transfer_status = 'scheduled', auto_transfer_at = ? WHERE id = ? AND status = 'pending' AND transfer_status = 'pending' AND tx_reference = ''").bind(scheduledAt, row.id).run();
@@ -4158,13 +4211,19 @@ withdraw = async function(request, envArg) {
 };
 let scheduledCryptoPayoutsRunning = false;
 async function processScheduledCryptoWithdrawals() {
-  if (!(await cryptoAutomationEnabled()) || scheduledCryptoPayoutsRunning || !automaticApprovalSchemaReady) return;
+  const globalAutomationEnabled = await cryptoAutomationEnabled();
+  if (String(process.env.CRYPTO_AUTOMATION_ENABLED || "").toLowerCase() !== "true" || scheduledCryptoPayoutsRunning || !automaticApprovalSchemaReady) return;
   scheduledCryptoPayoutsRunning = true;
   try {
     const now = Date.now();
-    const rows = await env.DB.prepare("SELECT * FROM withdrawals WHERE status = 'pending' AND transfer_status = 'scheduled' AND auto_transfer_at > 0 AND auto_transfer_at <= ? ORDER BY auto_transfer_at ASC, id ASC LIMIT 20").bind(now).all();
+    const rows = await env.DB.prepare("SELECT * FROM withdrawals WHERE status = 'pending' AND transfer_status = 'scheduled' AND auto_transfer_at > 0 AND auto_transfer_at <= ? AND (auto_transfer_override = 1 OR ? = 1) ORDER BY auto_transfer_at ASC, id ASC LIMIT 20").bind(now, globalAutomationEnabled ? 1 : 0).all();
     for (const row of rows.results || []) {
       if (!cryptoSignerConfiguredFor(row.net)) continue;
+      const payoutLimits = await readCryptoPayoutLimits(env), requestAmount = Number(row.amount);
+      if (requestAmount < payoutLimits.minimum || requestAmount > payoutLimits.maximum) {
+        await env.DB.prepare("UPDATE withdrawals SET transfer_status = 'pending', auto_transfer_at = 0, auto_transfer_override = 0 WHERE id = ? AND status = 'pending' AND transfer_status = 'scheduled' AND tx_reference = ''").bind(row.id).run();
+        continue;
+      }
       const claimed = await env.DB.prepare("UPDATE withdrawals SET transfer_status = 'sending' WHERE id = ? AND status = 'pending' AND transfer_status = 'scheduled' AND auto_transfer_at <= ? AND tx_reference = ''").bind(row.id, now).run();
       if (!(claimed.meta?.changes > 0)) continue;
       try {

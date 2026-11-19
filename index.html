@@ -564,6 +564,14 @@
             <div class="payment-admin-config-row crypto-payout-delay-row"><input id="crypto-payout-delay-value" type="number" min="0" step="1" value="0"><select id="crypto-payout-delay-unit"><option value="seconds">Seconds</option><option value="minutes">Minutes</option><option value="hours">Hours</option><option value="days">Days</option></select><button class="outline-button" id="save-crypto-payout-delay" type="button">Save delay</button></div>
             <p class="payment-admin-config-status" id="crypto-payout-delay-status" role="status" aria-live="polite"></p>
           </section>
+          <form class="payment-admin-config-card" id="crypto-auto-limits-form">
+            <h2>Automatic payout amount limits</h2>
+            <p>Withdrawals outside this range remain for manual review.</p>
+            <label for="crypto-auto-min-amount">Minimum automatic payout (USDT)</label><input id="crypto-auto-min-amount" type="number" min="0" max="1000000000" step="0.01" required>
+            <label for="crypto-auto-max-amount">Maximum automatic payout (USDT)</label><input id="crypto-auto-max-amount" type="number" min="0.01" max="1000000000" step="0.01" required>
+            <button class="primary-button" id="save-crypto-auto-limits" type="submit">Save payout limits</button>
+            <p class="payment-admin-config-status" id="crypto-auto-limits-status" role="status" aria-live="polite"></p>
+          </form>
           <form class="payment-admin-config-card" id="commission-settings-form">
             <h2>Commission percentages</h2>
             <label for="commission-withdraw-deposit">Withdrawal · deposit balance (%)</label><input id="commission-withdraw-deposit" type="number" min="0" max="50" step="0.01" required>

@@ -3699,6 +3699,9 @@ body.asset-catalog-open{overflow:hidden}
 #admin-payment-desk .payment-desk-card>.payment-desk-status,
 #admin-payment-desk .payment-desk-card>.payment-hash-entry { grid-column:2; margin:0!important; }
 #admin-payment-desk .payment-desk-card>.payment-desk-actions { grid-column:3!important; grid-row:1 / span 5; display:flex!important; flex-direction:column; gap:4px!important; align-self:center; }
+#admin-payment-desk .payment-desk-card>.payment-auto-delegate { grid-column:3!important; grid-row:1 / span 5; display:flex; flex-direction:column; gap:4px; align-self:center; }
+#admin-payment-desk .payment-auto-delegate label { display:grid; gap:3px; color:var(--muted); font-size:9px; }
+#admin-payment-desk .payment-auto-delegate select { max-width:180px; min-height:27px; padding:3px 5px; font-size:9px; }
 #admin-payment-desk .payment-desk-card>button[data-payment-sent] { grid-column:3; grid-row:1; align-self:center; }
 #admin-payment-desk .payment-desk-card button { min-height:27px!important; margin:0!important; padding:4px 7px!important; border-radius:3px!important; font-size:9px!important; white-space:nowrap; }
 #admin-payment-desk .payment-desk-card .payment-hash-entry { display:grid; grid-template-columns:auto minmax(120px,1fr); align-items:center; gap:6px; color:var(--muted); font-size:9px; }
@@ -3729,6 +3732,7 @@ body.asset-catalog-open{overflow:hidden}
   #admin-payment-desk .payment-desk-card>.payment-desk-actions,
   #admin-payment-desk .payment-desk-card>button[data-payment-sent] { grid-column:1!important; grid-row:auto!important; }
   #admin-payment-desk .payment-desk-card>.payment-desk-actions { flex-direction:row!important; flex-wrap:wrap; }
+  #admin-payment-desk .payment-desk-card>.payment-auto-delegate { grid-column:1!important; grid-row:auto!important; flex-direction:row; flex-wrap:wrap; align-items:end; }
 }
 
 
