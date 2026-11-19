@@ -2412,7 +2412,7 @@ async function loadPaymentHistory(category,reset=false){
  }catch(error){notice(error.message||'Unable to load payment history.',true);if(more)more.hidden=true}
  finally{state.loading=false;if(more)more.disabled=false}
 }
-async function refreshAdminPaymentDesk(){try{
+async function refreshAdminPaymentDesk(){try{await refreshCryptoAutomationControl();
  const data=await api('/api/admin/transactions'),deposits=(data.deposits||[]).slice().sort((a,b)=>Number(a.date)-Number(b.date)),withdrawals=(data.withdrawals||[]).slice().sort((a,b)=>Number(a.date)-Number(b.date));
  const incoming=deposits.filter(row=>!['received','failed'].includes(String(row.transfer_status||'pending'))),received=deposits.filter(row=>String(row.transfer_status)==='received'),outgoing=withdrawals.filter(row=>!['sent','failed'].includes(String(row.transfer_status||'pending'))),sent=withdrawals.filter(row=>String(row.transfer_status)==='sent'),issues=[...deposits.filter(row=>String(row.transfer_status)==='failed').map(row=>({...row,paymentKind:'deposit'})),...withdrawals.filter(row=>String(row.transfer_status)==='failed').map(row=>({...row,paymentKind:'withdrawal'}))];
  setPaymentDeskList('incoming',incoming,'deposit');setPaymentDeskList('outgoing',outgoing,'withdrawal');setPaymentDeskList('received',received,'deposit');setPaymentDeskList('sent',sent,'withdrawal');setPaymentDeskList('issues',issues);
