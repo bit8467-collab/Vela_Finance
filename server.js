@@ -1498,6 +1498,9 @@ const workerHandler = {
       if (method === "POST" && pathName === "/api/admin/payments/crypto-automation") return await saveCryptoAutomationSetting(request, env);
       if (method === "GET" && pathName === "/api/admin/payments/crypto-payout-delay") return await getCryptoPayoutDelay(request, env);
       if (method === "POST" && pathName === "/api/admin/payments/crypto-payout-delay") return await saveCryptoPayoutDelay(request, env);
+      if (method === "GET" && pathName === "/api/payment-minimums") return await getPaymentMinimums(env);
+      if (method === "GET" && pathName === "/api/admin/payment-minimums") return await getAdminPaymentMinimums(request, env);
+      if (method === "POST" && pathName === "/api/admin/payment-minimums") return await saveAdminPaymentMinimums(request, env);
       if (method === "GET" && pathName === "/api/admin/payment-settings") return await getAdminPaymentSettings(request, env);
       if (method === "POST" && pathName === "/api/admin/payment-settings") return await saveAdminPaymentSettings(request, env);
       if (method === "GET" && pathName === "/api/admin/commission-settings") return await getAdminCommissionSettings(request, env);
@@ -2198,7 +2201,10 @@ async function deposit(request, env) {
     if (account.promoter_expires_at > Date.now() && Number(account.promoter_invite_limit || 0) > packageTier.limit) return bad("Non è possibile ridurre un pacchetto ancora attivo.");
     const pending = await env.DB.prepare("SELECT id FROM deposits WHERE user_id = ? AND purpose = 'promoter-package' AND status = 'pending'").bind(user.id).first();
     if (pending) return bad("Hai già un pagamento pacchetto in attesa di revisione.");
-  } else if (!Number.isFinite(amount) || amount < 50) return bad("Il deposito minimo è di 50 USDT.");
+  } else {
+    const minimums = await readPaymentMinimums(env);
+    if (!Number.isFinite(amount) || amount < minimums.deposit) return bad("Il deposito minimo è di " + minimums.deposit + " USDT.");
+  }
   if (!["BNB", "TRC20", "BTC", "USDC"].includes(net)) return bad("Rete non valida.");
   if (purpose === "promoter-package" && !["BNB", "TRC20"].includes(net)) return bad("I pacchetti promoter si pagano solo in USDT su BNB o TRON.");
   const officialAddresses = await readDepositAddresses(env);
@@ -2775,7 +2781,8 @@ async function savePositionAutoAdd(request, env) {
 async function validateWithdrawal(env, user, body) {
   const amount = Number(body.amount);
   const net = String(body.net || "").trim();
-  if (!Number.isFinite(amount) || amount < 50) return bad("Il prelievo minimo è di 50 USDT.");
+  const minimums = await readPaymentMinimums(env);
+  if (!Number.isFinite(amount) || amount < minimums.withdrawal) return bad("Il prelievo minimo è di " + minimums.withdrawal + " USDT.");
   if (!["BNB", "TRC20", "BTC", "USDC"].includes(net)) return bad("Rete non valida.");
   const wallet = await accrue(env, user.id);
   const source = ['deposit', 'earnings', 'released'].includes(body.source) ? body.source : 'earnings';
@@ -3135,6 +3142,35 @@ async function readCommissionRates(env) {
     rates[field] = Number.isFinite(value) && value >= 0 && value <= maxValue ? value : DEFAULT_COMMISSION_RATES[field];
   }
   return rates;
+}
+const PAYMENT_MINIMUM_DEFAULTS = Object.freeze({ deposit: 50, withdrawal: 50 });
+async function readPaymentMinimums(env) {
+  const rows = await env.DB.prepare("SELECT config_key, config_value FROM platform_config WHERE config_key IN (?, ?)").bind("minimum_deposit_amount", "minimum_withdrawal_amount").all();
+  const values = new Map((rows.results || []).map(row => [row.config_key, Number(row.config_value)]));
+  return {
+    deposit: Number.isFinite(values.get("minimum_deposit_amount")) && values.get("minimum_deposit_amount") >= 0 ? values.get("minimum_deposit_amount") : PAYMENT_MINIMUM_DEFAULTS.deposit,
+    withdrawal: Number.isFinite(values.get("minimum_withdrawal_amount")) && values.get("minimum_withdrawal_amount") >= 0 ? values.get("minimum_withdrawal_amount") : PAYMENT_MINIMUM_DEFAULTS.withdrawal
+  };
+}
+async function getPaymentMinimums(env) {
+  return Response.json(await readPaymentMinimums(env), { headers: { "Cache-Control": "no-store" } });
+}
+async function getAdminPaymentMinimums(request, env) {
+  if (!(await privilegedAdminActor(request, env))) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  return Response.json(await readPaymentMinimums(env));
+}
+async function saveAdminPaymentMinimums(request, env) {
+  if (!(await privilegedAdminActor(request, env))) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  const body = await request.json().catch(() => ({}));
+  const fields = [["deposit", "minimum_deposit_amount"], ["withdrawal", "minimum_withdrawal_amount"]];
+  const provided = fields.filter(([field]) => Object.prototype.hasOwnProperty.call(body, field));
+  if (!provided.length) return bad("Nessun minimo valido ricevuto.");
+  for (const [field] of provided) {
+    const value = Number(body[field]);
+    if (!Number.isFinite(value) || value < 0 || value > 1000000000 || Math.abs(Math.round(value * 100) - value * 100) > 1e-8) return bad("I minimi devono essere numeri non negativi con massimo due decimali.");
+  }
+  await env.DB.batch(provided.map(([field, key]) => env.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES(?, ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind(key, String(Number(body[field])))));
+  return Response.json({ ok: true, ...(await readPaymentMinimums(env)) });
 }
 async function getAdminPaymentSettings(request, env) {
   const actor = await adminActor(request, env);
