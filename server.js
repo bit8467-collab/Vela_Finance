@@ -8,7 +8,7 @@ import { deflateRawSync } from 'zlib';
 import { ethers } from 'ethers';
 import { TronWeb } from 'tronweb';
 import * as bitcoin from 'bitcoinjs-lib';
-import ECPairFactory from 'ecpair';
+import { ECPairFactory } from 'ecpair';
 import * as tinySecp256k1 from 'tiny-secp256k1';
 
 bitcoin.initEccLib(tinySecp256k1);
