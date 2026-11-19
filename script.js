@@ -2359,7 +2359,32 @@ setInterval(()=>{if(document.visibilityState==='visible'||!adminToken||!$('view-
 const adminDepositNetworks=['BNB','BTC','TRC20'];
 function adminDepositAddressFields(net){return [...document.querySelectorAll('[data-deposit-address="'+net+'"]')]}
 async function loadAdminDepositAddresses(){try{const d=await api('/api/admin/deposit-addresses'),a=d.addresses||{};for(const net of adminDepositNetworks){const saved=String(a[net]||'').split(/[,;]+/).map(x=>x.trim()).filter(Boolean).slice(0,6);adminDepositAddressFields(net).forEach((input,index)=>input.value=saved[index]||'')}}catch(e){}}
-async function refreshAdminWalletBalances(){const button=$('admin-wallet-balances-refresh'),status=$('admin-wallet-balances-status'),list=$('admin-wallet-balances-list');if(!list)return;if(button)button.disabled=true;status.textContent='Reading live balances from the blockchain…';try{const data=await api('/api/admin/wallet-balances'),wallets=data.wallets||[];if(!wallets.length){list.innerHTML='<div class="admin-wallet-balance-empty">No platform wallets configured.</div>'}else{list.innerHTML=wallets.map(w=>{const explorer=w.network==='BNB'?'https://bscscan.com/address/':w.network==='TRC20'?'https://tronscan.org/#/address/':'https://mempool.space/address/';const fields=w.network==='BTC'?'<span><small>Confirmed BTC</small><b>'+esc(w.confirmedBalance??'—')+'</b></span><span><small>Pending BTC</small><b>'+esc(w.pendingBalance??'—')+'</b></span><span><small>Confirmed UTXOs · before miner fee</small><b>'+esc(w.availableBalance??'—')+'</b></span>':'<span><small>'+esc(w.token||'Token')+' balance</small><b>'+esc(w.tokenBalance??'—')+'</b></span><span><small>'+esc(w.native||'Native')+' · network fees</small><b>'+esc(w.nativeBalance??'—')+'</b></span>';return '<article class="admin-wallet-balance-card"><div class="admin-wallet-balance-heading"><b>'+esc(w.network)+(w.network==='BNB'?' · BNB Smart Chain':w.network==='TRC20'?' · TRON':' · Bitcoin')+'</b><span class="admin-wallet-signer '+(w.signerConfigured?'is-ready':'')+'">'+(w.signerConfigured?'Automation key configured':'Automation key not configured')+'</span></div><a class="admin-wallet-address" href="'+explorer+encodeURIComponent(w.address)+'" target="_blank" rel="noopener noreferrer">'+esc(w.address)+' ↗</a>'+(w.error?'<p class="admin-wallet-balance-error">Balance unavailable: '+esc(w.error)+'</p>':'<div class="admin-wallet-balance-values">'+fields+'</div>')+'</article>'}).join('')}const stamp=data.updatedAt?new Date(data.updatedAt).toLocaleString():'—';status.textContent='Updated '+stamp+' · '+(data.automationEnabled?'Automatic transactions enabled':'Automatic transactions disabled');}catch(e){status.textContent=e.message||'Could not load blockchain balances.';list.innerHTML='<div class="admin-wallet-balance-empty is-error">Blockchain balances could not be loaded.</div>'}finally{if(button)button.disabled=false}}
+async function refreshAdminWalletBalances(){
+  const button=$('admin-wallet-balances-refresh'),status=$('admin-wallet-balances-status'),list=$('admin-wallet-balances-list');
+  if(!list)return;if(button)button.disabled=true;status.textContent='Reading live balances from the blockchain…';
+  try{
+    const data=await api('/api/admin/wallet-balances'),wallets=data.wallets||[];
+    if(!wallets.length){list.innerHTML='<div class="admin-wallet-balance-empty">No platform wallets configured.</div>'}
+    else{
+      const order=['BNB','TRC20','BTC'],labels={BNB:'BNB Smart Chain',TRC20:'TRON',BTC:'Bitcoin'},explorers={BNB:'https://bscscan.com/address/',TRC20:'https://tronscan.org/#/address/',BTC:'https://mempool.space/address/'};
+      list.innerHTML=order.filter(network=>wallets.some(wallet=>wallet.network===network)).map(network=>{
+        const entries=wallets.filter(wallet=>wallet.network===network);
+        const rows=entries.map((w,index)=>{
+          const metrics=network==='BTC'?[
+            ['Confirmed balance','BTC',w.confirmedBalance],['Pending net','BTC',w.pendingBalance],['Confirmed UTXOs · before miner fee','BTC',w.availableBalance]
+          ]:[
+            [(w.token||'Token')+' balance',w.token||'',w.tokenBalance],[(w.native||'Native')+' · network fees',w.native||'',w.nativeBalance]
+          ];
+          const amountTiles=metrics.map(([label,unit,value])=>'<div class="admin-wallet-metric"><small>'+esc(label)+'</small><div><b>'+esc(value??'—')+'</b><span>'+esc(unit)+'</span></div></div>').join('');
+          return '<article class="admin-wallet-row"><div class="admin-wallet-row-meta"><span class="admin-wallet-row-number">Wallet '+String(index+1).padStart(2,'0')+'</span><a class="admin-wallet-address" href="'+explorers[network]+encodeURIComponent(w.address)+'" target="_blank" rel="noopener noreferrer"><code>'+esc(w.address)+'</code><span>View on explorer ↗</span></a><span class="admin-wallet-signer '+(w.signerConfigured?'is-ready':'')+'">'+(w.signerConfigured?'Signer key configured':'Signer key not configured')+'</span></div>'+(w.error?'<p class="admin-wallet-balance-error">Balance unavailable: '+esc(w.error)+'</p>':'<div class="admin-wallet-metrics">'+amountTiles+'</div>')+'</article>'
+        }).join('');
+        return '<section class="admin-wallet-chain"><header class="admin-wallet-chain-heading"><div><small>BLOCKCHAIN NETWORK</small><h3>'+labels[network]+'</h3></div><span>'+entries.length+' '+(entries.length===1?'wallet':'wallets')+'</span></header><div class="admin-wallet-chain-rows">'+rows+'</div></section>'
+      }).join('')
+    }
+    const stamp=data.updatedAt?new Date(data.updatedAt).toLocaleString():'—';status.textContent='Updated '+stamp+' · '+(data.automationEnabled?'Automatic transactions enabled':'Automatic transactions disabled');
+  }catch(e){status.textContent=e.message||'Could not load blockchain balances.';list.innerHTML='<div class="admin-wallet-balance-empty is-error">Blockchain balances could not be loaded.</div>'}
+  finally{if(button)button.disabled=false}
+}
 $('admin-wallet-balances-refresh')?.addEventListener('click',refreshAdminWalletBalances);
 $('save-deposit-addresses').addEventListener('click',async()=>{const b=$('save-deposit-addresses');b.disabled=true;try{const addresses=Object.fromEntries(adminDepositNetworks.map(net=>[net,adminDepositAddressFields(net).map(input=>input.value.trim()).filter(Boolean).join(',')]));await post('/api/admin/deposit-addresses',{addresses});notice('Deposit addresses saved.')}catch(e){notice(e.message,true)}finally{b.disabled=false}});
 
