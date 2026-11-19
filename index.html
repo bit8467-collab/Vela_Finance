@@ -554,15 +554,15 @@
           <div><p class="eyebrow">ADMIN · MANUAL SETTLEMENT</p><h1 id="payment-desk-title">Payment desk</h1></div>
           <div class="payment-desk-controls"><button type="button" id="refresh-payment-desk">Refresh</button><button type="button" id="close-payment-desk">Back to admin</button></div>
         </header>
-        <p class="payment-desk-note">Use this desk to verify transfers. When automatic decisions are enabled, confirmed deposits are approved, sent withdrawals are approved, and transfers confirmed as not sent are rejected.</p>
-        <div class="payment-auto-control"><div><b>Automatic request decisions</b><small id="payment-auto-description">Loading setting…</small></div><button type="button" id="toggle-payment-auto-decisions" aria-pressed="false">Automatic decisions: OFF</button><div class="crypto-auto-copy"><b>Automatic blockchain transfers</b><small id="crypto-automation-status">Checking setting…</small></div><button type="button" id="toggle-crypto-automation" aria-pressed="false" disabled>Crypto transfers: OFF</button></div>
+        <p class="payment-desk-note">Monitor transfers here. Eligible automatic withdrawals are sent after the delay configured below.</p>
+        <div class="payment-auto-control"><div class="crypto-auto-copy"><b>Automatic blockchain transfers</b><small id="crypto-automation-status">Checking setting…</small></div><button type="button" id="toggle-crypto-automation" aria-pressed="false" disabled>Crypto transfers: OFF</button></div>
         <div class="payment-admin-config">
-          <section class="payment-admin-config-card" aria-labelledby="payment-delay-title">
-            <h2 id="payment-delay-title">Automatic approval timing</h2>
-            <p>Delay starts only after an admin confirms the deposit was received or the withdrawal was sent.</p>
-            <label for="payment-auto-delay">Approval delay</label>
-            <div class="payment-admin-config-row"><select id="payment-auto-delay"><option value="0">Immediately</option><option value="1">1 hour</option><option value="6">6 hours</option><option value="12">12 hours</option><option value="24">24 hours</option><option value="48">48 hours</option></select><button class="outline-button" id="save-payment-delay" type="button">Save timing</button></div>
-            <p class="payment-admin-config-status" id="payment-delay-status" role="status" aria-live="polite"></p>
+          <section class="payment-admin-config-card" aria-labelledby="crypto-payout-delay-title">
+            <h2 id="crypto-payout-delay-title">Automatic payout delay</h2>
+            <p>Each eligible withdrawal is sent after this delay from its request time. Changes apply to new requests.</p>
+            <label for="crypto-payout-delay-value">Delay</label>
+            <div class="payment-admin-config-row crypto-payout-delay-row"><input id="crypto-payout-delay-value" type="number" min="0" step="1" value="0"><select id="crypto-payout-delay-unit"><option value="seconds">Seconds</option><option value="minutes">Minutes</option><option value="hours">Hours</option><option value="days">Days</option></select><button class="outline-button" id="save-crypto-payout-delay" type="button">Save delay</button></div>
+            <p class="payment-admin-config-status" id="crypto-payout-delay-status" role="status" aria-live="polite"></p>
           </section>
           <form class="payment-admin-config-card" id="commission-settings-form">
             <h2>Commission percentages</h2>

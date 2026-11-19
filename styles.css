@@ -3455,6 +3455,7 @@ body.asset-catalog-open{overflow:hidden}
 .payment-admin-config-card label{margin-top:3px;font-size:11px;font-weight:650}
 .payment-admin-config-card input,.payment-admin-config-card select{width:100%;min-height:40px;border:1px solid var(--line);border-radius:9px;background:var(--surface-2);padding:8px 10px;color:var(--text)}
 .payment-admin-config-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center}
+.payment-admin-config-row.crypto-payout-delay-row{grid-template-columns:minmax(70px,.7fr) minmax(110px,1fr) auto}
 .payment-admin-config-row .outline-button{min-height:40px;padding:8px 12px}
 .payment-admin-config-card .primary-button{margin-top:4px}
 .payment-admin-config-status:empty{display:none}

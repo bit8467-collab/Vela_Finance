@@ -1329,6 +1329,8 @@ const workerHandler = {
     try { await env.DB.prepare("ALTER TABLE deposits ADD COLUMN deposit_address TEXT NOT NULL DEFAULT ''").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE deposits ADD COLUMN transfer_status TEXT NOT NULL DEFAULT 'pending'").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN transfer_status TEXT NOT NULL DEFAULT 'pending'").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN auto_transfer_at INTEGER NOT NULL DEFAULT 0").run(); } catch {}
+    try { await env.DB.exec("CREATE INDEX IF NOT EXISTS withdrawals_auto_due ON withdrawals(status, transfer_status, auto_transfer_at)"); } catch {}
 
     try { await env.DB.prepare("ALTER TABLE settings ADD COLUMN auto_redeem_pct REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN fee_amount REAL NOT NULL DEFAULT 0").run(); } catch {}
@@ -1494,6 +1496,8 @@ const workerHandler = {
       if (method === "POST" && pathName === "/api/admin/payments/mark-deposit-failed") return await markDepositFailed(request, env);
       if (method === "GET" && pathName === "/api/admin/payments/crypto-automation") return await getCryptoAutomationSetting(request, env);
       if (method === "POST" && pathName === "/api/admin/payments/crypto-automation") return await saveCryptoAutomationSetting(request, env);
+      if (method === "GET" && pathName === "/api/admin/payments/crypto-payout-delay") return await getCryptoPayoutDelay(request, env);
+      if (method === "POST" && pathName === "/api/admin/payments/crypto-payout-delay") return await saveCryptoPayoutDelay(request, env);
       if (method === "GET" && pathName === "/api/admin/payment-settings") return await getAdminPaymentSettings(request, env);
       if (method === "POST" && pathName === "/api/admin/payment-settings") return await saveAdminPaymentSettings(request, env);
       if (method === "GET" && pathName === "/api/admin/commission-settings") return await getAdminCommissionSettings(request, env);
@@ -3113,8 +3117,7 @@ async function adminDeleteUser(request, env, userId) {
 }
 
 async function readAutomaticWithdrawalDecisions(env) {
-  const row = await env.DB.prepare("SELECT config_value FROM platform_config WHERE config_key = 'payment_auto_withdrawals'").first();
-  return row?.config_value === "1";
+  return false;
 }
 async function readAutomaticApprovalDelayHours(env) {
   const row = await env.DB.prepare("SELECT config_value FROM platform_config WHERE config_key = 'payment_auto_approval_delay_hours'").first();
@@ -4099,31 +4102,79 @@ withdraw = async function(request, envArg) {
     row = await env.DB.prepare("SELECT * FROM withdrawals WHERE user_id = ? AND status = 'pending' AND date >= ? AND tx_reference = '' ORDER BY id DESC LIMIT 1").bind(user.id, startedAt).first();
   } catch { return response; }
   if (!row || !["BNB", "TRC20", "BTC"].includes(row.net) || !cryptoSignerConfiguredFor(row.net)) return response;
-  const claimed = await env.DB.prepare("UPDATE withdrawals SET transfer_status = 'sending' WHERE id = ? AND status = 'pending' AND transfer_status = 'pending' AND tx_reference = ''").bind(row.id).run();
-  if (!(claimed.meta?.changes > 0)) return response;
-  try {
-    const txHash = await sendAutomaticCryptoPayout(row);
-    const saved = await env.DB.prepare("UPDATE withdrawals SET tx_reference = ?, transfer_status = 'sent' WHERE id = ? AND status = 'pending' AND transfer_status = 'sending' AND tx_reference = ''").bind(txHash, row.id).run();
-    if (!(saved.meta?.changes > 0)) {
-      console.error("Broadcast succeeded but its hash could not be attached to withdrawal", row.id, txHash);
-      return Response.json({ ...result, automaticTransferPending: true, txReference: txHash });
-    }
-    const internalRequest = new Request("http://localhost/api/admin/review", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ kind: "withdrawal", id: Number(row.id), action: "approve", txReference: txHash })
-    });
-    const approved = await reviewTransaction(internalRequest, env, true);
-    let approvalBody = {};
-    try { approvalBody = await approved.clone().json(); } catch {}
-    return Response.json({ ...result, ...approvalBody, status: approved.ok ? "approved" : "pending", automaticTransfer: true, txReference: txHash, txHash });
-  } catch (error) {
-    // Leave it pending for reconciliation: a provider timeout can occur after broadcast.
-    console.error("Automatic payout needs reconciliation for withdrawal", row.id, error?.message || error);
-    return Response.json({ ...result, status: "pending", automaticTransferPending: true });
-  }
+  const delay = await readCryptoPayoutDelay(env);
+  const scheduledAt = Number(row.date) + delay.delayMs;
+  const scheduled = await env.DB.prepare("UPDATE withdrawals SET transfer_status = 'scheduled', auto_transfer_at = ? WHERE id = ? AND status = 'pending' AND transfer_status = 'pending' AND tx_reference = ''").bind(scheduledAt, row.id).run();
+  if (!(scheduled.meta?.changes > 0)) return response;
+  if (scheduledAt <= Date.now()) await processScheduledCryptoWithdrawals();
+  const current = await env.DB.prepare("SELECT status, transfer_status, tx_reference, auto_transfer_at FROM withdrawals WHERE id = ?").bind(row.id).first();
+  const sent = current?.transfer_status === "sent" || current?.status === "approved";
+  return Response.json({ ...result, status: current?.status || "pending", automaticTransfer: sent, automaticTransferScheduled: !sent, autoTransferAt: Number(current?.auto_transfer_at) || scheduledAt, txReference: current?.tx_reference || "", txHash: current?.tx_reference || "" });
 };
+let scheduledCryptoPayoutsRunning = false;
+async function processScheduledCryptoWithdrawals() {
+  if (!(await cryptoAutomationEnabled()) || scheduledCryptoPayoutsRunning || !automaticApprovalSchemaReady) return;
+  scheduledCryptoPayoutsRunning = true;
+  try {
+    const now = Date.now();
+    const rows = await env.DB.prepare("SELECT * FROM withdrawals WHERE status = 'pending' AND transfer_status = 'scheduled' AND auto_transfer_at > 0 AND auto_transfer_at <= ? ORDER BY auto_transfer_at ASC, id ASC LIMIT 20").bind(now).all();
+    for (const row of rows.results || []) {
+      if (!cryptoSignerConfiguredFor(row.net)) continue;
+      const claimed = await env.DB.prepare("UPDATE withdrawals SET transfer_status = 'sending' WHERE id = ? AND status = 'pending' AND transfer_status = 'scheduled' AND auto_transfer_at <= ? AND tx_reference = ''").bind(row.id, now).run();
+      if (!(claimed.meta?.changes > 0)) continue;
+      try {
+        const txHash = await sendAutomaticCryptoPayout(row);
+        const saved = await env.DB.prepare("UPDATE withdrawals SET tx_reference = ?, transfer_status = 'sent' WHERE id = ? AND status = 'pending' AND transfer_status = 'sending' AND tx_reference = ''").bind(txHash, row.id).run();
+        if (!(saved.meta?.changes > 0)) {
+          console.error("Broadcast succeeded but its hash could not be attached to scheduled withdrawal", row.id, txHash);
+          continue;
+        }
+        const internalRequest = new Request("http://localhost/api/admin/review", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: "withdrawal", id: Number(row.id), action: "approve", txReference: txHash }) });
+        const approved = await reviewTransaction(internalRequest, env, true);
+        if (!approved.ok) console.error("Scheduled payout sent but approval needs admin review", row.id, approved.status);
+      } catch (error) {
+        // A provider error may happen after broadcast; keep it for reconciliation rather than risking a duplicate payout.
+        console.error("Scheduled payout needs reconciliation for withdrawal", row.id, error?.message || error);
+      }
+    }
+  } catch (error) {
+    console.error("Scheduled crypto payout worker failed:", error?.message || error);
+  } finally { scheduledCryptoPayoutsRunning = false; }
+}
 const automaticCryptoDepositTimer = setInterval(() => {
   sweepAutomaticCryptoDeposits().catch(error => console.error("Automatic deposit sweep error:", error?.message || error));
 }, Math.max(15000, Number(process.env.CRYPTO_DEPOSIT_POLL_MS || 30000)));
 if (typeof automaticCryptoDepositTimer.unref === "function") automaticCryptoDepositTimer.unref();
+const automaticCryptoPayoutTimer = setInterval(() => {
+  processScheduledCryptoWithdrawals().catch(error => console.error("Automatic crypto payout scheduler error:", error?.message || error));
+}, Math.max(250, Number(process.env.CRYPTO_PAYOUT_POLL_MS || 1000)));
+if (typeof automaticCryptoPayoutTimer.unref === "function") automaticCryptoPayoutTimer.unref();
 
+
+const CRYPTO_PAYOUT_DELAY_UNITS = Object.freeze({ seconds: 1000, minutes: 60000, hours: 3600000, days: 86400000 });
+async function readCryptoPayoutDelay(envArg) {
+  const rows = await envArg.DB.prepare("SELECT config_key, config_value FROM platform_config WHERE config_key IN (?, ?)").bind("crypto_payout_delay_value", "crypto_payout_delay_unit").all();
+  const values = new Map((rows.results || []).map(row => [row.config_key, row.config_value]));
+  const value = Number(values.get("crypto_payout_delay_value") ?? 0);
+  const unit = String(values.get("crypto_payout_delay_unit") || "seconds");
+  if (!Number.isSafeInteger(value) || value < 0 || !Object.prototype.hasOwnProperty.call(CRYPTO_PAYOUT_DELAY_UNITS, unit)) return { value: 0, unit: "seconds", delayMs: 0 };
+  return { value, unit, delayMs: value * CRYPTO_PAYOUT_DELAY_UNITS[unit] };
+}
+async function getCryptoPayoutDelay(request, envArg) {
+  const actor = await privilegedAdminActor(request, envArg);
+  if (!actor) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  return Response.json({ ok: true, ...(await readCryptoPayoutDelay(envArg)) });
+}
+async function saveCryptoPayoutDelay(request, envArg) {
+  const actor = await privilegedAdminActor(request, envArg);
+  if (!actor) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  const body = await request.json().catch(() => ({}));
+  const value = Number(body.value), unit = String(body.unit || "");
+  if (!Number.isSafeInteger(value) || value < 0 || !Object.prototype.hasOwnProperty.call(CRYPTO_PAYOUT_DELAY_UNITS, unit)) return bad("Inserisci un intervallo intero valido in secondi, minuti, ore o giorni.");
+  if (value * CRYPTO_PAYOUT_DELAY_UNITS[unit] > 315360000000) return bad("Il ritardo massimo consentito è di 10 anni.");
+  await envArg.DB.batch([
+    envArg.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES(?, ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind("crypto_payout_delay_value", String(value)),
+    envArg.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES(?, ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind("crypto_payout_delay_unit", unit)
+  ]);
+  return Response.json({ ok: true, value, unit, delayMs: value * CRYPTO_PAYOUT_DELAY_UNITS[unit] });
+}
