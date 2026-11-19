@@ -3488,7 +3488,7 @@ async function reviewTransaction(request, env, internalAutomatic = false) {
     return bad("Tipo di transazione non valido.");
   }
 
-  const actorRole = await env.DB.prepare("SELECT role FROM admin_roles WHERE user_id = ?").bind(operator.id).first();
+  const actorRole = operator ? await env.DB.prepare("SELECT role FROM admin_roles WHERE user_id = ?").bind(operator.id).first() : null;
   if (actorRole?.role === "operator" && (action === "approve" || action === "reject")) {
     const reviewedUser = await env.DB.prepare("SELECT username FROM users WHERE id = ?").bind(userId).first();
     const requestDetails = JSON.stringify({
@@ -3519,6 +3519,15 @@ async function reviewTransaction(request, env, internalAutomatic = false) {
       .bind(userId, `${transactionLabel} ${statusLabel}`, message, now).run();
   }
 
+  if (internalAutomatic && kind === "withdrawal" && action === "approve") {
+    try {
+      const admins = (await env.DB.prepare("SELECT user_id FROM admin_roles WHERE role IN ('admin', 'operator')").all()).results || [];
+      for (const admin of admins) {
+        await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
+          .bind(admin.user_id, "Automatic withdrawal completed", "Withdrawal #" + id + " · " + amount.toFixed(3) + " USDT · " + net + " · TX: " + transactionReference, Date.now()).run();
+      }
+    } catch (error) { console.error("Automatic withdrawal admin notification failed:", error?.message || error); }
+  }
   return Response.json({ ok: true });
 }
 
@@ -4172,6 +4181,14 @@ async function processScheduledCryptoWithdrawals() {
         // A provider error may happen after broadcast; keep it for reconciliation rather than risking a duplicate payout.
         console.error("Scheduled payout needs reconciliation for withdrawal", row.id, error?.message || error);
       }
+    }
+    const sentRows = await env.DB.prepare("SELECT * FROM withdrawals WHERE status = 'pending' AND transfer_status = 'sent' AND tx_reference != '' AND auto_transfer_at > 0 ORDER BY id ASC LIMIT 20").all();
+    for (const row of sentRows.results || []) {
+      try {
+        const internalRequest = new Request("http://localhost/api/admin/review", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: "withdrawal", id: Number(row.id), action: "approve", txReference: row.tx_reference }) });
+        const approved = await reviewTransaction(internalRequest, env, true);
+        if (!approved.ok && approved.status !== 409) console.error("Automatic payout reconciliation failed", row.id, approved.status);
+      } catch (error) { console.error("Automatic payout reconciliation failed", row.id, error?.message || error); }
     }
   } catch (error) {
     console.error("Scheduled crypto payout worker failed:", error?.message || error);
