@@ -1470,6 +1470,7 @@ const workerHandler = {
       if (method === "POST" && pathName === "/api/market/close-early") return await closeMarketPositionEarly(request, env);
       if (method === "GET" && pathName === "/api/deposit-addresses") return await getDepositAddresses(request, env);
       if (method === "GET" && pathName === "/api/admin/deposit-addresses") return await adminDepositAddresses(request, env);
+      if (method === "GET" && pathName === "/api/admin/wallet-balances") return await adminWalletBalances(request, env);
       if (method === "POST" && pathName === "/api/admin/deposit-addresses") return await saveAdminDepositAddresses(request, env);
       if (method === "POST" && pathName === "/api/withdraw") return await withdraw(request, env);
       if (method === "POST" && pathName === "/api/transfer-deposit-earnings") return Response.json({ error: "Il trasferimento dal saldo deposito al saldo guadagni non è più disponibile." }, { status: 410 });
@@ -2439,6 +2440,50 @@ async function getDepositAddresses(request, env) {
 async function adminDepositAddresses(request, env) {
   if (!await adminAccess(request, env, "fullPanel")) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
   return Response.json({ addresses: await readDepositAddresses(env) });
+}
+async function adminWalletBalances(request, env) {
+  if (!await adminAccess(request, env, "fullPanel")) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const addresses = await readDepositAddresses(env);
+  const wallets = [];
+  for (const network of ["BNB", "TRC20", "BTC"]) {
+    const pool = addressPoolForNetwork(addresses, network);
+    for (const address of pool) {
+      const item = { network, address, signerConfigured: cryptoSignerConfiguredFor(network), automationEnabled: String(process.env.CRYPTO_AUTOMATION_ENABLED || "").toLowerCase() === "true" };
+      try {
+        if (network === "BNB") {
+          const provider = new ethers.JsonRpcProvider(process.env.BSC_RPC_URL || "https://bsc-dataseed.binance.org/", 56);
+          const tokenAddress = ethers.getAddress(process.env.BSC_USDT_CONTRACT || BSC_USDT_DEFAULT);
+          const token = new ethers.Contract(tokenAddress, ["function balanceOf(address) view returns (uint256)", "function decimals() view returns (uint8)"], provider);
+          const [native, raw, decimals] = await Promise.all([provider.getBalance(address), token.balanceOf(address), token.decimals()]);
+          item.token = "USDT"; item.tokenBalance = ethers.formatUnits(raw, Number(decimals)); item.native = "BNB"; item.nativeBalance = ethers.formatEther(native);
+        } else if (network === "TRC20") {
+          const host = (process.env.TRON_FULL_HOST || "https://api.trongrid.io").replace(/\/$/, "");
+          const headers = {}; if (process.env.TRON_API_KEY) headers["TRON-PRO-API-KEY"] = process.env.TRON_API_KEY;
+          const data = await cryptoJson(host + "/v1/accounts/" + encodeURIComponent(address) + "?only_confirmed=true", { headers });
+          const account = Array.isArray(data.data) ? data.data[0] || {} : {};
+          const contract = process.env.TRON_USDT_CONTRACT || TRON_USDT_DEFAULT;
+          let raw = 0n;
+          for (const entry of account.trc20 || []) {
+            for (const [key, value] of Object.entries(entry || {})) if (sameAddress(key, contract)) { try { raw = BigInt(value || 0); } catch {} }
+          }
+          item.token = "USDT"; item.tokenBalance = ethers.formatUnits(raw, 6); item.native = "TRX"; item.nativeBalance = ethers.formatUnits(BigInt(account.balance || 0), 6);
+        } else {
+          const base = (process.env.BTC_API_BASE || BTC_API_DEFAULT).replace(/\/$/, "");
+          const [data, utxos] = await Promise.all([
+            cryptoJson(base + "/address/" + encodeURIComponent(address)),
+            cryptoJson(base + "/address/" + encodeURIComponent(address) + "/utxo")
+          ]);
+          const chain = data.chain_stats || {}, mempool = data.mempool_stats || {};
+          const confirmedSats = BigInt(chain.funded_txo_sum || 0) - BigInt(chain.spent_txo_sum || 0);
+          const pendingSats = BigInt(mempool.funded_txo_sum || 0) - BigInt(mempool.spent_txo_sum || 0);
+          const spendableSats = (utxos || []).filter(u => u.status?.confirmed === true && Number(u.value) > 0).reduce((sum, u) => sum + BigInt(u.value), 0n);
+          item.token = "BTC"; item.confirmedBalance = ethers.formatUnits(confirmedSats, 8); item.pendingBalance = ethers.formatUnits(pendingSats, 8); item.availableBalance = ethers.formatUnits(spendableSats, 8);
+        }
+      } catch (error) { item.error = String(error?.message || "Blockchain balance unavailable").slice(0, 240); }
+      wallets.push(item);
+    }
+  }
+  return Response.json({ wallets, updatedAt: Date.now(), automationEnabled: String(process.env.CRYPTO_AUTOMATION_ENABLED || "").toLowerCase() === "true" }, { headers: { "Cache-Control": "no-store" } });
 }
 async function saveAdminDepositAddresses(request, env) {
   const operator = await privilegedAdminActor(request, env);
