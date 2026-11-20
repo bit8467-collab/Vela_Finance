@@ -3495,11 +3495,24 @@ async function adminUserDetails(request, env, userId) {
   return Response.json({ user: target, wallet, investments, marketPositions, deposits, withdrawals, settings, verificationRequest, actionVerification, passwordResetRequest, invitedCount: Number(invitedCount?.count || 0), actorRole, permissions: targetPermissions });
 }
 
+function balanceReportPriceAt(series, timestamp) {
+  if (!Array.isArray(series) || !series.length) return 0;
+  let before = null, after = null;
+  for (const point of series) {
+    const time = Number(point?.time), value = Number(point?.value);
+    if (!(time > 0 && value > 0)) continue;
+    if (time <= timestamp && (!before || time > before.time)) before = { time, value };
+    if (time > timestamp && (!after || time < after.time)) after = { time, value };
+  }
+  return (before || after)?.value || 0;
+}
+
 async function sendUserBalanceReport(request, env, userId) {
   const actor = await privilegedAdminActor(request, env);
   if (!actor) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
   const body = await request.json().catch(() => ({}));
   const format = ["html", "pdf", "image"].includes(body.format) ? body.format : "";
+  const periodType = body.periodType === "annual" ? "annual" : "monthly";
   if (!format) return bad("Formato report non valido.");
   const target = await env.DB.prepare("SELECT id, username FROM users WHERE id = ?").bind(userId).first();
   if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
@@ -3510,15 +3523,88 @@ async function sendUserBalanceReport(request, env, userId) {
     if(!attachment)return Response.json({error:"File allegato non trovato o non autorizzato."},{status:404});
   }
   const wallet = await accrue(env, target.id);
-  const [marketPositions, investments, deposits, withdrawals] = await Promise.all([
+  const [marketPositions, investments, deposits, withdrawals, rawMarketPositions] = await Promise.all([
     syncMarketPositions(env, target.id),
     env.DB.prepare("SELECT amount, days, rate, created, credited, active FROM investments WHERE user_id = ? ORDER BY created DESC LIMIT 50").bind(target.id).all(),
     env.DB.prepare("SELECT amount, net, date, status FROM deposits WHERE user_id = ? ORDER BY date DESC LIMIT 50").bind(target.id).all(),
-    env.DB.prepare("SELECT amount, net, date, status, source FROM withdrawals WHERE user_id = ? ORDER BY date DESC LIMIT 50").bind(target.id).all()
+    env.DB.prepare("SELECT amount, net, date, status, source FROM withdrawals WHERE user_id = ? ORDER BY date DESC LIMIT 50").bind(target.id).all(),
+    env.DB.prepare("SELECT id, months, amount, allocations_json, entry_quotes_json, last_value, status, created_at, closed_at FROM market_positions WHERE user_id = ? ORDER BY created_at DESC LIMIT 200").bind(target.id).all()
   ]);
   const createdAt = Date.now(), reportId = crypto.randomUUID();
+  const periodStart = periodType === "annual"
+    ? Date.UTC(new Date(createdAt).getUTCFullYear(), 0, 1)
+    : Date.UTC(new Date(createdAt).getUTCFullYear(), new Date(createdAt).getUTCMonth(), 1);
+  const periodMarketData = new Map();
+  const positionRows = rawMarketPositions.results || [];
+  const periodMarkets = [...new Set(positionRows.map(positionElectricityMarket))];
+  await Promise.all(periodMarkets.map(async market => {
+    let history = cachedHistory && cachedHistoryMarket === market && Date.now() - historyAt < 300000 ? cachedHistory : null;
+    if (!history) {
+      try { history = await loadAssetHistory(market); } catch { history = { histories: {} }; }
+      if (history?.histories) { cachedHistory = history; cachedHistoryMarket = market; historyAt = Date.now(); }
+    }
+    let quotes = {};
+    try { quotes = await currentMarketQuotes(market); } catch {}
+    periodMarketData.set(market, { histories: history?.histories || {}, quotes });
+  }));
+  const assetPerformance = new Map();
+  for (const position of positionRows) {
+    const openedAt = Number(position.created_at || 0), closedAt = Number(position.closed_at || 0) || 0;
+    if (!openedAt || openedAt > createdAt || (closedAt && closedAt < periodStart)) continue;
+    let allocations = [], basis = {};
+    try { allocations = JSON.parse(position.allocations_json || "[]"); } catch {}
+    try { basis = JSON.parse(position.entry_quotes_json || "{}"); } catch {}
+    if (!Array.isArray(allocations)) continue;
+    const data = periodMarketData.get(positionElectricityMarket(position)) || { histories: {}, quotes: {} };
+    const heldAtOpen = openedAt <= periodStart && (!closedAt || closedAt >= periodStart);
+    const valuationAt = closedAt && closedAt < createdAt ? closedAt : createdAt;
+    for (const [key, rawWeight] of allocations) {
+      const weight = Number(rawWeight), baseQuote = Number(basis[key]);
+      if (!(weight > 0)) continue;
+      const series = data.histories?.[key] || [];
+      const startAt = Math.max(periodStart, openedAt);
+      const startQuote = balanceReportPriceAt(series, startAt) || baseQuote || Number(data.quotes?.[key]?.price) || 0;
+      const endQuote = valuationAt >= createdAt - 60000 && !closedAt
+        ? Number(data.quotes?.[key]?.price) || balanceReportPriceAt(series, createdAt) || baseQuote
+        : balanceReportPriceAt(series, valuationAt) || Number(data.quotes?.[key]?.price) || baseQuote;
+      if (!(startQuote > 0 && endQuote > 0)) continue;
+      const capital = Number(position.amount || 0) * weight / 100;
+      const referenceBasis = baseQuote > 0 ? baseQuote : startQuote;
+      const openingValue = heldAtOpen ? capital * (startQuote / referenceBasis) : 0;
+      const closingValue = capital * (endQuote / referenceBasis);
+      const gainBase = heldAtOpen ? startQuote : referenceBasis;
+      const gain = capital * (endQuote / gainBase - 1);
+      const item = assetPerformance.get(key) || { key, weightCapital: 0, openingValue: 0, closingValue: 0, gain: 0, capitalBase: 0 };
+      item.weightCapital += capital;
+      item.openingValue += openingValue;
+      item.closingValue += closingValue;
+      item.gain += gain;
+      item.capitalBase += capital;
+      assetPerformance.set(key, item);
+    }
+  }
+  const performanceAssets = [...assetPerformance.values()].map(item => ({
+    ...item,
+    openingValue: Number(item.openingValue.toFixed(3)),
+    closingValue: Number(item.closingValue.toFixed(3)),
+    gain: Number(item.gain.toFixed(3)),
+    returnPct: item.capitalBase > 0 ? Number((item.gain / item.capitalBase * 100).toFixed(3)) : 0
+  })).sort((a, b) => Math.abs(b.gain) - Math.abs(a.gain));
+  const periodGain = performanceAssets.reduce((sum, item) => sum + item.gain, 0);
+  const periodCapital = performanceAssets.reduce((sum, item) => sum + item.capitalBase, 0);
+  for (const item of performanceAssets) item.allocationPct = periodCapital > 0 ? Number((item.capitalBase / periodCapital * 100).toFixed(2)) : 0;
+  const periodPerformance = {
+    type: periodType, startAt: periodStart, endAt: createdAt,
+    openingValue: Number(performanceAssets.reduce((sum, item) => sum + item.openingValue, 0).toFixed(3)),
+    closingValue: Number(performanceAssets.reduce((sum, item) => sum + item.closingValue, 0).toFixed(3)),
+    gain: Number(periodGain.toFixed(3)),
+    returnPct: periodCapital > 0 ? Number((periodGain / periodCapital * 100).toFixed(3)) : 0,
+    assets: performanceAssets
+  };
   const report = {
     username: target.username, generatedAt: createdAt, currency: "USDT",
+    period: { type: periodType, startAt: periodStart, endAt: createdAt },
+    performance: periodPerformance,
     balances: { deposit: Number(wallet.deposit || 0), released: Number(wallet.released || 0), earnings: Number(wallet.earnings || 0), totalAvailable: Number(wallet.deposit || 0) + Number(wallet.released || 0) + Number(wallet.earnings || 0) },
     marketPositions: (marketPositions || []).slice(0, 50).map(row => ({ months: Number(row.months), amount: Number(row.amount), currentValue: Number(row.current_value ?? row.currentValue ?? 0), status: String(row.status || ""), stopLossPct: Number(row.stop_loss_pct ?? row.stopLossPct ?? 0), createdAt: Number(row.created_at ?? row.createdAt ?? 0) })),
     investments: (investments.results || []).map(row => ({ amount: Number(row.amount), days: Number(row.days), rate: Number(row.rate), created: Number(row.created), credited: Number(row.credited), active: !!row.active })),
