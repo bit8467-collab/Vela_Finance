@@ -1534,7 +1534,6 @@ const workerHandler = {
       if (method === "POST" && pathName === "/api/admin/antifraud/delete") return await deleteAntifraudEvent(request, env);
       if (method === "POST" && pathName === "/api/admin/antifraud/clear") return await clearAntifraudHistory(request, env);
       if (method === "GET" && pathName === "/api/admin/backup/export") return await adminDatabaseBackup(request, env);
-      if (method === "GET" && pathName === "/api/admin/financial-control") return await getAdminFinancialControl(request, env);
       if (method === "GET" && pathName === "/api/admin/transactions") return await adminTransactions(request, env);
       if (method === "GET" && pathName === "/api/admin/ledger") return await adminGlobalLedger(request, env);
        if (method === "GET" && pathName === "/api/admin/password-reset-requests") return await listPasswordResetRequests(request, env);
@@ -3341,30 +3340,6 @@ async function adminDatabaseBackup(request, env) {
   });
 }
 
-async function getAdminFinancialControl(request, env) {
-  const user = await adminActor(request, env);
-  if (!user) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
-  const permissions = await readAdminPermissions(user, env);
-  if (!permissions.requests) return Response.json({ error: "Permessi richiesti." }, { status: 403 });
-  const financial = await env.DB.prepare(
-    "SELECT " +
-    "(SELECT COUNT(*) FROM users) AS platform_accounts, " +
-    "(SELECT COUNT(*) FROM deposits WHERE status = 'approved') AS inflow_count, " +
-    "(SELECT COALESCE(SUM(amount), 0) FROM deposits WHERE status = 'approved') AS inflow_amount, " +
-    "(SELECT COUNT(*) FROM withdrawals WHERE status = 'approved') AS outflow_count, " +
-    "(SELECT COALESCE(SUM(amount), 0) FROM withdrawals WHERE status = 'approved') AS outflow_amount, " +
-    "(SELECT COUNT(*) FROM investments WHERE active = 1) + (SELECT COUNT(*) FROM market_positions WHERE status = 'active') AS active_plan_count, " +
-    "(SELECT COALESCE(SUM(amount), 0) FROM investments WHERE active = 1) + (SELECT COALESCE(SUM(last_value), 0) FROM market_positions WHERE status = 'active') AS active_plan_balance, " +
-    "(SELECT COUNT(*) FROM market_positions WHERE status IN ('paused', 'stop_loss')) AS stop_loss_plan_count, " +
-    "(SELECT COALESCE(SUM(last_value), 0) FROM market_positions WHERE status IN ('paused', 'stop_loss')) AS stop_loss_plan_balance, " +
-    "(SELECT COUNT(*) FROM investments WHERE active = 1) + (SELECT COUNT(*) FROM market_positions WHERE status IN ('active', 'paused', 'stop_loss')) AS current_plan_count, " +
-    "(SELECT COALESCE(SUM(deposit + earnings + released), 0) FROM wallets) + " +
-    "(SELECT COALESCE(SUM(amount), 0) FROM investments WHERE active = 1) + " +
-    "(SELECT COALESCE(SUM(last_value), 0) FROM market_positions WHERE status IN ('active', 'paused', 'stop_loss')) AS global_volume"
-  ).first();
-  return Response.json(financial || {}, { headers: { "Cache-Control": "no-store" } });
-}
-
 async function adminTransactions(request, env) {
   const user = await adminActor(request, env);
   if (!user) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
@@ -3487,7 +3462,7 @@ async function adminSetUserRole(request, env) {
 async function adminStatistics(request, env) {
   const actor = await adminAccess(request, env, "fullPanel");
   if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
-  const totals = await env.DB.prepare("SELECT (SELECT COUNT(*) FROM users) AS users, (SELECT COUNT(*) FROM deposits) AS deposit_count, (SELECT COUNT(*) FROM deposits WHERE status = 'approved') AS deposits_approved, (SELECT COUNT(*) FROM deposits WHERE status = 'pending') AS deposits_pending, (SELECT COALESCE(SUM(amount),0) FROM deposits WHERE status = 'approved') AS deposits_amount, (SELECT COALESCE(SUM(amount),0) FROM deposits WHERE status = 'pending') AS deposits_pending_amount, (SELECT COUNT(*) FROM withdrawals) AS withdrawal_count, (SELECT COUNT(*) FROM withdrawals WHERE status = 'approved') AS withdrawals_approved, (SELECT COUNT(*) FROM withdrawals WHERE status = 'pending') AS withdrawals_pending, (SELECT COALESCE(SUM(amount),0) FROM withdrawals WHERE status = 'approved') AS withdrawals_amount, (SELECT COALESCE(SUM(amount),0) FROM withdrawals WHERE status = 'pending') AS withdrawals_pending_amount, (SELECT COUNT(*) FROM investments)+(SELECT COUNT(*) FROM market_positions) AS investment_count, (SELECT COALESCE(SUM(amount),0) FROM investments)+(SELECT COALESCE(SUM(amount),0) FROM market_positions) AS investment_amount, (SELECT COUNT(*) FROM investments WHERE active=1)+(SELECT COUNT(*) FROM market_positions WHERE status IN ('active','paused')) AS active_investments, (SELECT COALESCE(SUM(amount),0) FROM investments WHERE active=1)+(SELECT COALESCE(SUM(amount),0) FROM market_positions WHERE status IN ('active','paused')) AS active_investment_amount").first();
+  const totals = await env.DB.prepare("SELECT (SELECT COUNT(*) FROM users) AS users, (SELECT COUNT(*) FROM deposits) AS deposit_count, (SELECT COUNT(*) FROM deposits WHERE status = 'approved') AS deposits_approved, (SELECT COUNT(*) FROM deposits WHERE status = 'pending') AS deposits_pending, (SELECT COALESCE(SUM(amount),0) FROM deposits WHERE status = 'approved') AS deposits_amount, (SELECT COALESCE(SUM(amount),0) FROM deposits WHERE status = 'pending') AS deposits_pending_amount, (SELECT COUNT(*) FROM withdrawals) AS withdrawal_count, (SELECT COUNT(*) FROM withdrawals WHERE status = 'approved') AS withdrawals_approved, (SELECT COUNT(*) FROM withdrawals WHERE status = 'pending') AS withdrawals_pending, (SELECT COALESCE(SUM(amount),0) FROM withdrawals WHERE status = 'approved') AS withdrawals_amount, (SELECT COALESCE(SUM(amount),0) FROM withdrawals WHERE status = 'pending') AS withdrawals_pending_amount, (SELECT COUNT(*) FROM investments)+(SELECT COUNT(*) FROM market_positions) AS investment_count, (SELECT COALESCE(SUM(amount),0) FROM investments)+(SELECT COALESCE(SUM(amount),0) FROM market_positions) AS investment_amount, (SELECT COUNT(*) FROM investments WHERE active=1)+(SELECT COUNT(*) FROM market_positions WHERE status IN ('active','paused')) AS active_investments, (SELECT COALESCE(SUM(amount),0) FROM investments WHERE active=1)+(SELECT COALESCE(SUM(amount),0) FROM market_positions WHERE status IN ('active','paused')) AS active_investment_amount, (SELECT COUNT(*) FROM investments WHERE active=1)+(SELECT COUNT(*) FROM market_positions WHERE status='active') AS financial_active_plan_count, (SELECT COALESCE(SUM(amount),0) FROM investments WHERE active=1)+(SELECT COALESCE(SUM(last_value),0) FROM market_positions WHERE status='active') AS financial_active_plan_balance, (SELECT COUNT(*) FROM market_positions WHERE status IN ('paused','stop_loss')) AS stop_loss_plan_count, (SELECT COALESCE(SUM(last_value),0) FROM market_positions WHERE status IN ('paused','stop_loss')) AS stop_loss_plan_balance, (SELECT COUNT(*) FROM investments WHERE active=1)+(SELECT COUNT(*) FROM market_positions WHERE status IN ('active','paused','stop_loss')) AS current_plan_count, (SELECT COALESCE(SUM(deposit+earnings+released),0) FROM wallets)+(SELECT COALESCE(SUM(amount),0) FROM investments WHERE active=1)+(SELECT COALESCE(SUM(last_value),0) FROM market_positions WHERE status IN ('active','paused','stop_loss')) AS current_global_volume").first();
   const referrals = (await env.DB.prepare("WITH RECURSIVE referral_tree(inviter_id,user_id,level) AS (SELECT referred_by,id,1 FROM users WHERE referred_by IS NOT NULL AND referred_by!='' UNION ALL SELECT tree.inviter_id,child.id,tree.level+1 FROM referral_tree tree JOIN users child ON child.referred_by=tree.user_id WHERE tree.level<3) SELECT tree.inviter_id,inviter.username AS inviter_username,tree.user_id,invited.username,invited.created_at,tree.level,(SELECT COUNT(*) FROM deposits d WHERE d.user_id=tree.user_id) AS deposit_count,(SELECT COUNT(*) FROM deposits d WHERE d.user_id=tree.user_id AND d.status='approved') AS deposits_approved,(SELECT COALESCE(SUM(d.amount),0) FROM deposits d WHERE d.user_id=tree.user_id AND d.status='approved') AS deposit_amount,(SELECT COUNT(*) FROM withdrawals w WHERE w.user_id=tree.user_id) AS withdrawal_count,(SELECT COUNT(*) FROM withdrawals w WHERE w.user_id=tree.user_id AND w.status='approved') AS withdrawals_approved,(SELECT COALESCE(SUM(w.amount),0) FROM withdrawals w WHERE w.user_id=tree.user_id AND w.status='approved') AS withdrawal_amount,(SELECT COUNT(*) FROM investments i WHERE i.user_id=tree.user_id)+(SELECT COUNT(*) FROM market_positions m WHERE m.user_id=tree.user_id) AS investment_count,(SELECT COALESCE(SUM(i.amount),0) FROM investments i WHERE i.user_id=tree.user_id)+(SELECT COALESCE(SUM(m.amount),0) FROM market_positions m WHERE m.user_id=tree.user_id) AS investment_amount FROM referral_tree tree JOIN users inviter ON inviter.id=tree.inviter_id JOIN users invited ON invited.id=tree.user_id ORDER BY inviter.username COLLATE NOCASE,tree.level,invited.created_at DESC").all()).results;
   return Response.json({ totals, referrals });
 }
@@ -4427,22 +4402,6 @@ app.post('/api/admin/balance-report-attachments', express.raw({ type: 'applicati
   } catch (err) {
     console.error('Balance report attachment upload failed:', err);
     res.status(500).json({ error: 'File upload failed.' });
-  }
-});
-
-app.get('/api/admin/financial-control', async (req, res) => {
-  try {
-    const fullUrl = req.protocol + '://' + req.get('host') + req.originalUrl;
-    const headers = new Headers(req.headers);
-    headers.delete('x-platform-client-ip');
-    if (req.ip) headers.set('x-platform-client-ip', String(req.ip));
-    const response = await workerHandler.fetch(new Request(fullUrl, { method: 'GET', headers }), env);
-    res.status(response.status);
-    response.headers.forEach((value, key) => res.setHeader(key, value));
-    res.send(await response.text());
-  } catch (error) {
-    console.error('Financial control API error:', error);
-    res.status(500).json({ error: 'Impossibile caricare il controllo finanziario.' });
   }
 });
 
