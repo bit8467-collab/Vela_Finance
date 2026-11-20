@@ -1067,6 +1067,8 @@ const workerHandler = {
           expires_at INTEGER
         );`,
         `CREATE INDEX IF NOT EXISTS notifications_user_created ON notifications(user_id, created_at DESC);`,
+        `CREATE TABLE IF NOT EXISTS balance_reports (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, admin_id TEXT NOT NULL, format TEXT NOT NULL, report_json TEXT NOT NULL, created_at INTEGER NOT NULL);`,
+        `CREATE INDEX IF NOT EXISTS balance_reports_user_created ON balance_reports(user_id, created_at DESC);`,
         `CREATE TABLE IF NOT EXISTS antifraud_events (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, username TEXT NOT NULL, event_type TEXT NOT NULL CHECK (event_type IN ('registration','deposit','withdrawal')), ip_address TEXT, event_ref TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, shared_ip INTEGER NOT NULL DEFAULT 0);`,
         `CREATE INDEX IF NOT EXISTS antifraud_events_ip_time ON antifraud_events(ip_address, created_at DESC);`,
         `CREATE INDEX IF NOT EXISTS antifraud_events_created ON antifraud_events(created_at DESC);`,
@@ -1519,6 +1521,11 @@ const workerHandler = {
       const adminProfileMatch = pathName.match(/^\/api\/admin\/users\/([^/]+)\/profile$/);
       if (method === "POST" && adminProfileMatch) return await adminUpdateUserProfile(request, env, adminProfileMatch[1]);
       
+      const adminUserReportMatch = pathName.match(/^\/api\/admin\/users\/([^/]+)\/balance-report$/);
+      if (method === "POST" && adminUserReportMatch) return await sendUserBalanceReport(request, env, adminUserReportMatch[1]);
+      const balanceReportMatch = pathName.match(/^\/api\/balance-reports\/([a-f0-9-]{36})$/i);
+      if (method === "GET" && balanceReportMatch) return await getUserBalanceReport(request, env, balanceReportMatch[1]);
+
       const adminUserMatch = pathName.match(/^\/api\/admin\/users\/([^/]+)$/);
       if (method === "GET" && adminUserMatch) return await adminUserDetails(request, env, adminUserMatch[1]);
       
@@ -3125,6 +3132,46 @@ async function adminUserDetails(request, env, userId) {
   return Response.json({ user: target, wallet, investments, marketPositions, deposits, withdrawals, settings, verificationRequest, actionVerification, passwordResetRequest, invitedCount: Number(invitedCount?.count || 0), actorRole, permissions: targetPermissions });
 }
 
+async function sendUserBalanceReport(request, env, userId) {
+  const actor = await privilegedAdminActor(request, env);
+  if (!actor) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  const body = await request.json().catch(() => ({}));
+  const format = ["html", "pdf", "image"].includes(body.format) ? body.format : "";
+  if (!format) return bad("Formato report non valido.");
+  const target = await env.DB.prepare("SELECT id, username FROM users WHERE id = ?").bind(userId).first();
+  if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
+  const wallet = await accrue(env, target.id);
+  const [marketPositions, investments, deposits, withdrawals] = await Promise.all([
+    syncMarketPositions(env, target.id),
+    env.DB.prepare("SELECT amount, days, rate, created, credited, active FROM investments WHERE user_id = ? ORDER BY created DESC LIMIT 50").bind(target.id).all(),
+    env.DB.prepare("SELECT amount, net, date, status FROM deposits WHERE user_id = ? ORDER BY date DESC LIMIT 50").bind(target.id).all(),
+    env.DB.prepare("SELECT amount, net, date, status, source FROM withdrawals WHERE user_id = ? ORDER BY date DESC LIMIT 50").bind(target.id).all()
+  ]);
+  const createdAt = Date.now(), reportId = crypto.randomUUID();
+  const report = {
+    username: target.username, generatedAt: createdAt, currency: "USDT",
+    balances: { deposit: Number(wallet.deposit || 0), released: Number(wallet.released || 0), earnings: Number(wallet.earnings || 0), totalAvailable: Number(wallet.deposit || 0) + Number(wallet.released || 0) + Number(wallet.earnings || 0) },
+    marketPositions: (marketPositions || []).slice(0, 50).map(row => ({ months: Number(row.months), amount: Number(row.amount), currentValue: Number(row.current_value ?? row.currentValue ?? 0), status: String(row.status || ""), stopLossPct: Number(row.stop_loss_pct ?? row.stopLossPct ?? 0), createdAt: Number(row.created_at ?? row.createdAt ?? 0) })),
+    investments: (investments.results || []).map(row => ({ amount: Number(row.amount), days: Number(row.days), rate: Number(row.rate), created: Number(row.created), credited: Number(row.credited), active: !!row.active })),
+    deposits: (deposits.results || []).map(row => ({ amount: Number(row.amount), network: String(row.net || ""), date: Number(row.date), status: String(row.status || "") })),
+    withdrawals: (withdrawals.results || []).map(row => ({ amount: Number(row.amount), network: String(row.net || ""), date: Number(row.date), status: String(row.status || ""), source: String(row.source || "") }))
+  };
+  await env.DB.batch([
+    env.DB.prepare("INSERT INTO balance_reports (id, user_id, admin_id, format, report_json, created_at) VALUES (?, ?, ?, ?, ?, ?)").bind(reportId, target.id, actor.id, format, JSON.stringify(report), createdAt),
+    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'balance_report', ?, ?, ?)").bind(target.id, "Balance report available", "balance-report:" + reportId, createdAt)
+  ]);
+  return Response.json({ ok: true, reportId });
+}
+
+async function getUserBalanceReport(request, env, reportId) {
+  const user = await authed(request, env);
+  const row = await env.DB.prepare("SELECT format, report_json FROM balance_reports WHERE id = ? AND user_id = ?").bind(reportId, user.id).first();
+  if (!row) return Response.json({ error: "Report non trovato." }, { status: 404 });
+  let report;
+  try { report = JSON.parse(row.report_json); } catch { return Response.json({ error: "Report non disponibile." }, { status: 500 }); }
+  return Response.json({ format: row.format, report }, { headers: { "Cache-Control": "no-store" } });
+}
+
 async function adminUpdateUserBalance(request, env, userId) {
   const actor = await privilegedAdminActor(request, env);
   if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
@@ -3158,6 +3205,7 @@ async function adminDeleteUser(request, env, userId) {
     env.DB.prepare("DELETE FROM password_reset_requests WHERE user_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM sensitive_action_verifications WHERE user_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM notifications WHERE user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM balance_reports WHERE user_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM wallets WHERE user_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM investments WHERE user_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM referral_commissions WHERE user_id = ? OR source_user_id = ?").bind(userId, userId),

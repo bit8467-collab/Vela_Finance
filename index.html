@@ -542,6 +542,7 @@
         <div class="admin-section" id="admin-users-section">
           <div class="section-heading"><div><p class="eyebrow">REGISTERED USERS</p><h2>Manage accounts</h2></div><span class="count-pill" id="registered-user-count">0</span></div>
           <div class="admin-users-toolbar"><input id="admin-user-search" type="search" placeholder="Search name, email or ID" aria-label="Search users by name, email or ID"><select id="admin-user-role-filter" aria-label="Filter by role"><option value="all">All roles</option><option value="user">Users</option><option value="operator">Operators</option><option value="admin">Admins</option></select></div>
+          <div class="admin-report-bulk" id="admin-report-bulk" hidden><label>Format<select id="admin-report-bulk-format"><option value="html">HTML</option><option value="pdf">PDF</option><option value="image">PNG image</option></select></label><button class="outline-button" id="admin-report-bulk-send" type="button">Send report to all users</button><small id="admin-report-bulk-status" role="status" aria-live="polite"></small></div>
           <div class="admin-table-wrap"><table class="admin-users-table"><thead><tr><th>Account</th><th>Role</th><th>Created</th><th>Email</th><th></th></tr></thead><tbody id="registered-users"></tbody></table></div>
         </div>
         <div class="admin-section" id="admin-support-section">
@@ -874,6 +875,14 @@
         <button class="text-link" id="mark-notifications-read" type="button">Mark all read</button><div class="activity-list" id="notification-list"></div>
         <div class="empty-card compact-empty" id="notifications-empty"><b>You're all caught up</b><p>Account updates will appear here.</p></div>
       </div>
+    </dialog>
+    <dialog class="modal" id="balance-report-dialog" aria-labelledby="balance-report-title">
+      <section class="modal-card balance-report-modal-card">
+        <button class="modal-close" type="button" data-close="balance-report-dialog" aria-label="Close">×</button>
+        <p class="eyebrow">ACCOUNT STATEMENT</p><h2 id="balance-report-title">Balance report</h2>
+        <div id="balance-report-preview"></div>
+        <button class="primary-button" id="download-balance-report" type="button">Download report</button>
+      </section>
     </dialog>
 
     <button class="support-fab" id="support-fab" type="button" aria-label="Apri chat assistenza"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none"><path d="M20 11.5a7.5 7.5 0 0 1-7.5 7.5H5l1.7-3.2A7.5 7.5 0 1 1 20 11.5Z"/><path d="M8.5 11.5h7M8.5 14.5h4"/></svg></button>
