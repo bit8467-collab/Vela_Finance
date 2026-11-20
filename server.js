@@ -1517,6 +1517,8 @@ const workerHandler = {
       if (method === "GET" && pathName === "/api/admin/deposit-addresses") return await adminDepositAddresses(request, env);
       if (method === "GET" && pathName === "/api/admin/wallet-balances") return await adminWalletBalances(request, env);
       if (method === "POST" && pathName === "/api/admin/platform-wallet-transfer") return await adminPlatformWalletTransfer(request, env);
+      if (method === "POST" && pathName === "/api/admin/platform-wallet-swap-quote") return await adminPlatformWalletSwapQuote(request, env);
+      if (method === "POST" && pathName === "/api/admin/platform-wallet-swap") return await adminPlatformWalletSwap(request, env);
       if (method === "POST" && pathName === "/api/admin/deposit-addresses") return await saveAdminDepositAddresses(request, env);
       if (method === "POST" && pathName === "/api/withdraw") return await withdraw(request, env);
       if (method === "POST" && pathName === "/api/transfer-deposit-earnings") return Response.json({ error: "Il trasferimento dal saldo deposito al saldo guadagni non è più disponibile." }, { status: 410 });
@@ -2622,6 +2624,172 @@ async function sendAdminTronTransfer({ asset, from, to, amount }) {
   const hash = cleanHash(result?.txid || result?.txID || signed?.txID || "");
   if (result?.result !== true || !/^[a-fA-F0-9]{64}$/.test(hash)) throw new Error("Il provider TRON non ha accettato la transazione.");
   return hash;
+}
+
+const PANCAKE_V2_ROUTER_ABI = [
+  "function getAmountsOut(uint256 amountIn,address[] path) view returns (uint256[] amounts)",
+  "function swapExactTokensForETH(uint256 amountIn,uint256 amountOutMin,address[] path,address to,uint256 deadline) returns (uint256[] amounts)",
+  "function swapExactETHForTokens(uint256 amountOutMin,address[] path,address to,uint256 deadline) payable returns (uint256[] amounts)",
+];
+const SUNSWAP_V2_ROUTER_ABI = [
+  { "type":"function", "name":"getAmountsOut", "stateMutability":"view", "inputs":[{"name":"amountIn","type":"uint256"},{"name":"path","type":"address[]"}], "outputs":[{"name":"amounts","type":"uint256[]"}] },
+  { "type":"function", "name":"swapExactTokensForTRX", "stateMutability":"nonpayable", "inputs":[{"name":"amountIn","type":"uint256"},{"name":"amountOutMin","type":"uint256"},{"name":"path","type":"address[]"},{"name":"to","type":"address"},{"name":"deadline","type":"uint256"}], "outputs":[{"name":"amounts","type":"uint256[]"}] },
+  { "type":"function", "name":"swapExactTRXForTokens", "stateMutability":"payable", "inputs":[{"name":"amountOutMin","type":"uint256"},{"name":"path","type":"address[]"},{"name":"to","type":"address"},{"name":"deadline","type":"uint256"}], "outputs":[{"name":"amounts","type":"uint256[]"}] },
+];
+const PLATFORM_SWAP_SLIPPAGE_BPS = 100;
+function platformSwapMinimumOutput(expected) { return BigInt(expected) * BigInt(10000 - PLATFORM_SWAP_SLIPPAGE_BPS) / 10000n; }
+function platformSwapRawInteger(value) { const raw=String(value ?? ""); if(!/^\d+$/.test(raw)) throw new Error("Valore minimo di output non valido."); return BigInt(raw); }
+
+async function getAdminPlatformSwapQuote(network, fromAsset, amount) {
+  const supported = { BNB: ["USDT", "BNB"], TRC20: ["USDT", "TRX"] };
+  if (!supported[network] || !supported[network].includes(fromAsset)) throw new Error("Rete o asset di origine non supportato.");
+  const toAsset = fromAsset === "USDT" ? (network === "BNB" ? "BNB" : "TRX") : "USDT";
+  let amountIn, expectedUnits, inputDecimals, outputDecimals;
+  if (network === "BNB") {
+    const provider = new ethers.JsonRpcProvider(process.env.BSC_RPC_URL || "https://bsc-dataseed.binance.org/", 56);
+    const usdtAddress = ethers.getAddress(process.env.BSC_USDT_CONTRACT || BSC_USDT_DEFAULT);
+    const token = new ethers.Contract(usdtAddress, ["function decimals() view returns (uint8)"], provider);
+    const usdtDecimals = Number(await token.decimals());
+    inputDecimals = fromAsset === "USDT" ? usdtDecimals : 18;
+    outputDecimals = toAsset === "USDT" ? usdtDecimals : 18;
+    amountIn = platformTransferUnits(amount, inputDecimals);
+    if (amountIn <= 0n) throw new Error("Importo non valido.");
+    const wbnb = ethers.getAddress(BSC_WBNB_DEFAULT), path = fromAsset === "USDT" ? [usdtAddress, wbnb] : [wbnb, usdtAddress];
+    const router = new ethers.Contract(ethers.getAddress(PANCAKE_V2_ROUTER_DEFAULT), PANCAKE_V2_ROUTER_ABI, provider);
+    const amounts = await router.getAmountsOut(amountIn, path);
+    expectedUnits = BigInt(amounts[amounts.length - 1]);
+  } else {
+    const host = (process.env.TRON_FULL_HOST || "https://api.trongrid.io").replace(/\/$/, ""), headers = {};
+    if (process.env.TRON_API_KEY) headers["TRON-PRO-API-KEY"] = process.env.TRON_API_KEY;
+    const tron = new TronWeb({ fullHost: host, headers }), usdtAddress = process.env.TRON_USDT_CONTRACT || TRON_USDT_DEFAULT;
+    const usdt = await tron.contract().at(usdtAddress), inputTokenDecimals = Number(await usdt.decimals().call());
+    inputDecimals = fromAsset === "USDT" ? inputTokenDecimals : 6;
+    outputDecimals = toAsset === "USDT" ? inputTokenDecimals : 6;
+    amountIn = platformTransferUnits(amount, inputDecimals);
+    if (amountIn <= 0n) throw new Error("Importo non valido.");
+    const wtrx = TRON_WTRX_DEFAULT, path = fromAsset === "USDT" ? [usdtAddress, wtrx] : [wtrx, usdtAddress];
+    const router = await tron.contract(SUNSWAP_V2_ROUTER_ABI, SUNSWAP_V2_ROUTER_DEFAULT);
+    const amounts = await router.getAmountsOut(amountIn.toString(), path).call();
+    expectedUnits = BigInt(String(amounts[amounts.length - 1]));
+  }
+  if (expectedUnits <= 0n) throw new Error("La quotazione on-chain non è disponibile per questa coppia.");
+  const minimumUnits = platformSwapMinimumOutput(expectedUnits);
+  if (minimumUnits <= 0n) throw new Error("Importo troppo basso per applicare il limite di slippage.");
+  return { network, fromAsset, toAsset, amount: String(amount), inputDecimals, outputDecimals, expectedOutput: ethers.formatUnits(expectedUnits, outputDecimals), minimumOutput: ethers.formatUnits(minimumUnits, outputDecimals), expectedOutputUnits: expectedUnits.toString(), minimumOutputUnits: minimumUnits.toString(), slippageBps: PLATFORM_SWAP_SLIPPAGE_BPS, quotedAt: Date.now() };
+}
+
+async function approveBscSwapToken(token, owner, spender, amount) {
+  const allowance = BigInt(await token.allowance(owner, spender));
+  if (allowance >= amount) return "";
+  if (allowance > 0n) await (await token.approve(spender, 0n)).wait(1);
+  const approval = await token.approve(spender, amount);
+  await approval.wait(1);
+  return approval.hash;
+}
+
+async function waitForTronSwapApproval(tron, txHash) {
+  for (let attempt=0; attempt<30; attempt++) {
+    const info = await tron.trx.getTransactionInfo(txHash).catch(() => null);
+    if (info?.id) {
+      const result = info.receipt?.result;
+      if (result && result !== "SUCCESS") throw new Error("Approvazione TRON non riuscita on-chain.");
+      return;
+    }
+    await new Promise(resolve => setTimeout(resolve, 1500));
+  }
+  throw new Error("Approvazione TRON inviata ma non confermata; controlla l’explorer prima di riprovare.");
+}
+
+async function sendAdminPlatformSwap({ network, from, fromAsset, amount, minimumOutputUnits }) {
+  const requestedMinOut = platformSwapRawInteger(minimumOutputUnits), quote = await getAdminPlatformSwapQuote(network, fromAsset, amount), safeMinimum = BigInt(quote.minimumOutputUnits), expected = BigInt(quote.expectedOutputUnits);
+  if (requestedMinOut < safeMinimum || requestedMinOut > expected) throw new Error("La quotazione è cambiata oltre la tolleranza. Richiedi una nuova quotazione prima di confermare.");
+  const deadline = Math.floor(Date.now() / 1000) + 300;
+  if (network === "BNB") {
+    const key = String(process.env.BSC_USDT_PRIVATE_KEY || "").trim(), provider = new ethers.JsonRpcProvider(process.env.BSC_RPC_URL || "https://bsc-dataseed.binance.org/", 56), signer = new ethers.Wallet(key, provider), signerAddress = signer.address;
+    await assertSignerMatchesPlatformAddress("BNB", signerAddress);
+    if (!sameAddress(signerAddress, from)) throw new Error("Il wallet sorgente non corrisponde al signer BNB attivo.");
+    const usdtAddress = ethers.getAddress(process.env.BSC_USDT_CONTRACT || BSC_USDT_DEFAULT), routerAddress = ethers.getAddress(PANCAKE_V2_ROUTER_DEFAULT), wbnb = ethers.getAddress(BSC_WBNB_DEFAULT), router = new ethers.Contract(routerAddress, PANCAKE_V2_ROUTER_ABI, signer);
+    const usdtRead = new ethers.Contract(usdtAddress, ["function decimals() view returns (uint8)", "function balanceOf(address) view returns (uint256)", "function allowance(address,address) view returns (uint256)", "function approve(address,uint256) returns (bool)"], signer), decimals = Number(await usdtRead.decimals()), inputDecimals = fromAsset === "USDT" ? decimals : 18, amountIn = platformTransferUnits(amount, inputDecimals), minOut = platformSwapRawInteger(minimumOutputUnits);
+    let approvalTxHash = "", tx;
+    if (fromAsset === "USDT") {
+      if (BigInt(await usdtRead.balanceOf(signerAddress)) < amountIn) throw new Error("Saldo USDT insufficiente.");
+      approvalTxHash = await approveBscSwapToken(usdtRead, signerAddress, routerAddress, amountIn);
+      try { tx = await router.swapExactTokensForETH(amountIn, minOut, [usdtAddress, wbnb], signerAddress, deadline); }
+      catch (error) { if (approvalTxHash) error.approvalTxHash = approvalTxHash; throw error; }
+    } else if (fromAsset === "BNB") {
+      if (fromAsset !== quote.fromAsset) throw new Error("Asset BNB non valido.");
+      tx = await router.swapExactETHForTokens(minOut, [wbnb, usdtAddress], signerAddress, deadline, { value: amountIn });
+    } else throw new Error("Asset non supportato su BNB Smart Chain.");
+    return { txHash: tx.hash, approvalTxHash };
+  }
+  if (network !== "TRC20") throw new Error("Rete swap non supportata.");
+  const key = String(process.env.TRON_USDT_PRIVATE_KEY || "").trim().replace(/^0x/i, ""), host = (process.env.TRON_FULL_HOST || "https://api.trongrid.io").replace(/\/$/, ""), headers = {};
+  if (process.env.TRON_API_KEY) headers["TRON-PRO-API-KEY"] = process.env.TRON_API_KEY;
+  const tron = new TronWeb({ fullHost: host, privateKey: key, headers }), signerAddress = tron.address.fromPrivateKey(key);
+  await assertSignerMatchesPlatformAddress("TRC20", signerAddress);
+  if (!sameAddress(signerAddress, from)) throw new Error("Il wallet sorgente non corrisponde al signer TRON attivo.");
+  const usdtAddress = process.env.TRON_USDT_CONTRACT || TRON_USDT_DEFAULT, routerAddress = SUNSWAP_V2_ROUTER_DEFAULT, wtrx = TRON_WTRX_DEFAULT, usdt = await tron.contract().at(usdtAddress), router = await tron.contract(SUNSWAP_V2_ROUTER_ABI, routerAddress), decimals = Number(await usdt.decimals().call()), inputDecimals = fromAsset === "USDT" ? decimals : 6, amountIn = platformTransferUnits(amount, inputDecimals), feeLimit = Number(process.env.TRON_FEE_LIMIT_SUN || 100000000), minOut = platformSwapRawInteger(minimumOutputUnits);
+  if (fromAsset !== "USDT" && fromAsset !== "TRX") throw new Error("Asset non supportato su TRON.");
+  let approvalTxHash = "", sent;
+  if (fromAsset === "USDT") {
+    if (BigInt(await usdt.balanceOf(signerAddress).call()) < amountIn) throw new Error("Saldo USDT insufficiente.");
+    const allowance = BigInt(await usdt.allowance(signerAddress, routerAddress).call());
+    if (allowance < amountIn) {
+      const approval = await usdt.approve(routerAddress, amountIn.toString()).send({ feeLimit });
+      approvalTxHash = cleanHash(typeof approval === "string" ? approval : approval?.txid || approval?.txID || approval?.transaction?.txID || "");
+      if (!/^[a-fA-F0-9]{64}$/.test(approvalTxHash)) throw new Error("Il provider TRON non ha restituito il TX hash dell’approvazione.");
+      await waitForTronSwapApproval(tron, approvalTxHash);
+    }
+    try { sent = await router.swapExactTokensForTRX(amountIn.toString(), minOut.toString(), [usdtAddress, wtrx], signerAddress, deadline).send({ feeLimit }); }
+    catch (error) { if (approvalTxHash) error.approvalTxHash = approvalTxHash; throw error; }
+  } else {
+    sent = await router.swapExactTRXForTokens(minOut.toString(), [wtrx, usdtAddress], signerAddress, deadline).send({ callValue: amountIn.toString(), feeLimit });
+  }
+  const txHash = cleanHash(typeof sent === "string" ? sent : sent?.txid || sent?.txID || sent?.transaction?.txID || "");
+  if (!/^[a-fA-F0-9]{64}$/.test(txHash)) throw new Error("Il provider TRON non ha restituito il TX hash dello swap.");
+  return { txHash, approvalTxHash };
+}
+
+async function adminPlatformWalletSwapQuote(request, env) {
+  if (!await adminAccess(request, env, "fullPanel")) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  if (String(process.env.CRYPTO_AUTOMATION_ENABLED || "").toLowerCase() !== "true") return Response.json({ error: "L’automazione crypto deve essere abilitata prima di effettuare swap." }, { status: 409 });
+  const body = await request.json().catch(() => ({})), network = String(body.network || ""), fromAsset = String(body.fromAsset || ""), from = String(body.from || "").trim();
+  let signerAddress; try { signerAddress = await configuredPlatformSignerAddress(network); } catch (error) { return Response.json({ error: error.message }, { status: 409 }); }
+  if (!sameAddress(signerAddress, from) || !addressPoolForNetwork(await readDepositAddresses(env), network).some(address => sameAddress(address, from))) return Response.json({ error: "Il wallet sorgente deve essere il wallet signer configurato." }, { status: 409 });
+  try { return Response.json({ ...(await getAdminPlatformSwapQuote(network, fromAsset, String(body.amount || ""))), sourceAddress: signerAddress }, { headers: { "Cache-Control": "no-store" } }); }
+  catch (error) { return Response.json({ error: String(error?.message || "Quotazione DEX non disponibile.").slice(0, 240) }, { status: 502 }); }
+}
+
+async function adminPlatformWalletSwap(request, env) {
+  const actor = await adminAccess(request, env, "fullPanel");
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  if (String(process.env.CRYPTO_AUTOMATION_ENABLED || "").toLowerCase() !== "true") return Response.json({ error: "L’automazione crypto deve essere abilitata prima di effettuare swap." }, { status: 409 });
+  const body = await request.json().catch(() => ({})), network = String(body.network || ""), fromAsset = String(body.fromAsset || ""), from = String(body.from || "").trim(), amount = String(body.amount || "").trim(), requestId = String(body.requestId || "").trim();
+  if (!(Number(amount) > 0) || !Number.isFinite(Number(amount)) || Number(amount) > 1e12 || requestId.length < 12 || requestId.length > 80) return bad("Importo o identificativo operazione non valido.");
+  let minOut; try { minOut = platformSwapRawInteger(body.minimumOutputUnits); } catch (error) { return bad(error.message); }
+  let signerAddress; try { signerAddress = await configuredPlatformSignerAddress(network); } catch (error) { return Response.json({ error: error.message }, { status: 409 }); }
+  if (!sameAddress(from, signerAddress) || !addressPoolForNetwork(await readDepositAddresses(env), network).some(address => sameAddress(address, from))) return Response.json({ error: "Il wallet sorgente deve essere il wallet signer configurato." }, { status: 409 });
+  const lockKey = network + ":" + from.toLowerCase();
+  if (adminWalletTransferLocks.has(lockKey)) return Response.json({ error: "È già in corso un trasferimento o swap da questo wallet." }, { status: 409 });
+  adminWalletTransferLocks.add(lockKey);
+  const key = "admin_wallet_swap:" + requestId, operation = { requestId, adminId: actor.id, network, fromAsset, amount, from, minimumOutputUnits: minOut.toString(), status: "broadcasting", createdAt: Date.now() };
+  try {
+    const quote = await getAdminPlatformSwapQuote(network, fromAsset, amount), currentMin = BigInt(quote.minimumOutputUnits);
+    if (minOut < currentMin || minOut > BigInt(quote.expectedOutputUnits)) return Response.json({ error: "La quotazione è cambiata. Richiedi una nuova quotazione e conferma lo swap." }, { status: 409 });
+    const reserved = await env.DB.prepare("INSERT OR IGNORE INTO platform_config(config_key, config_value) VALUES(?, ?)").bind(key, JSON.stringify(operation)).run();
+    if (!(reserved.meta?.changes > 0)) return Response.json({ error: "Operazione già inviata o elaborata." }, { status: 409 });
+    const result = await sendAdminPlatformSwap({ network, from, fromAsset, amount, minimumOutputUnits: minOut.toString() });
+    operation.status = "broadcast"; operation.txHash = result.txHash; operation.approvalTxHash = result.approvalTxHash || ""; operation.broadcastAt = Date.now();
+    try { await env.DB.prepare("UPDATE platform_config SET config_value = ? WHERE config_key = ?").bind(JSON.stringify(operation), key).run(); } catch (auditError) { console.error("Swap broadcast but audit update failed:", auditError); }
+    return Response.json({ ok: true, ...result, network, fromAsset, toAsset: quote.toAsset, amount, minimumOutput: quote.minimumOutput, status: "broadcast" });
+  } catch (error) {
+    if (operation.status === "broadcasting") {
+      operation.status = "failed_or_unconfirmed"; operation.approvalTxHash = String(error?.approvalTxHash || ""); operation.error = String(error?.message || "Swap failed").slice(0, 240); operation.finishedAt = Date.now();
+      try { await env.DB.prepare("UPDATE platform_config SET config_value = ? WHERE config_key = ?").bind(JSON.stringify(operation), key).run(); } catch (auditError) { console.error("Could not save platform wallet swap state:", auditError); }
+    }
+    const approvalNotice = error?.approvalTxHash ? " · Approval TX " + error.approvalTxHash : "";
+    return Response.json({ error: String(error?.message || "Swap failed").slice(0, 240) + approvalNotice, retryWarning: "Prima di riprovare, verifica tutte le transazioni sull’explorer." }, { status: 502 });
+  } finally { adminWalletTransferLocks.delete(lockKey); }
 }
 
 async function sendAdminBtcTransfer({ from, to, amount }) {
@@ -4260,7 +4428,11 @@ async function saveCryptoPayoutLimits(request, envArg) {
   return Response.json({ ok: true, minimum, maximum });
 }
 const BSC_USDT_DEFAULT = "0x55d398326f99059fF775485246999027B3197955";
+const BSC_WBNB_DEFAULT = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c";
+const PANCAKE_V2_ROUTER_DEFAULT = "0x10ED43C718714eb63d5aA57B78B54704E256024E";
 const TRON_USDT_DEFAULT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
+const TRON_WTRX_DEFAULT = "TNUC9Qb1rRpS5CbWLmNMxXBjyFoydXjWFR";
+const SUNSWAP_V2_ROUTER_DEFAULT = "TKzxdSv2FZKQrEqkKVgp5DcwEXBEKMg2Ax";
 const BTC_API_DEFAULT = "https://mempool.space/api";
 const AUTO_TRANSFER_ABI = ["function decimals() view returns (uint8)", "function transfer(address to, uint256 amount) returns (bool)"];
 const AUTO_TRANSFER_LOG_IFACE = new ethers.Interface(["event Transfer(address indexed from, address indexed to, uint256 value)"]);
