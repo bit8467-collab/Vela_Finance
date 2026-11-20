@@ -975,7 +975,10 @@ async function fullState(env, user, request) {
     let basisQuotes = {}; try { basisQuotes = JSON.parse(row.basis_quotes_json || '{}'); } catch {}
     bucket.push({ amount: Number(row.amount), referenceValue: Number(row.reference_value), createdAt: Number(row.created_at), segmentStartAt: Number(row.segment_start_at), basisQuotes });
   }
-  for (const position of marketPositions) position.redemptions = redemptionsByPosition.get(Number(position.id)) || [];
+  for (const position of marketPositions) {
+    position.redemptions = redemptionsByPosition.get(Number(position.id)) || [];
+    position.hasPlanEarned = position.redemptions.some(redemption => Number(redemption.amount) > 0.0005) || Number(position.currentValue) > Number(position.amount) + 0.0005;
+  }
   wallet = walletResult || wallet;
   const investments = investmentsResult.results;
   const deposits = depositsResult.results;
@@ -3308,7 +3311,7 @@ async function closeMarketPositionEarly(request, env) {
   const value = Number(marketPositionValue(position, quotes).toFixed(3));
   if (!(value > 0)) return bad('Il valore di riferimento non è disponibile per la chiusura.');
   const closeRates = await readCommissionRates(env);
-  const earlyClosePercent = (await userHasEverEarned(env, user.id)) ? closeRates.earlyClosePercent : closeRates.noEarningsEarlyClosePercent;
+  const earlyClosePercent = (await marketPositionHasEarned(env, user.id, position.id)) ? closeRates.earlyClosePercent : closeRates.noEarningsEarlyClosePercent;
   const fee = Number((value * earlyClosePercent / 100).toFixed(3));
   const net = Number((value - fee).toFixed(3));
   const now = Date.now();
@@ -3889,6 +3892,10 @@ async function userHasEverEarned(env, userId) {
     "EXISTS (SELECT 1 FROM market_positions WHERE user_id = ? AND ((status = 'matured' AND last_value > amount + 0.0005) OR (status = 'early_closed' AND last_value - early_close_fee > amount + 0.0005))) OR " +
     "EXISTS (SELECT 1 FROM investments WHERE user_id = ? AND (credited > 0.0005 OR (active = 1 AND amount * rate / 100 * MIN(days, MAX(0, (? - created) / 86400000.0)) > 0.0005))) " +
     "THEN 1 ELSE 0 END AS has_earned").bind(userId, userId, userId, userId, userId, userId, Date.now()).first();
+  return Number(row?.has_earned) === 1;
+}
+async function marketPositionHasEarned(env, userId, positionId) {
+  const row = await env.DB.prepare("SELECT CASE WHEN EXISTS (SELECT 1 FROM market_position_redemptions WHERE user_id = ? AND position_id = ? AND amount > 0.0005) OR EXISTS (SELECT 1 FROM market_positions WHERE user_id = ? AND id = ? AND status IN ('active','paused') AND last_value > amount + 0.0005) THEN 1 ELSE 0 END AS has_earned").bind(userId, positionId, userId, positionId).first();
   return Number(row?.has_earned) === 1;
 }
 async function readCommissionRates(env) {
