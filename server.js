@@ -23,12 +23,23 @@ const COMMISSION_CONFIG_KEYS = Object.freeze({ withdrawalDepositPercent: 'commis
 const AUTO_APPROVAL_DELAYS_HOURS = Object.freeze([0, 1, 6, 12, 24, 48]);
 
 const PROMOTER_PACKAGE_TIERS = Object.freeze({
-  starter: Object.freeze({ price: 5, limit: 3 }),
-  growth: Object.freeze({ price: 20, limit: 15 }),
-  pro: Object.freeze({ price: 50, limit: 40 }),
-  business: Object.freeze({ price: 100, limit: 100 }),
-  elite: Object.freeze({ price: 200, limit: 250 }),
+  starter: Object.freeze({ price: 25, limit: 3 }),
+  growth: Object.freeze({ price: 40, limit: 15 }),
+  pro: Object.freeze({ price: 70, limit: 40 }),
+  business: Object.freeze({ price: 120, limit: 100 }),
+  elite: Object.freeze({ price: 220, limit: 250 }),
 });
+const PREVIOUS_PROMOTER_PACKAGE_PRICES = Object.freeze({ starter: 5, growth: 20, pro: 50, business: 100, elite: 200 });
+function promoterPackageChangeError(account, packageTier, now = Date.now(), allowActiveSame = false) {
+  if (!account?.promoter_package) return "";
+  const currentLimit = Number(account.promoter_invite_limit || 0);
+  const used = Number(account.promoter_invites_used || 0);
+  const active = Number(account.promoter_expires_at || 0) > now;
+  if (packageTier.limit < currentLimit) return "Non è possibile ridurre il limite di inviti del pacchetto.";
+  if (packageTier.limit === currentLimit && active && !allowActiveSame) return "Il pacchetto è già attivo: per aumentare gli inviti scegli un pacchetto superiore.";
+  if (packageTier.limit === currentLimit && !active && used >= currentLimit) return "Hai esaurito gli inviti: per continuare devi passare a un pacchetto superiore.";
+  return "";
+}
 
 const app = express();
 app.set('trust proxy', 1);
@@ -984,7 +995,7 @@ async function fullState(env, user, request) {
     notifications = !!s.notifications;
   }
   return {
-    user: { id: user.id, username: user.username, identifier: user.identifier, inviteCode: user.invite_code, referredBy: user.referred_by, emailVerified: user.email_verified, accountType: user.account_type || "simple", promoterPackage: user.promoter_package || null, promoterInviteLimit: Number(user.promoter_invite_limit || 0), promoterStartedAt: Number(user.promoter_started_at || 0), promoterExpiresAt: Number(user.promoter_expires_at || 0), promoterActive: user.account_type === "promoter" && Number(user.promoter_expires_at || 0) > Date.now() },
+    user: { id: user.id, username: user.username, identifier: user.identifier, inviteCode: user.invite_code, referredBy: user.referred_by, emailVerified: user.email_verified, accountType: user.account_type || "simple", promoterPackage: user.promoter_package || null, promoterInviteLimit: Number(user.promoter_invite_limit || 0), promoterInvitesUsed: Number(user.promoter_invites_used || 0), promoterStartedAt: Number(user.promoter_started_at || 0), promoterExpiresAt: Number(user.promoter_expires_at || 0), promoterActive: user.account_type === "promoter" && Number(user.promoter_expires_at || 0) > Date.now() },
     wallet,
     investments,
     marketPositions,
@@ -1050,7 +1061,8 @@ const workerHandler = {
           promoter_package TEXT,
           promoter_invite_limit INTEGER NOT NULL DEFAULT 0,
           promoter_started_at INTEGER,
-          promoter_expires_at INTEGER
+          promoter_expires_at INTEGER,
+          promoter_invites_used INTEGER NOT NULL DEFAULT 0
         );`,
         `CREATE TABLE IF NOT EXISTS sessions (
           token TEXT PRIMARY KEY,
@@ -1392,9 +1404,13 @@ const workerHandler = {
     try { await env.DB.prepare("ALTER TABLE users ADD COLUMN promoter_invite_limit INTEGER NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE users ADD COLUMN promoter_started_at INTEGER").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE users ADD COLUMN promoter_expires_at INTEGER").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE users ADD COLUMN promoter_invites_used INTEGER NOT NULL DEFAULT 0").run(); } catch {}
+    await env.DB.prepare("UPDATE users SET promoter_invites_used = CASE WHEN promoter_package IS NOT NULL AND promoter_started_at IS NOT NULL THEN (SELECT COUNT(*) FROM users invited WHERE invited.referred_by = users.id AND invited.created_at >= users.promoter_started_at) ELSE (SELECT COUNT(*) FROM users invited WHERE invited.referred_by = users.id AND invited.created_at >= users.created_at) END WHERE promoter_invites_used = 0 AND account_type = 'promoter'").run();
     try { await env.DB.prepare("ALTER TABLE deposits ADD COLUMN purpose TEXT NOT NULL DEFAULT 'deposit'").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE deposits ADD COLUMN package_id TEXT").run(); } catch {}
-    try { await env.DB.exec("DROP TRIGGER IF EXISTS enforce_promoter_invite_limit; CREATE TRIGGER enforce_promoter_invite_limit BEFORE INSERT ON users WHEN NEW.referred_by IS NOT NULL BEGIN SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM users p WHERE p.id = NEW.referred_by AND p.account_type = 'promoter' AND p.email_verified = 1 AND ((p.promoter_package IS NOT NULL AND p.promoter_expires_at > CAST(strftime('%s','now') AS INTEGER) * 1000 AND p.promoter_started_at IS NOT NULL AND (SELECT COUNT(*) FROM users invited WHERE invited.referred_by = p.id AND invited.created_at >= p.promoter_started_at) < p.promoter_invite_limit) OR (COALESCE(TRIM(p.promoter_package), '') = '' AND (SELECT COUNT(*) FROM users invited WHERE invited.referred_by = p.id AND invited.created_at >= p.created_at) < 1))) THEN RAISE(ABORT, 'Invitation limit reached or promoter package inactive') END; END;"); } catch {}
+    await env.DB.prepare("DROP TRIGGER IF EXISTS enforce_promoter_invite_limit").run();
+    await env.DB.prepare("CREATE TRIGGER enforce_promoter_invite_limit BEFORE INSERT ON users WHEN NEW.referred_by IS NOT NULL BEGIN SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM users p WHERE p.id = NEW.referred_by AND p.account_type = 'promoter' AND p.email_verified = 1 AND ((p.promoter_package IS NOT NULL AND p.promoter_expires_at > CAST(strftime('%s','now') AS INTEGER) * 1000 AND p.promoter_started_at IS NOT NULL AND p.promoter_invites_used < p.promoter_invite_limit AND (SELECT COUNT(*) FROM users invited WHERE invited.referred_by = p.id AND invited.created_at >= p.promoter_started_at) < p.promoter_invite_limit) OR (COALESCE(TRIM(p.promoter_package), '') = '' AND (SELECT COUNT(*) FROM users invited WHERE invited.referred_by = p.id AND invited.created_at >= p.created_at) < 1))) THEN RAISE(ABORT, 'Invitation limit reached or promoter package inactive') END; END").run();
+    await env.DB.prepare("CREATE TRIGGER IF NOT EXISTS count_promoter_invite_usage AFTER INSERT ON users WHEN NEW.referred_by IS NOT NULL BEGIN UPDATE users SET promoter_invites_used = promoter_invites_used + 1 WHERE id = NEW.referred_by; END").run();
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN source TEXT NOT NULL DEFAULT 'earnings'").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN tx_reference TEXT NOT NULL DEFAULT ''").run(); } catch {}
     await env.DB.prepare("UPDATE withdrawals SET transfer_status = 'sent' WHERE status = 'pending' AND tx_reference != '' AND transfer_status = 'pending'").run();
@@ -1826,7 +1842,7 @@ async function register(request, env) {
   if (existing) return Response.json({ error: "Email o nome utente già registrato." }, { status: 400 });
   let referredBy = null;
   if (invite) {
-    const ref = await env.DB.prepare("SELECT p.id FROM users p WHERE p.invite_code = ? AND p.account_type = 'promoter' AND p.email_verified = 1 AND ((p.promoter_package IS NOT NULL AND p.promoter_expires_at > ? AND p.promoter_started_at IS NOT NULL AND (SELECT COUNT(*) FROM users invited WHERE invited.referred_by = p.id AND invited.created_at >= p.promoter_started_at) < p.promoter_invite_limit) OR (COALESCE(TRIM(p.promoter_package), '') = '' AND (SELECT COUNT(*) FROM users invited WHERE invited.referred_by = p.id AND invited.created_at >= p.created_at) < 1))").bind(invite, Date.now()).first();
+    const ref = await env.DB.prepare("SELECT p.id FROM users p WHERE p.invite_code = ? AND p.account_type = 'promoter' AND p.email_verified = 1 AND ((p.promoter_package IS NOT NULL AND p.promoter_expires_at > ? AND p.promoter_started_at IS NOT NULL AND p.promoter_invites_used < p.promoter_invite_limit AND (SELECT COUNT(*) FROM users invited WHERE invited.referred_by = p.id AND invited.created_at >= p.promoter_started_at) < p.promoter_invite_limit) OR (COALESCE(TRIM(p.promoter_package), '') = '' AND (SELECT COUNT(*) FROM users invited WHERE invited.referred_by = p.id AND invited.created_at >= p.created_at) < 1))").bind(invite, Date.now()).first();
     if (!ref) return bad("Questo codice invito non è attivo o ha raggiunto il limite.");
     referredBy = ref.id;
   }
@@ -2257,9 +2273,10 @@ async function deposit(request, env) {
   const packageTier = PROMOTER_PACKAGE_TIERS[packageId] || null;
   if (purpose === "promoter-package") {
     if (!packageTier || amount !== packageTier.price) return bad("Pacchetto o importo non valido.");
-    const account = await env.DB.prepare("SELECT account_type, promoter_package, promoter_invite_limit, promoter_expires_at FROM users WHERE id = ?").bind(user.id).first();
+    const account = await env.DB.prepare("SELECT account_type, promoter_package, promoter_invite_limit, promoter_invites_used, promoter_expires_at FROM users WHERE id = ?").bind(user.id).first();
     if (account?.account_type !== "promoter") return bad("Seleziona il profilo promoter prima di acquistare un pacchetto.");
-    if (account.promoter_expires_at > Date.now() && Number(account.promoter_invite_limit || 0) > packageTier.limit) return bad("Non è possibile ridurre un pacchetto ancora attivo.");
+    const packageChangeError = promoterPackageChangeError(account, packageTier);
+    if (packageChangeError) return bad(packageChangeError);
     const pending = await env.DB.prepare("SELECT id FROM deposits WHERE user_id = ? AND purpose = 'promoter-package' AND status = 'pending'").bind(user.id).first();
     if (pending) return bad("Hai già un pagamento pacchetto in attesa di revisione.");
   } else {
@@ -3944,21 +3961,26 @@ async function reviewTransaction(request, env, internalAutomatic = false) {
 
     if (action === "approve") {
       if (dep.transfer_status !== "received") return bad("Conferma prima la ricezione del trasferimento nel Payment desk.");
-      let packageTier = null;
+      let packageTier = null, packageTarget = null;
       if (dep.purpose === "promoter-package") {
         packageTier = PROMOTER_PACKAGE_TIERS[dep.package_id] || null;
-        const target = await env.DB.prepare("SELECT account_type, promoter_package, promoter_expires_at FROM users WHERE id = ?").bind(userId).first();
-        if (!packageTier || Number(dep.amount) !== packageTier.price || target?.account_type !== "promoter") return bad("Il pacchetto non è valido per questo account.");
-        if (target.promoter_expires_at > Date.now() && Number(target.promoter_invite_limit || 0) > packageTier.limit) return bad("Non è possibile ridurre un pacchetto attivo.");
+        packageTarget = await env.DB.prepare("SELECT account_type, promoter_package, promoter_invite_limit, promoter_invites_used, promoter_started_at, promoter_expires_at FROM users WHERE id = ?").bind(userId).first();
+        const validAmount = packageTier && (Number(dep.amount) === packageTier.price || Number(dep.amount) === PREVIOUS_PROMOTER_PACKAGE_PRICES[dep.package_id]);
+        if (!validAmount || packageTarget?.account_type !== "promoter") return bad("Il pacchetto non è valido per questo account.");
+        const packageChangeError = promoterPackageChangeError(packageTarget, packageTier, Date.now(), true);
+        if (packageChangeError) return bad(packageChangeError);
       }
       const approved = await env.DB.prepare("UPDATE deposits SET status = 'approved' WHERE id = ? AND status = 'pending'").bind(id).run();
       if (!approved.meta?.changes) return bad("Questa richiesta è già stata esaminata.");
       if (packageTier) {
         const now = Date.now(), expires = now + 365 * 24 * 60 * 60 * 1000;
-        const hadActivePackage = await env.DB.prepare("SELECT 1 FROM users WHERE id = ? AND promoter_package IS NOT NULL AND promoter_expires_at > ?").bind(userId, now).first();
-        await env.DB.prepare("UPDATE users SET promoter_package = ?, promoter_invite_limit = ?, promoter_started_at = ?, promoter_expires_at = ? WHERE id = ? AND account_type = 'promoter'").bind(dep.package_id, packageTier.limit, now, expires, userId).run();
+        const hadActivePackage = Number(packageTarget?.promoter_expires_at || 0) > now && !!packageTarget?.promoter_package;
+        const hadPackage = !!packageTarget?.promoter_package;
+        const startedAt = hadPackage && Number(packageTarget.promoter_started_at || 0) > 0 ? Number(packageTarget.promoter_started_at) : now;
+        const inviteUsage = hadPackage ? Number(packageTarget.promoter_invites_used || 0) : 0;
+        await env.DB.prepare("UPDATE users SET promoter_package = ?, promoter_invite_limit = ?, promoter_started_at = ?, promoter_invites_used = ?, promoter_expires_at = ? WHERE id = ? AND account_type = 'promoter'").bind(dep.package_id, packageTier.limit, startedAt, inviteUsage, expires, userId).run();
         if (!hadActivePackage) await seedPromoterReferralBaselines(env, userId, now);
-        const label = dep.package_id === "starter" ? "3-invitation" : "15-invitation";
+        const label = String(packageTier.limit) + "-invitation";
         await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)").bind(userId, "Promoter package activated", "Your " + label + " package is active for one year.", now).run();
       } else {
         await env.DB.prepare("UPDATE wallets SET deposit = deposit + ?, total_deposited = total_deposited + ? WHERE user_id = ?").bind(amount, amount, userId).run();
