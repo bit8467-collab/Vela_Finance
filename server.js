@@ -874,6 +874,20 @@ async function settleMonthlyReferralProfits(env, inviterId) {
     console.error('Monthly referral commission settlement failed:', error);
   }
 }
+
+async function referralRedemptionCommissionStatements(env, sourceUserId, profitAmount, eventId, now, redemptionPredicate, redemptionParams=[]) {
+  const commission=Number((Math.max(0,Number(profitAmount)||0)*0.01).toFixed(3));
+  if(commission<0.001)return [];
+  const inviter=await env.DB.prepare("SELECT parent.id AS id FROM users source JOIN users parent ON parent.id=source.referred_by WHERE source.id=? AND parent.account_type='promoter' AND parent.promoter_package IS NOT NULL AND parent.promoter_expires_at>? ").bind(sourceUserId,now).first();
+  if(!inviter)return [];
+  const condition=redemptionPredicate?" AND ("+redemptionPredicate+")":"";
+  return [
+    env.DB.prepare("INSERT OR IGNORE INTO referral_commissions (user_id, source_user_id, event_id, level, amount, created_at) SELECT ?, ?, ?, 1, ?, ? WHERE EXISTS (SELECT 1 FROM users source JOIN users parent ON parent.id=source.referred_by WHERE source.id=? AND parent.id=? AND parent.account_type='promoter' AND parent.promoter_package IS NOT NULL AND parent.promoter_expires_at>?)"+condition).bind(inviter.id,sourceUserId,eventId,commission,now,sourceUserId,inviter.id,now,...redemptionParams),
+    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE changes()>0").bind(inviter.id,'Referral earnings commission','A direct invitee redeemed gains. '+commission.toFixed(3)+' USDT (1%) was added to your earnings balance.',now),
+    env.DB.prepare("INSERT INTO wallets (user_id, deposit, earnings, released, total_deposited, total_earned, total_withdrawn) SELECT ?,0,?,0,0,?,0 WHERE changes()>0 ON CONFLICT(user_id) DO UPDATE SET earnings=wallets.earnings+excluded.earnings,total_earned=wallets.total_earned+excluded.total_earned").bind(inviter.id,commission,commission)
+  ];
+}
+
 async function seedPromoterReferralBaselines(env, inviterId, now) {
   const period = new Date(now).toISOString().slice(0, 7);
   await env.DB.prepare(
@@ -888,7 +902,7 @@ async function seedPromoterReferralBaselines(env, inviterId, now) {
 
 async function fullState(env, user, request) {
   let wallet = await accrue(env, user.id);
-  await settleMonthlyReferralProfits(env, user.id);
+
   const marketPositions = await syncMarketPositions(env, user.id);
   const [simpleEarnResult, redemptionResult, walletResult, investmentsResult, depositsResult, withdrawalsResult, teamResult, inviteStats, s, actionRow] = await Promise.all([
     env.DB.prepare("SELECT * FROM simple_earn_positions WHERE user_id = ? ORDER BY created_at DESC").bind(user.id).all(),
@@ -1069,6 +1083,10 @@ const workerHandler = {
         `CREATE INDEX IF NOT EXISTS notifications_user_created ON notifications(user_id, created_at DESC);`,
         `CREATE TABLE IF NOT EXISTS balance_reports (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, admin_id TEXT NOT NULL, format TEXT NOT NULL, report_json TEXT NOT NULL, created_at INTEGER NOT NULL);`,
         `CREATE INDEX IF NOT EXISTS balance_reports_user_created ON balance_reports(user_id, created_at DESC);`,
+        `CREATE TABLE IF NOT EXISTS balance_report_attachments (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, file_name TEXT NOT NULL, content_type TEXT NOT NULL, file_data BLOB NOT NULL, created_at INTEGER NOT NULL);`,
+        `CREATE INDEX IF NOT EXISTS balance_report_attachments_user ON balance_report_attachments(user_id, created_at DESC);`,
+        `CREATE TABLE IF NOT EXISTS balance_report_attachment_grants (report_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, attachment_id TEXT NOT NULL);`,
+        `CREATE INDEX IF NOT EXISTS balance_report_attachment_grants_user ON balance_report_attachment_grants(user_id, report_id);`,
         `CREATE TABLE IF NOT EXISTS antifraud_events (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, username TEXT NOT NULL, event_type TEXT NOT NULL CHECK (event_type IN ('registration','deposit','withdrawal')), ip_address TEXT, event_ref TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, shared_ip INTEGER NOT NULL DEFAULT 0);`,
         `CREATE INDEX IF NOT EXISTS antifraud_events_ip_time ON antifraud_events(ip_address, created_at DESC);`,
         `CREATE INDEX IF NOT EXISTS antifraud_events_created ON antifraud_events(created_at DESC);`,
@@ -1521,6 +1539,9 @@ const workerHandler = {
       const adminProfileMatch = pathName.match(/^\/api\/admin\/users\/([^/]+)\/profile$/);
       if (method === "POST" && adminProfileMatch) return await adminUpdateUserProfile(request, env, adminProfileMatch[1]);
       
+      if (method === "POST" && pathName === "/api/admin/balance-report-attachments") return await saveBalanceReportAttachment(request, env);
+      const reportAttachmentMatch = pathName.match(/^\/api\/balance-reports\/([a-f0-9-]{36})\/attachment$/i);
+      if (method === "GET" && reportAttachmentMatch) return await getUserBalanceReportAttachment(request, env, reportAttachmentMatch[1]);
       const adminUserReportMatch = pathName.match(/^\/api\/admin\/users\/([^/]+)\/balance-report$/);
       if (method === "POST" && adminUserReportMatch) return await sendUserBalanceReport(request, env, adminUserReportMatch[1]);
       const balanceReportMatch = pathName.match(/^\/api\/balance-reports\/([a-f0-9-]{36})$/i);
@@ -2368,6 +2389,7 @@ async function syncMarketPositions(env, userId) {
         const gain = Number(Math.max(0, value - amount).toFixed(3));
         if (basisReady && Object.keys(nextBasis).length && gain >= 0.001) {
           const transactionId = makeToken(), basisJson = JSON.stringify(nextBasis);
+          const referralStatements=await referralRedemptionCommissionStatements(env,userId,gain,'market-auto:'+row.id+':'+transactionId,now,"EXISTS (SELECT 1 FROM market_position_redemptions WHERE user_id=? AND event_id=?)",[userId,transactionId]);
           const redemption = await env.DB.batch([
             env.DB.prepare("UPDATE market_positions SET last_value = ?, entry_quotes_json = ?, last_redemption_id = ?, basis_updated_at = ?, auto_add_anchor_value = ? WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND entry_quotes_json = ? AND auto_redeem_enabled = 1 AND auto_redeem_pct = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ?)")
               .bind(amount, basisJson, transactionId, now, amount, row.id, userId, value, row.entry_quotes_json, autoPct, userId),
@@ -2377,6 +2399,7 @@ async function syncMarketPositions(env, userId) {
               .bind(gain, userId, row.id, userId, amount, transactionId),
             env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND last_redemption_id = ?)")
               .bind(userId, 'Plan gains redeemed', gain.toFixed(3) + ' USDT moved to the redeemable balance after reaching the ' + autoPct + '% gain threshold. The plan remains active.', now, row.id, userId, amount, transactionId),
+            ...referralStatements,
           ]);
           if (redemption[0]?.meta?.changes > 0) {
             row.last_value = amount;
@@ -2562,11 +2585,15 @@ async function simpleEarnRedeem(request, env) {
   if (!position) return Response.json({ error: "La posizione non è più attiva." }, { status: 409 });
   const now = Date.now(), principal = Number(position.principal);
   const interest = Number((principal * Number(position.daily_rate) * Math.max(0, now - Number(position.created_at)) / 86400000).toFixed(3));
-  const result = await env.DB.prepare("UPDATE simple_earn_positions SET status = 'redeemed', interest_paid = ?, closed_at = ? WHERE id = ? AND user_id = ? AND status = 'active'").bind(interest, now, id, user.id).run();
-  if (!(result.meta?.changes > 0)) return Response.json({ error: "La posizione è già stata riscattata." }, { status: 409 });
-  if (position.source === "earnings") await env.DB.prepare("UPDATE wallets SET earnings = earnings + ? WHERE user_id = ?").bind(Number((principal + interest).toFixed(3)), user.id).run();
-  else if (position.source === "released") await env.DB.prepare("UPDATE wallets SET released = released + ?, earnings = earnings + ? WHERE user_id = ?").bind(principal, interest, user.id).run();
-  else await env.DB.prepare("UPDATE wallets SET deposit = deposit + ?, earnings = earnings + ? WHERE user_id = ?").bind(principal, interest, user.id).run();
+  const redeemCondition="EXISTS (SELECT 1 FROM simple_earn_positions WHERE id=? AND user_id=? AND status='redeemed' AND closed_at=?)";
+  const referralStatements=await referralRedemptionCommissionStatements(env,user.id,interest,'simple-earn:'+id+':'+now,now,redeemCondition,[id,user.id,now]);
+  const statusUpdate=env.DB.prepare("UPDATE simple_earn_positions SET status = 'redeemed', interest_paid = ?, closed_at = ? WHERE id = ? AND user_id = ? AND status = 'active'").bind(interest,now,id,user.id);
+  let walletUpdate;
+  if(position.source==='earnings')walletUpdate=env.DB.prepare("UPDATE wallets SET earnings = earnings + ? WHERE user_id = ? AND EXISTS (SELECT 1 FROM simple_earn_positions WHERE id=? AND user_id=? AND status='redeemed' AND closed_at=?)").bind(Number((principal+interest).toFixed(3)),user.id,id,user.id,now);
+  else if(position.source==='released')walletUpdate=env.DB.prepare("UPDATE wallets SET released = released + ?, earnings = earnings + ? WHERE user_id = ? AND EXISTS (SELECT 1 FROM simple_earn_positions WHERE id=? AND user_id=? AND status='redeemed' AND closed_at=?)").bind(principal,interest,user.id,id,user.id,now);
+  else walletUpdate=env.DB.prepare("UPDATE wallets SET deposit = deposit + ?, earnings = earnings + ? WHERE user_id = ? AND EXISTS (SELECT 1 FROM simple_earn_positions WHERE id=? AND user_id=? AND status='redeemed' AND closed_at=?)").bind(principal,interest,user.id,id,user.id,now);
+  const results=await env.DB.batch([statusUpdate,walletUpdate,...referralStatements]);
+  if(!(results[0]?.meta?.changes>0))return Response.json({error:"La posizione è già stata riscattata."},{status:409});
   return Response.json({ ok: true, principal, interest, total: Number((principal + interest).toFixed(3)) });
 }
 
@@ -2764,6 +2791,7 @@ async function redeemMarketGains(request, env) {
   const transactionId = makeToken();
   const oldStatus = position.status;
   const now = Date.now();
+  const referralStatements=await referralRedemptionCommissionStatements(env,user.id,gain,'market-manual:'+id+':'+transactionId,now,"EXISTS (SELECT 1 FROM market_position_redemptions WHERE user_id=? AND event_id=?)",[user.id,transactionId]);
   const batch = await env.DB.batch([
     env.DB.prepare("UPDATE market_positions SET last_value = ?, entry_quotes_json = ?, last_redemption_id = ?, basis_updated_at = ?, auto_add_anchor_value = ? WHERE id = ? AND user_id = ? AND status = ? AND last_value = ? AND entry_quotes_json = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ?)")
       .bind(Number(position.amount), basisJson, transactionId, now, Number(position.amount), id, user.id, oldStatus, Number(position.last_value), position.entry_quotes_json, user.id),
@@ -2773,6 +2801,7 @@ async function redeemMarketGains(request, env) {
       .bind(gain, user.id, id, user.id, oldStatus, Number(position.amount), transactionId),
     env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = ? AND last_redemption_id = ?)")
       .bind(user.id, 'Plan gains redeemed', gain.toFixed(3) + ' USDT moved to your internal redeemable balance. The invested principal remains in the plan.', now, id, user.id, oldStatus, transactionId),
+    ...referralStatements,
   ]);
   if (!(batch[0]?.meta?.changes > 0)) return Response.json({ error: 'Il piano è cambiato. Aggiorna e riprova.' }, { status: 409 });
   return Response.json({ ok: true, redeemed: gain, referenceValue: Number(position.amount) });
@@ -2794,6 +2823,8 @@ async function closeMarketPositionEarly(request, env) {
   const net = Number((value - fee).toFixed(3));
   const now = Date.now();
   const transactionId = makeToken();
+  const commissionableProfit=Number(Math.max(0,net-Number(position.amount)).toFixed(3));
+  const referralStatements=await referralRedemptionCommissionStatements(env,user.id,commissionableProfit,'market-early-close:'+id+':'+transactionId,now,"EXISTS (SELECT 1 FROM market_positions WHERE id=? AND user_id=? AND status='early_closed' AND last_redemption_id=?)",[id,user.id,transactionId]);
   const batch = await env.DB.batch([
     env.DB.prepare("UPDATE market_positions SET status = 'early_closed', closed_at = ?, last_value = ?, early_close_fee = ?, last_redemption_id = ? WHERE id = ? AND user_id = ? AND status = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ?)")
       .bind(now, value, fee, transactionId, id, user.id, position.status, user.id),
@@ -2801,6 +2832,7 @@ async function closeMarketPositionEarly(request, env) {
       .bind(value, net, user.id, id, user.id, transactionId),
     env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'early_closed' AND last_redemption_id = ?)")
       .bind(user.id, 'Plan closed early', 'Current reference value ' + value.toFixed(3) + ' USDT; ' + earlyClosePercent + '% early-closure fee ' + fee.toFixed(3) + ' USDT; net credited to earnings balance and available for withdrawal request ' + net.toFixed(3) + ' USDT. No external payout was made.', now, id, user.id, transactionId),
+    ...referralStatements,
   ]);
   if (!(batch[0]?.meta?.changes > 0)) return Response.json({ error: 'Il piano è cambiato. Aggiorna e riprova.' }, { status: 409 });
   return Response.json({ ok: true, referenceValue: value, fee, net, feePercent: earlyClosePercent });
@@ -3140,6 +3172,12 @@ async function sendUserBalanceReport(request, env, userId) {
   if (!format) return bad("Formato report non valido.");
   const target = await env.DB.prepare("SELECT id, username FROM users WHERE id = ?").bind(userId).first();
   if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
+  let attachment=null;
+  const attachmentId=typeof body.attachmentId==='string'?body.attachmentId.trim():'';
+  if(attachmentId){
+    attachment=await env.DB.prepare("SELECT id,file_name,content_type FROM balance_report_attachments WHERE id=? AND user_id=?").bind(attachmentId,actor.id).first();
+    if(!attachment)return Response.json({error:"File allegato non trovato o non autorizzato."},{status:404});
+  }
   const wallet = await accrue(env, target.id);
   const [marketPositions, investments, deposits, withdrawals] = await Promise.all([
     syncMarketPositions(env, target.id),
@@ -3156,11 +3194,39 @@ async function sendUserBalanceReport(request, env, userId) {
     deposits: (deposits.results || []).map(row => ({ amount: Number(row.amount), network: String(row.net || ""), date: Number(row.date), status: String(row.status || "") })),
     withdrawals: (withdrawals.results || []).map(row => ({ amount: Number(row.amount), network: String(row.net || ""), date: Number(row.date), status: String(row.status || ""), source: String(row.source || "") }))
   };
-  await env.DB.batch([
+  if(attachment)report.attachment={id:attachment.id,fileName:attachment.file_name,contentType:attachment.content_type};
+  const statements=[
     env.DB.prepare("INSERT INTO balance_reports (id, user_id, admin_id, format, report_json, created_at) VALUES (?, ?, ?, ?, ?, ?)").bind(reportId, target.id, actor.id, format, JSON.stringify(report), createdAt),
     env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'balance_report', ?, ?, ?)").bind(target.id, "Balance report available", "balance-report:" + reportId, createdAt)
-  ]);
+  ];
+  if(attachment)statements.push(env.DB.prepare("INSERT INTO balance_report_attachment_grants (report_id,user_id,attachment_id) VALUES (?,?,?)").bind(reportId,target.id,attachment.id));
+  await env.DB.batch(statements);
   return Response.json({ ok: true, reportId });
+}
+
+
+async function saveBalanceReportAttachment(request, env) {
+  const actor=await privilegedAdminActor(request,env);
+  if(!actor)return Response.json({error:"Permessi admin richiesti."},{status:403});
+  const bytes=new Uint8Array(await request.arrayBuffer());
+  if(!bytes.length||bytes.byteLength>8*1024*1024)return bad("File vuoto o superiore a 8 MB.");
+  let fileName=String(request.headers.get('x-report-file-name')||'').slice(0,600);
+  try{fileName=decodeURIComponent(fileName)}catch{}
+  fileName=path.basename(fileName).replace(/[\u0000-\u001f\u007f]/g,'').trim().slice(0,160);
+  const ext=fileName.split('.').pop().toLowerCase();
+  const types={jpg:'image/jpeg',jpeg:'image/jpeg',png:'image/png',gif:'image/gif',webp:'image/webp',pdf:'application/pdf',html:'text/html',htm:'text/html',txt:'text/plain',csv:'text/csv',rtf:'application/rtf',doc:'application/msword',docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',xls:'application/vnd.ms-excel',xlsx:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',ppt:'application/vnd.ms-powerpoint',pptx:'application/vnd.openxmlformats-officedocument.presentationml.presentation',zip:'application/zip'};
+  const contentType=types[ext];
+  if(!contentType||String(request.headers.get('x-report-content-type')||'').toLowerCase()!==contentType)return bad("Tipo di file non supportato.");
+  const id=crypto.randomUUID(),createdAt=Date.now();
+  await env.DB.prepare("INSERT INTO balance_report_attachments (id,user_id,file_name,content_type,file_data,created_at) VALUES (?,?,?,?,?,?)").bind(id,actor.id,fileName,contentType,bytes,createdAt).run();
+  return Response.json({ok:true,attachmentId:id,fileName,contentType});
+}
+
+async function getUserBalanceReportAttachment(request,env,reportId){
+  const user=await authed(request,env);
+  const row=await env.DB.prepare("SELECT a.file_name,a.content_type,a.file_data FROM balance_report_attachment_grants g JOIN balance_report_attachments a ON a.id=g.attachment_id WHERE g.report_id=? AND g.user_id=?").bind(reportId,user.id).first();
+  if(!row)return Response.json({error:"Allegato non trovato."},{status:404});
+  return Response.json({fileName:row.file_name,contentType:row.content_type,data:Buffer.from(row.file_data).toString('base64')},{headers:{"Cache-Control":"no-store"}});
 }
 
 async function getUserBalanceReport(request, env, reportId) {
@@ -3206,6 +3272,9 @@ async function adminDeleteUser(request, env, userId) {
     env.DB.prepare("DELETE FROM sensitive_action_verifications WHERE user_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM notifications WHERE user_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM balance_reports WHERE user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM balance_report_attachment_grants WHERE user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM balance_report_attachment_grants WHERE attachment_id IN (SELECT id FROM balance_report_attachments WHERE user_id = ?)").bind(userId),
+    env.DB.prepare("DELETE FROM balance_report_attachments WHERE user_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM wallets WHERE user_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM investments WHERE user_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM referral_commissions WHERE user_id = ? OR source_user_id = ?").bind(userId, userId),
@@ -3900,6 +3969,24 @@ app.get('/api/asset-prices/stream', (req, res) => {
     }
   });
   void publishAssetPriceUpdate();
+});
+
+app.post('/api/admin/balance-report-attachments', express.raw({ type: 'application/octet-stream', limit: '8mb' }), async (req, res) => {
+  try {
+    const fullUrl = req.protocol + '://' + req.get('host') + req.originalUrl;
+    const headers = new Headers(req.headers); headers.delete('x-platform-client-ip');
+    if (req.ip) headers.set('x-platform-client-ip', String(req.ip));
+    if (!headers.has('content-type')) headers.set('content-type', 'application/octet-stream');
+    const webRequest = new Request(fullUrl, { method: 'POST', headers, body: req.body || new Uint8Array() });
+    const response = await workerHandler.fetch(webRequest, env);
+    const bodyText = await response.text();
+    res.status(response.status);
+    response.headers.forEach((val, key) => res.setHeader(key, val));
+    res.send(bodyText);
+  } catch (err) {
+    console.error('Balance report attachment upload failed:', err);
+    res.status(500).json({ error: 'File upload failed.' });
+  }
 });
 
 app.all('/api/*', async (req, res) => {
