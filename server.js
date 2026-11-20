@@ -2237,7 +2237,7 @@ async function deposit(request, env) {
   }
   await env.DB.batch([
     env.DB.prepare("INSERT INTO deposits (user_id, amount, net, date, status, tx_reference, deposit_address, purpose, package_id) VALUES (?,?,?,?, 'pending', ?, ?, ?, ?)").bind(user.id, amount, net, created, txReference, depositAddress, purpose, packageId),
-    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Deposit request submitted", amount.toFixed(3) + " USDT · " + net + " · Pending review.", created),
+    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Deposit request submitted", amount.toFixed(3) + " USDT · " + net + " · Automatic on-chain verification pending.", created),
   ]);
   await recordAntifraudEvent(request, env, user, 'deposit', txReference);
   return Response.json({ ok: true, status: "pending" });
@@ -2445,9 +2445,11 @@ async function adminWalletBalances(request, env) {
   if (!await adminAccess(request, env, "fullPanel")) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
   const addresses = await readDepositAddresses(env);
   const wallets = [];
+  let tronWalletIndex = 0;
   for (const network of ["BNB", "TRC20", "BTC"]) {
     const pool = addressPoolForNetwork(addresses, network);
     for (const address of pool) {
+      if (network === "TRC20" && tronWalletIndex++ > 0) await new Promise(resolve => setTimeout(resolve, 1000));
       const item = { network, address, signerConfigured: cryptoSignerConfiguredFor(network), automationEnabled: String(process.env.CRYPTO_AUTOMATION_ENABLED || "").toLowerCase() === "true" };
       try {
         if (network === "BNB") {
@@ -2882,7 +2884,7 @@ async function withdraw(request, env) {
     await env.DB.batch([
       env.DB.prepare("INSERT INTO withdrawals (user_id, amount, net, date, status, wallet_address, source, fee_amount, charged_amount) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)")
         .bind(user.id, prepared.amount, prepared.net, created, prepared.address, prepared.source, prepared.feeAmount, prepared.chargedAmount),
-      env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Withdrawal request submitted", "Payout " + prepared.amount.toFixed(3) + " USDT · commission " + prepared.feeAmount.toFixed(3) + " USDT · " + prepared.net + " · Pending review.", created),
+      env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Withdrawal request submitted", "Payout " + prepared.amount.toFixed(3) + " USDT · commission " + prepared.feeAmount.toFixed(3) + " USDT · " + prepared.net + " · Automatic payout processing pending when eligible.", created),
     ]);
   } catch (error) {
     await env.DB.prepare("UPDATE wallets SET " + prepared.source + " = " + prepared.source + " + ? WHERE user_id = ?").bind(prepared.chargedAmount, user.id).run();

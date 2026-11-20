@@ -2557,9 +2557,14 @@ setInterval(()=>{if(document.visibilityState==='visible'||!adminToken||!$('view-
 const adminDepositNetworks=['BNB','BTC','TRC20'];
 function adminDepositAddressFields(net){return [...document.querySelectorAll('[data-deposit-address="'+net+'"]')]}
 async function loadAdminDepositAddresses(){try{const d=await api('/api/admin/deposit-addresses'),a=d.addresses||{};for(const net of adminDepositNetworks){const saved=String(a[net]||'').split(/[,;]+/).map(x=>x.trim()).filter(Boolean).slice(0,6);adminDepositAddressFields(net).forEach((input,index)=>input.value=saved[index]||'')}}catch(e){}}
+let lastAdminWalletBalanceRequestAt=0;
 async function refreshAdminWalletBalances(){
   const button=$('admin-wallet-balances-refresh'),status=$('admin-wallet-balances-status'),list=$('admin-wallet-balances-list');
-  if(!list)return;if(button)button.disabled=true;status.textContent='Reading live balances from the blockchain…';
+  if(!list)return;
+  const now=Date.now();
+  if(now-lastAdminWalletBalanceRequestAt<60000){status.textContent='Please wait before refreshing blockchain balances again.';return}
+  lastAdminWalletBalanceRequestAt=now;
+  if(button)button.disabled=true;status.textContent='Reading live balances from the blockchain…';
   try{
     const data=await api('/api/admin/wallet-balances'),wallets=data.wallets||[];
     if(!wallets.length){list.innerHTML='<div class="admin-wallet-balance-empty">No platform wallets configured.</div>'}
