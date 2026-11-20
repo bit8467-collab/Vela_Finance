@@ -2503,7 +2503,7 @@ async function adminWalletBalances(request, env) {
     try { signerAddress = await configuredPlatformSignerAddress(network); } catch {}
     for (const address of pool) {
       if (network === "TRC20" && tronWalletIndex++ > 0) await new Promise(resolve => setTimeout(resolve, 1000));
-      const item = { network, address, signerConfigured: cryptoSignerConfiguredFor(network), transferEnabled: !!signerAddress && sameAddress(address, signerAddress) && String(process.env.CRYPTO_AUTOMATION_ENABLED || "").toLowerCase() === "true", automationEnabled: String(process.env.CRYPTO_AUTOMATION_ENABLED || "").toLowerCase() === "true" };
+      const item = { network, address, signerConfigured: cryptoSignerConfiguredFor(network), signerAddress: signerAddress || "", transferEnabled: !!signerAddress && sameAddress(address, signerAddress) && String(process.env.CRYPTO_AUTOMATION_ENABLED || "").toLowerCase() === "true", automationEnabled: String(process.env.CRYPTO_AUTOMATION_ENABLED || "").toLowerCase() === "true" };
       try {
         if (network === "BNB") {
           const provider = new ethers.JsonRpcProvider(process.env.BSC_RPC_URL || "https://bsc-dataseed.binance.org/", 56);
@@ -2549,7 +2549,9 @@ function configuredPlatformSignerAddress(network) {
   if (network === "TRC20") {
     const key = String(process.env.TRON_USDT_PRIVATE_KEY || "").trim().replace(/^0x/i, "");
     if (!key) throw new Error("TRON signer is not configured");
-    const tron = new TronWeb({ fullHost: (process.env.TRON_FULL_HOST || "https://api.trongrid.io").replace(/\/$/, ""), privateKey: key });
+    const host = (process.env.TRON_FULL_HOST || "https://api.trongrid.io").replace(/\/$/, ""), headers = {};
+    if (process.env.TRON_API_KEY) headers["TRON-PRO-API-KEY"] = process.env.TRON_API_KEY;
+    const tron = new TronWeb({ fullHost: host, privateKey: key, headers });
     const address = tron.address.fromPrivateKey(key);
     if (!address) throw new Error("TRON signer address is invalid");
     return address;
