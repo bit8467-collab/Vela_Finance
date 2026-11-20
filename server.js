@@ -223,15 +223,20 @@ async function yahooQuote(key, asset) {
 }
 
 async function cryptoQuotes(now) {
-  const body = await fetchJson("https://api.kraken.com/0/public/Ticker?pair=XBTUSD,ETHUSD");
+  const [body, extraBody] = await Promise.all([
+    fetchJson("https://api.kraken.com/0/public/Ticker?pair=XBTUSD,ETHUSD"),
+    fetchJson("https://api.kraken.com/0/public/Ticker?pair=BNBUSD,TRXUSD"),
+  ]);
   const result = body?.result;
   if (body?.error?.length || !result) return {};
   const quotes = {};
-  for (const [key, ticker, instrument, symbol] of [
-    ["bitcoin", "XXBTZUSD", "Bitcoin spot · USD per BTC", "BTC/USD"],
-    ["ethereum", "XETHZUSD", "Ethereum spot · USD per ETH", "ETH/USD"],
+  for (const [key, ticker, instrument, symbol, source] of [
+    ["bitcoin", "XXBTZUSD", "Bitcoin spot · USD per BTC", "BTC/USD", result],
+    ["ethereum", "XETHZUSD", "Ethereum spot · USD per ETH", "ETH/USD", result],
+    ["bnb", "BNBUSD", "BNB spot · USD per BNB", "BNB/USD", extraBody?.result],
+    ["trx", "TRXUSD", "TRON spot · USD per TRX", "TRX/USD", extraBody?.result],
   ]) {
-    const price = Number(result[ticker]?.c?.[0]);
+    const price = Number(source?.[ticker]?.c?.[0]);
     if (!Number.isFinite(price) || price <= 0) continue;
     quotes[key] = {
       price, currency: "USD", unit: "", instrument, symbol,
@@ -405,7 +410,7 @@ async function loadQuotes(selectedMarket = "DE-LU") {
       ? { ...electricity, price: Number((electricity.price * eurUsd.price).toFixed(6)), currency: 'USD', instrument: electricity.marketName + ' day-ahead electricity · USD per MWh', provider: electricity.provider + ' · EUR/USD reference conversion', unit: 'per MWh' }
       : electricity;
   }
-  for (const quote of Object.values(quotes)) { const price = Number(quote?.price); if (Number.isFinite(price)) quote.price = Number(price.toFixed(3)); }
+  for (const [key, quote] of Object.entries(quotes)) { const price = Number(quote?.price); if (Number.isFinite(price)) quote.price = Number(price.toFixed(key === "bnb" || key === "trx" ? 8 : 3)); }
   return { quotes, electricityMarket, fetchedAt: Date.now() };
 }
 

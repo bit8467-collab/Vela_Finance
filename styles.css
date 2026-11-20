@@ -164,7 +164,7 @@ h2 { font-size: 16px; }
 .chart-selector { flex: 0 0 auto; min-height: 29px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface-2); padding: 0 9px; color: var(--muted); font-size: 8px; white-space: nowrap; }
 .chart-selector.active { border-color: #79e2d570; background: #79e2d512; color: var(--accent); }
 .line-chart { min-height: 160px; }
-.asset-chart-ranges { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; margin: 12px 0 7px; border-radius: 9px; background: var(--surface-2); padding: 3px; }
+.asset-chart-ranges { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; margin: 12px 0 7px; border-radius: 9px; background: var(--surface-2); padding: 3px; }
 .asset-chart-range { min-width: 0; min-height: 30px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font-size: 9px; font-weight: 600; }
 .asset-chart-range.active { background: var(--accent); color: #071410; }
 .asset-chart-readout { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-height: 23px; margin: 2px 2px 0; }
@@ -1249,6 +1249,8 @@ h2 { font-size:18px; }
 .investment-asset-history-card .asset-history-chart { min-height:100px; margin:0; }
 .investment-asset-history-card .asset-history-chart>p { padding:20px 4px; }
 .investment-asset-history-card .chart-tooltip { min-height:22px; font-size:9px; }
+.investment-asset-range-selectors { gap:3px; overflow-x:auto; margin:0; padding:1px 0 4px; scrollbar-width:thin; }
+.investment-asset-range-selectors .chart-selector { flex:1 0 0; min-width:0; min-height:27px; padding:0 3px; text-align:center; }
 .investment-asset-history-card .asset-history-legend { font-size:9px; }
 .investment-asset-history-empty { grid-column:1/-1; margin:0; padding:16px; color:var(--muted); font-size:10px; text-align:center; }
 .allocation-track { height:5px; overflow:hidden; border-radius:99px; background:#26363c; }
