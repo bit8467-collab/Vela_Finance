@@ -18,8 +18,8 @@ const cryptoTransferInterface = new ethers.Interface(['event Transfer(address in
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const DEFAULT_COMMISSION_RATES = Object.freeze({ withdrawalDepositPercent: 8, withdrawalEarningsPercent: 8, withdrawalReleasedPercent: 25, earlyClosePercent: 35, investmentWithholdingPercent: 20, simpleEarnWithholdingPercent: 20 });
-const COMMISSION_CONFIG_KEYS = Object.freeze({ withdrawalDepositPercent: 'commission_withdrawal_deposit_pct', withdrawalEarningsPercent: 'commission_withdrawal_earnings_pct', withdrawalReleasedPercent: 'commission_withdrawal_released_pct', earlyClosePercent: 'commission_early_close_pct', investmentWithholdingPercent: 'commission_investment_withholding_pct', simpleEarnWithholdingPercent: 'commission_simple_earn_withholding_pct', noEarningsWithdrawalDepositPercent: 'commission_no_earnings_withdrawal_deposit_pct', noEarningsWithdrawalEarningsPercent: 'commission_no_earnings_withdrawal_earnings_pct', noEarningsWithdrawalReleasedPercent: 'commission_no_earnings_withdrawal_released_pct', noEarningsEarlyClosePercent: 'commission_no_earnings_early_close_pct' });
+const DEFAULT_COMMISSION_RATES = Object.freeze({ withdrawalDepositPercent: 8, withdrawalEarningsPercent: 8, withdrawalReleasedPercent: 25, earlyClosePercent: 35, investmentWithholdingPercent: 20, simpleEarnWithholdingPercent: 20, noEarningsEarlyCloseThreshold: 0 });
+const COMMISSION_CONFIG_KEYS = Object.freeze({ withdrawalDepositPercent: 'commission_withdrawal_deposit_pct', withdrawalEarningsPercent: 'commission_withdrawal_earnings_pct', withdrawalReleasedPercent: 'commission_withdrawal_released_pct', earlyClosePercent: 'commission_early_close_pct', investmentWithholdingPercent: 'commission_investment_withholding_pct', simpleEarnWithholdingPercent: 'commission_simple_earn_withholding_pct', noEarningsWithdrawalDepositPercent: 'commission_no_earnings_withdrawal_deposit_pct', noEarningsWithdrawalEarningsPercent: 'commission_no_earnings_withdrawal_earnings_pct', noEarningsWithdrawalReleasedPercent: 'commission_no_earnings_withdrawal_released_pct', noEarningsEarlyClosePercent: 'commission_no_earnings_early_close_pct', noEarningsEarlyCloseThreshold: 'commission_no_earnings_early_close_threshold', noEarningsEarlyCloseBelowPercent: 'commission_no_earnings_early_close_below_pct', noEarningsEarlyCloseAtOrAbovePercent: 'commission_no_earnings_early_close_above_pct' });
 const AUTO_APPROVAL_DELAYS_HOURS = Object.freeze([0, 1, 6, 12, 24, 48]);
 
 const PROMOTER_PACKAGE_TIERS = Object.freeze({
@@ -3311,7 +3311,9 @@ async function closeMarketPositionEarly(request, env) {
   const value = Number(marketPositionValue(position, quotes).toFixed(3));
   if (!(value > 0)) return bad('Il valore di riferimento non è disponibile per la chiusura.');
   const closeRates = await readCommissionRates(env);
-  const earlyClosePercent = (await marketPositionHasEarned(env, user.id, position.id)) ? closeRates.earlyClosePercent : closeRates.noEarningsEarlyClosePercent;
+  const planHasEarned = (await marketPositionHasEarned(env, user.id, position.id)) || value > Number(position.amount) + 0.0005;
+  const amountThreshold = Number(closeRates.noEarningsEarlyCloseThreshold) || 0;
+  const earlyClosePercent = planHasEarned ? closeRates.earlyClosePercent : amountThreshold > 0 ? (Number(position.amount) < amountThreshold ? closeRates.noEarningsEarlyCloseBelowPercent : closeRates.noEarningsEarlyCloseAtOrAbovePercent) : closeRates.noEarningsEarlyClosePercent;
   const fee = Number((value * earlyClosePercent / 100).toFixed(3));
   const net = Number((value - fee).toFixed(3));
   const now = Date.now();
@@ -3881,8 +3883,8 @@ async function readAutomaticApprovalDelayHours(env) {
   const value = Number(row?.config_value);
   return AUTO_APPROVAL_DELAYS_HOURS.includes(value) ? value : 0;
 }
-const NO_EARNINGS_RATE_FALLBACKS = Object.freeze({ noEarningsWithdrawalDepositPercent: 'withdrawalDepositPercent', noEarningsWithdrawalEarningsPercent: 'withdrawalEarningsPercent', noEarningsWithdrawalReleasedPercent: 'withdrawalReleasedPercent', noEarningsEarlyClosePercent: 'earlyClosePercent' });
-function commissionRateMaximum(field) { return field.toLowerCase().includes('earlyclosepercent') || field === 'investmentWithholdingPercent' || field === 'simpleEarnWithholdingPercent' ? 100 : 50; }
+const NO_EARNINGS_RATE_FALLBACKS = Object.freeze({ noEarningsWithdrawalDepositPercent: 'withdrawalDepositPercent', noEarningsWithdrawalEarningsPercent: 'withdrawalEarningsPercent', noEarningsWithdrawalReleasedPercent: 'withdrawalReleasedPercent', noEarningsEarlyClosePercent: 'earlyClosePercent', noEarningsEarlyCloseBelowPercent: 'noEarningsEarlyClosePercent', noEarningsEarlyCloseAtOrAbovePercent: 'noEarningsEarlyClosePercent' });
+function commissionRateMaximum(field) { if (field === 'noEarningsEarlyCloseThreshold') return 1000000000000; return field.toLowerCase().includes('earlyclose') || field === 'investmentWithholdingPercent' || field === 'simpleEarnWithholdingPercent' ? 100 : 50; }
 async function userHasEverEarned(env, userId) {
   const row = await env.DB.prepare("SELECT CASE WHEN " +
     "COALESCE((SELECT total_earned FROM wallets WHERE user_id = ?), 0) > 0.0005 OR " +
@@ -3976,7 +3978,8 @@ async function saveAdminCommissionSettings(request, env) {
     if (!Object.prototype.hasOwnProperty.call(body, field)) continue;
     const value = Number(body[field]);
     const maxValue = commissionRateMaximum(field);
-    if (!Number.isFinite(value) || value < 0 || value > maxValue || Math.abs(Math.round(value * 100) - value * 100) > 1e-8) return bad("Le percentuali devono essere comprese nei limiti consentiti, con massimo due decimali.");
+    const precision = field === "noEarningsEarlyCloseThreshold" ? 1000 : 100;
+    if (!Number.isFinite(value) || value < 0 || value > maxValue || Math.abs(Math.round(value * precision) - value * precision) > 1e-8) return bad(field === "noEarningsEarlyCloseThreshold" ? "La soglia deve essere un importo valido con massimo tre decimali." : "Le percentuali devono essere comprese nei limiti consentiti, con massimo due decimali.");
     next[field] = value;
   }
   if (!Object.keys(COMMISSION_CONFIG_KEYS).some(field => Object.prototype.hasOwnProperty.call(body, field))) return bad("Nessuna commissione valida ricevuta.");

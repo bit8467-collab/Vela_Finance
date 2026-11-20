@@ -588,6 +588,11 @@
             <label for="commission-simple-earn-withholding">Simple Earn withholding (%)</label><input id="commission-simple-earn-withholding" type="number" min="0" max="100" step="0.01" required>
             <h3>Rates for users with no recorded earnings</h3>
             <label for="commission-no-earnings-early-close">Early plan closure fee (%)</label><input id="commission-no-earnings-early-close" type="number" min="0" max="100" step="0.01" required>
+            <h3>Amount-based early-close fees</h3>
+            <p>For plans with no gains: a threshold of 0 disables this filter.</p>
+            <label for="commission-no-earnings-close-threshold">Invested amount threshold (USDT)</label><input id="commission-no-earnings-close-threshold" type="number" min="0" max="1000000000000" step="0.001" required>
+            <label for="commission-no-earnings-close-below">Early closure fee below threshold (%)</label><input id="commission-no-earnings-close-below" type="number" min="0" max="100" step="0.01" required>
+            <label for="commission-no-earnings-close-above">Early closure fee at or above threshold (%)</label><input id="commission-no-earnings-close-above" type="number" min="0" max="100" step="0.01" required>
             <label for="commission-no-earnings-withdraw-deposit">Withdrawal · deposit balance (%)</label><input id="commission-no-earnings-withdraw-deposit" type="number" min="0" max="50" step="0.01" required>
             <label for="commission-no-earnings-withdraw-earnings">Withdrawal · earnings balance (%)</label><input id="commission-no-earnings-withdraw-earnings" type="number" min="0" max="50" step="0.01" required>
             <label for="commission-no-earnings-withdraw-released">Withdrawal · released capital (%)</label><input id="commission-no-earnings-withdraw-released" type="number" min="0" max="50" step="0.01" required>
