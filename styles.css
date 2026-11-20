@@ -908,7 +908,12 @@ body {
 .deposit-address-box.unconfigured { border-color: #e9bb6b40; }
 .deposit-address-box.unconfigured code { color: var(--amber); }
 .deposit-address-box .text-button { justify-self: start; padding-left: 0; }
-.deposit-verification-note, .deposit-network-warning { margin: 2px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.deposit-verification-note, .deposit-btc-equivalent { margin: -3px 0 2px; padding: 9px 10px; border: 1px solid #79e2d56b; border-radius: 9px; color: var(--accent); background: #79e2d510; font-size: 11px; font-weight: 700; line-height: 1.45; }
+.deposit-confirm-banner { margin: 5px 0; padding: 11px; border: 1px solid #e9bb6b80; border-radius: 10px; color: #f2cc7a; background: #8d67201a; font-size: 11px; line-height: 1.5; }
+.deposit-confirm-banner p { margin: 5px 0 10px; }
+.deposit-confirm-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.deposit-confirm-actions .primary-button { width: auto; min-height: 36px; font-size: 10px; }
+.deposit-network-warning { margin: 2px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .deposit-verification-note b { color: #83d8ae; font-weight: 700; }
 .deposit-network-warning { padding: 9px 10px; border: 1px solid #e9bb6b70; border-radius: 9px; color: #f2cc7a; background: #8d67201a; font-weight: 650; }
 .deposit-address-settings { display: grid; gap: 8px; }

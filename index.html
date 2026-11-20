@@ -710,9 +710,11 @@
         <p class="deposit-network-warning" id="deposit-network-warning" hidden>Bitcoin network selected: send BTC only. Do not send USDT to this address.</p>
         <label for="deposit-amount" id="deposit-amount-label">Amount (USD equivalent)</label>
         <input id="deposit-amount" type="number" inputmode="decimal" min="50" step="0.01" placeholder="Minimum 50 USD" required>
+        <p class="deposit-btc-equivalent" id="deposit-btc-equivalent" hidden aria-live="polite"></p>
         <label for="deposit-txhash">Transaction hash</label>
         <input id="deposit-txhash" type="text" autocomplete="off" placeholder="Paste transaction hash" required>
         <p class="form-error" id="deposit-error" role="alert"></p>
+        <div class="deposit-confirm-banner" id="deposit-confirm-banner" role="alert" hidden><strong>Payment confirmation</strong><p>Have you completed the payment and checked that the TX hash is correct? Continue only if both are true.</p><div class="deposit-confirm-actions"><button class="text-button" id="deposit-confirm-cancel" type="button">Cancel</button><button class="primary-button" id="deposit-confirm-continue" type="button">Yes, continue</button></div></div>
         <button class="primary-button" type="submit">Submit deposit details</button>
       </form>
     </dialog>
