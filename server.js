@@ -18,8 +18,8 @@ const cryptoTransferInterface = new ethers.Interface(['event Transfer(address in
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const DEFAULT_COMMISSION_RATES = Object.freeze({ withdrawalDepositPercent: 8, withdrawalEarningsPercent: 8, withdrawalReleasedPercent: 25, earlyClosePercent: 35, investmentWithholdingPercent: 20 });
-const COMMISSION_CONFIG_KEYS = Object.freeze({ withdrawalDepositPercent: 'commission_withdrawal_deposit_pct', withdrawalEarningsPercent: 'commission_withdrawal_earnings_pct', withdrawalReleasedPercent: 'commission_withdrawal_released_pct', earlyClosePercent: 'commission_early_close_pct', investmentWithholdingPercent: 'commission_investment_withholding_pct' });
+const DEFAULT_COMMISSION_RATES = Object.freeze({ withdrawalDepositPercent: 8, withdrawalEarningsPercent: 8, withdrawalReleasedPercent: 25, earlyClosePercent: 35, investmentWithholdingPercent: 20, simpleEarnWithholdingPercent: 20 });
+const COMMISSION_CONFIG_KEYS = Object.freeze({ withdrawalDepositPercent: 'commission_withdrawal_deposit_pct', withdrawalEarningsPercent: 'commission_withdrawal_earnings_pct', withdrawalReleasedPercent: 'commission_withdrawal_released_pct', earlyClosePercent: 'commission_early_close_pct', investmentWithholdingPercent: 'commission_investment_withholding_pct', simpleEarnWithholdingPercent: 'commission_simple_earn_withholding_pct' });
 const AUTO_APPROVAL_DELAYS_HOURS = Object.freeze([0, 1, 6, 12, 24, 48]);
 
 const PROMOTER_PACKAGE_TIERS = Object.freeze({
@@ -821,6 +821,12 @@ async function accrue(env, userId) {
   return wallet;
 }
 
+async function referralCommissionPercent(env, inviterId) {
+  const row = await env.DB.prepare("SELECT COUNT(*) AS total FROM users invited WHERE invited.referred_by = ? AND EXISTS (SELECT 1 FROM deposits d WHERE d.user_id = invited.id AND d.status = 'approved')").bind(inviterId).first();
+  const total = Number(row?.total || 0);
+  return total >= 31 ? 3 : total >= 16 ? 2.5 : total >= 11 ? 2 : 1;
+}
+
 async function inviterStats(env, userId) {
   const counts = await env.DB.prepare(
     "WITH active_users AS (" +
@@ -829,12 +835,13 @@ async function inviterStats(env, userId) {
     " AND EXISTS (SELECT 1 FROM investments i WHERE i.user_id = u.id)" +
     ") SELECT" +
     " (SELECT COUNT(*) FROM active_users WHERE referred_by = ?) AS direct," +
-    " (SELECT COUNT(*) FROM active_users u JOIN users parent ON u.referred_by = parent.id WHERE parent.referred_by = ?) AS second"
-  ).bind(userId, userId).first();
+    " (SELECT COUNT(*) FROM active_users u JOIN users parent ON u.referred_by = parent.id WHERE parent.referred_by = ?) AS second," +
+    " (SELECT COALESCE(SUM(amount), 0) FROM referral_commissions WHERE user_id = ?) AS commission_earned"
+  ).bind(userId, userId, userId).first();
   const direct = counts.direct;
   const second = counts.second;
   const level = direct >= 50 ? 3 : direct >= 5 && second >= 20 ? 2 : direct >= 5 ? 1 : 0;
-  return { direct, second, level, planBonus: PLAN_BONUSES[level] };
+  return { direct, second, level, planBonus: PLAN_BONUSES[level], commissionEarned: Number(counts.commission_earned || 0) };
 }
 
 async function settleMonthlyReferralProfits(env, inviterId) {
@@ -858,10 +865,11 @@ async function settleMonthlyReferralProfits(env, inviterId) {
       ).bind(source.id, source.id, now, source.id, source.id).first();
       const previousBase = Math.max(0, Number(previous?.profit_base) || 0);
       const currentBase = Math.max(previousBase, Number(totals?.profit) || 0);
-      const commission = Number((Math.max(0, currentBase - previousBase) * 0.01).toFixed(3));
+      const commissionPercent = await referralCommissionPercent(env, inviterId);
+      const commission = Number((Math.max(0, currentBase - previousBase) * commissionPercent / 100).toFixed(3));
       const recordedBase = commission >= 0.001 ? currentBase : previousBase;
       const eventId = 'monthly-profit:' + inviterId + ':' + source.id + ':' + period;
-      const message = 'Credited ' + commission.toFixed(3) + ' USDT monthly referral commission (1% of net realized investment gains) from @' + String(source.username || 'user') + '.';
+      const message = 'Credited ' + commission.toFixed(3) + ' USDT monthly referral commission (' + commissionPercent + '% of net realized investment gains) from @' + String(source.username || 'user') + '.';
       await env.DB.batch([
         env.DB.prepare("INSERT OR IGNORE INTO referral_profit_settlements (user_id, source_user_id, period, profit_base, commission_amount, created_at, credited_at) VALUES (?, ?, ?, ?, ?, ?, NULL)").bind(inviterId, source.id, period, recordedBase, commission, now),
         env.DB.prepare("INSERT OR IGNORE INTO referral_commissions (user_id, source_user_id, event_id, level, amount, created_at) SELECT ?, ?, ?, 1, ?, ? WHERE EXISTS (SELECT 1 FROM referral_profit_settlements WHERE user_id = ? AND source_user_id = ? AND period = ? AND credited_at IS NULL AND commission_amount > 0)").bind(inviterId, source.id, eventId, commission, now, inviterId, source.id, period),
@@ -876,16 +884,28 @@ async function settleMonthlyReferralProfits(env, inviterId) {
 }
 
 async function referralRedemptionCommissionStatements(env, sourceUserId, profitAmount, eventId, now, redemptionPredicate, redemptionParams=[]) {
-  const commission=Number((Math.max(0,Number(profitAmount)||0)*0.01).toFixed(3));
-  if(commission<0.001)return [];
-  const inviter=await env.DB.prepare("SELECT parent.id AS id FROM users source JOIN users parent ON parent.id=source.referred_by WHERE source.id=? AND parent.account_type='promoter' AND parent.promoter_package IS NOT NULL AND parent.promoter_expires_at>? ").bind(sourceUserId,now).first();
-  if(!inviter)return [];
-  const condition=redemptionPredicate?" AND ("+redemptionPredicate+")":"";
-  return [
-    env.DB.prepare("INSERT OR IGNORE INTO referral_commissions (user_id, source_user_id, event_id, level, amount, created_at) SELECT ?, ?, ?, 1, ?, ? WHERE EXISTS (SELECT 1 FROM users source JOIN users parent ON parent.id=source.referred_by WHERE source.id=? AND parent.id=? AND parent.account_type='promoter' AND parent.promoter_package IS NOT NULL AND parent.promoter_expires_at>?)"+condition).bind(inviter.id,sourceUserId,eventId,commission,now,sourceUserId,inviter.id,now,...redemptionParams),
-    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE changes()>0").bind(inviter.id,'Referral earnings commission','A direct invitee redeemed gains. '+commission.toFixed(3)+' USDT (1%) was added to your earnings balance.',now),
-    env.DB.prepare("INSERT INTO wallets (user_id, deposit, earnings, released, total_deposited, total_earned, total_withdrawn) SELECT ?,0,?,0,0,?,0 WHERE changes()>0 ON CONFLICT(user_id) DO UPDATE SET earnings=wallets.earnings+excluded.earnings,total_earned=wallets.total_earned+excluded.total_earned").bind(inviter.id,commission,commission)
-  ];
+  const profit = Math.max(0, Number(profitAmount) || 0);
+  if (profit < 0.001) return [];
+  const relations = (await env.DB.prepare(
+    "SELECT parent.id AS id, 1 AS level FROM users source JOIN users parent ON parent.id = source.referred_by WHERE source.id = ? AND parent.account_type = 'promoter' AND parent.promoter_package IS NOT NULL AND parent.promoter_expires_at > ? " +
+    "UNION ALL SELECT grandparent.id AS id, 2 AS level FROM users source JOIN users parent ON parent.id = source.referred_by JOIN users grandparent ON grandparent.id = parent.referred_by WHERE source.id = ? AND grandparent.account_type = 'promoter' AND grandparent.promoter_package IS NOT NULL AND grandparent.promoter_expires_at > ? AND (SELECT COUNT(*) FROM users direct_invites WHERE direct_invites.referred_by = grandparent.id AND EXISTS (SELECT 1 FROM deposits d WHERE d.user_id = direct_invites.id AND d.status = 'approved')) > 100"
+  ).bind(sourceUserId, now, sourceUserId, now).all()).results || [];
+  const statements = [];
+  for (const relation of relations) {
+    const percent = await referralCommissionPercent(env, relation.id);
+    const commission = Number((profit * percent / 100).toFixed(3));
+    if (commission < 0.001) continue;
+    const condition = redemptionPredicate ? " AND (" + redemptionPredicate + ")" : "";
+    const hierarchy = Number(relation.level) === 1
+      ? "EXISTS (SELECT 1 FROM users source JOIN users parent ON parent.id = source.referred_by WHERE source.id = ? AND parent.id = ? AND parent.account_type = 'promoter' AND parent.promoter_package IS NOT NULL AND parent.promoter_expires_at > ?)"
+      : "EXISTS (SELECT 1 FROM users source JOIN users parent ON parent.id = source.referred_by JOIN users grandparent ON grandparent.id = parent.referred_by WHERE source.id = ? AND grandparent.id = ? AND grandparent.account_type = 'promoter' AND grandparent.promoter_package IS NOT NULL AND grandparent.promoter_expires_at > ? AND (SELECT COUNT(*) FROM users direct_invites WHERE direct_invites.referred_by = grandparent.id AND EXISTS (SELECT 1 FROM deposits d WHERE d.user_id = direct_invites.id AND d.status = 'approved')) > 100)";
+    statements.push(
+      env.DB.prepare("INSERT OR IGNORE INTO referral_commissions (user_id, source_user_id, event_id, level, amount, created_at) SELECT ?, ?, ?, ?, ?, ? WHERE " + hierarchy + condition).bind(relation.id, sourceUserId, eventId, Number(relation.level), commission, now, sourceUserId, relation.id, now, ...redemptionParams),
+      env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE changes() > 0").bind(relation.id, 'Referral earnings commission', 'A level ' + relation.level + ' invitee redeemed gains. ' + commission.toFixed(3) + ' USDT (' + percent + '%) was added to your earnings balance.', now),
+      env.DB.prepare("INSERT INTO wallets (user_id, deposit, earnings, released, total_deposited, total_earned, total_withdrawn) SELECT ?, 0, ?, 0, 0, ?, 0 WHERE changes() > 0 ON CONFLICT(user_id) DO UPDATE SET earnings = wallets.earnings + excluded.earnings, total_earned = wallets.total_earned + excluded.total_earned").bind(relation.id, commission, commission)
+    );
+  }
+  return statements;
 }
 
 async function seedPromoterReferralBaselines(env, inviterId, now) {
@@ -2559,8 +2579,8 @@ async function recordPlatformInvestmentFee(env, feeAmount) {
 async function simpleEarnInvest(request, env) {
   const user = await authed(request, env);
   const body = await request.json().catch(() => ({}));
-  const investmentWithholdingPercent = (await readCommissionRates(env)).investmentWithholdingPercent;
-  const { grossAmount, feeAmount: investmentFee, investedAmount: amount } = splitPlatformInvestmentAmount(body.amount, investmentWithholdingPercent / 100);
+  const simpleEarnWithholdingPercent = (await readCommissionRates(env)).simpleEarnWithholdingPercent;
+  const { grossAmount, feeAmount: investmentFee, investedAmount: amount } = splitPlatformInvestmentAmount(body.amount, simpleEarnWithholdingPercent / 100);
   const source = ['deposit', 'earnings', 'released'].includes(body.source) ? body.source : 'deposit';
   if (!Number.isFinite(grossAmount) || grossAmount < 200 || grossAmount > 1e12) return bad("L'investimento minimo per Simple Earn è 200 USDT.");
   const wallet = await accrue(env, user.id);
@@ -3306,7 +3326,7 @@ async function readCommissionRates(env) {
   const rates = {};
   for (const [field, key] of Object.entries(COMMISSION_CONFIG_KEYS)) {
     const value = stored.get(key);
-    const maxValue = field === "earlyClosePercent" || field === "investmentWithholdingPercent" ? 100 : 50;
+    const maxValue = field === "earlyClosePercent" || field === "investmentWithholdingPercent" || field === "simpleEarnWithholdingPercent" ? 100 : 50;
     rates[field] = Number.isFinite(value) && value >= 0 && value <= maxValue ? value : DEFAULT_COMMISSION_RATES[field];
   }
   return rates;
@@ -3375,7 +3395,7 @@ async function saveAdminCommissionSettings(request, env) {
   for (const field of Object.keys(COMMISSION_CONFIG_KEYS)) {
     if (!Object.prototype.hasOwnProperty.call(body, field)) continue;
     const value = Number(body[field]);
-    const maxValue = field === "earlyClosePercent" || field === "investmentWithholdingPercent" ? 100 : 50;
+    const maxValue = field === "earlyClosePercent" || field === "investmentWithholdingPercent" || field === "simpleEarnWithholdingPercent" ? 100 : 50;
     if (!Number.isFinite(value) || value < 0 || value > maxValue || Math.abs(Math.round(value * 100) - value * 100) > 1e-8) return bad("Le percentuali devono essere comprese nei limiti consentiti, con massimo due decimali.");
     next[field] = value;
   }
