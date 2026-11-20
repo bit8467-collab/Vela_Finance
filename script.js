@@ -2633,7 +2633,9 @@ async function refreshAdminWalletBalances(){
             [(w.token||'Token')+' balance',w.token||'',w.tokenBalance],[(w.native||'Native')+' · network fees',w.native||'',w.nativeBalance]
           ];
           const amountTiles=metrics.map(([label,unit,value])=>'<div class="admin-wallet-metric"><small>'+esc(label)+'</small><div><b>'+esc(value??'—')+'</b><span>'+esc(unit)+'</span></div></div>').join('');
-          return '<article class="admin-wallet-row"><div class="admin-wallet-row-meta"><span class="admin-wallet-row-number">Wallet '+String(index+1).padStart(2,'0')+'</span><a class="admin-wallet-address" href="'+explorers[network]+encodeURIComponent(w.address)+'" target="_blank" rel="noopener noreferrer"><code>'+esc(w.address)+'</code><span>View on explorer ↗</span></a><span class="admin-wallet-signer '+(w.signerConfigured?'is-ready':'')+'">'+(w.signerConfigured?'Signer key configured':'Signer key not configured')+'</span></div>'+(w.error?'<p class="admin-wallet-balance-error">Balance unavailable: '+esc(w.error)+'</p>':'<div class="admin-wallet-metrics">'+amountTiles+'</div>')+'</article>'
+          const transferAssets={BNB:['USDT','BNB'],TRC20:['USDT','TRX'],BTC:['BTC']}[network]||[],destinations=entries.filter(target=>target.address!==w.address);
+          const transferMarkup=w.transferEnabled&&destinations.length?'<details class="admin-wallet-transfer"><summary>Transfer funds on-chain</summary><div class="admin-wallet-transfer-fields"><label>Asset<select data-wallet-transfer-asset>'+transferAssets.map(asset=>'<option value="'+asset+'">'+asset+'</option>').join('')+'</select></label><label>Destination wallet<select data-wallet-transfer-to>'+destinations.map(target=>'<option value="'+esc(target.address)+'">Wallet '+String(entries.indexOf(target)+1).padStart(2,'0')+' · '+esc(target.address.slice(0,8)+'…'+target.address.slice(-6))+'</option>').join('')+'</select></label><label>Amount<input data-wallet-transfer-amount type="number" min="0.00000001" step="0.00000001" inputmode="decimal" placeholder="0.00" required></label><button class="outline-button" type="button" data-admin-wallet-transfer data-network="'+network+'" data-from="'+esc(w.address)+'">Send</button></div><small class="admin-wallet-transfer-status" data-wallet-transfer-status role="status"></small></details>':'';
+          return '<article class="admin-wallet-row"><div class="admin-wallet-row-meta"><span class="admin-wallet-row-number">Wallet '+String(index+1).padStart(2,'0')+'</span><a class="admin-wallet-address" href="'+explorers[network]+encodeURIComponent(w.address)+'" target="_blank" rel="noopener noreferrer"><code>'+esc(w.address)+'</code><span>View on explorer ↗</span></a><span class="admin-wallet-signer '+(w.signerConfigured?'is-ready':'')+'">'+(w.signerConfigured?'Signer key configured':'Signer key not configured')+'</span></div>'+(w.error?'<p class="admin-wallet-balance-error">Balance unavailable: '+esc(w.error)+'</p>':'<div class="admin-wallet-metrics">'+amountTiles+'</div>')+transferMarkup+'</article>'
         }).join('');
         return '<section class="admin-wallet-chain"><header class="admin-wallet-chain-heading"><div><small>BLOCKCHAIN NETWORK</small><h3>'+labels[network]+'</h3></div><span>'+entries.length+' '+(entries.length===1?'wallet':'wallets')+'</span></header><div class="admin-wallet-chain-rows">'+rows+'</div></section>'
       }).join('')
@@ -2642,6 +2644,19 @@ async function refreshAdminWalletBalances(){
   }catch(e){status.textContent=e.message||'Could not load blockchain balances.';list.innerHTML='<div class="admin-wallet-balance-empty is-error">Blockchain balances could not be loaded.</div>'}
   finally{if(button)button.disabled=false}
 }
+document.addEventListener('click',async event=>{
+  const button=event.target.closest('[data-admin-wallet-transfer]');if(!button)return;
+  const row=button.closest('.admin-wallet-row'),status=row?.querySelector('[data-wallet-transfer-status]'),asset=row?.querySelector('[data-wallet-transfer-asset]')?.value,to=row?.querySelector('[data-wallet-transfer-to]')?.value,amountValue=row?.querySelector('[data-wallet-transfer-amount]')?.value,network=button.dataset.network,from=button.dataset.from;
+  if(!(Number(amountValue)>0)||!to){if(status)status.textContent='Enter a valid amount and destination.';return}
+  if(!confirm('Send '+amountValue+' '+asset+' from this platform wallet to the selected wallet on '+network+'? This broadcasts a real on-chain transaction.'))return;
+  button.disabled=true;if(status)status.textContent='Signing and broadcasting transaction…';
+  try{
+    const requestId=globalThis.crypto?.randomUUID?.()||('wallet-'+Date.now()+'-'+Math.random().toString(36).slice(2,12));
+    const result=await post('/api/admin/platform-wallet-transfer',{requestId,network,asset,from,to,amount:amountValue});
+    lastAdminWalletBalanceRequestAt=0;await refreshAdminWalletBalances();
+    $('admin-wallet-balances-status').textContent='Transfer broadcast · TX hash '+result.txHash;
+  }catch(error){if(status)status.textContent=error.message||'Transfer failed. Verify the blockchain explorer before retrying.';else $('admin-wallet-balances-status').textContent=error.message||'Transfer failed. Verify the blockchain explorer before retrying.';button.disabled=false}
+});
 $('admin-wallet-balances-refresh')?.addEventListener('click',refreshAdminWalletBalances);
 $('save-deposit-addresses').addEventListener('click',async()=>{const b=$('save-deposit-addresses');b.disabled=true;try{const addresses=Object.fromEntries(adminDepositNetworks.map(net=>[net,adminDepositAddressFields(net).map(input=>input.value.trim()).filter(Boolean).join(',')]));await post('/api/admin/deposit-addresses',{addresses});notice('Deposit addresses saved.')}catch(e){notice(e.message,true)}finally{b.disabled=false}});
 

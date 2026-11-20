@@ -1511,6 +1511,7 @@ const workerHandler = {
       if (method === "GET" && pathName === "/api/deposit-addresses") return await getDepositAddresses(request, env);
       if (method === "GET" && pathName === "/api/admin/deposit-addresses") return await adminDepositAddresses(request, env);
       if (method === "GET" && pathName === "/api/admin/wallet-balances") return await adminWalletBalances(request, env);
+      if (method === "POST" && pathName === "/api/admin/platform-wallet-transfer") return await adminPlatformWalletTransfer(request, env);
       if (method === "POST" && pathName === "/api/admin/deposit-addresses") return await saveAdminDepositAddresses(request, env);
       if (method === "POST" && pathName === "/api/withdraw") return await withdraw(request, env);
       if (method === "POST" && pathName === "/api/transfer-deposit-earnings") return Response.json({ error: "Il trasferimento dal saldo deposito al saldo guadagni non è più disponibile." }, { status: 410 });
@@ -2498,9 +2499,11 @@ async function adminWalletBalances(request, env) {
   let tronWalletIndex = 0;
   for (const network of ["BNB", "TRC20", "BTC"]) {
     const pool = addressPoolForNetwork(addresses, network);
+    let signerAddress = "";
+    try { signerAddress = await configuredPlatformSignerAddress(network); } catch {}
     for (const address of pool) {
       if (network === "TRC20" && tronWalletIndex++ > 0) await new Promise(resolve => setTimeout(resolve, 1000));
-      const item = { network, address, signerConfigured: cryptoSignerConfiguredFor(network), automationEnabled: String(process.env.CRYPTO_AUTOMATION_ENABLED || "").toLowerCase() === "true" };
+      const item = { network, address, signerConfigured: cryptoSignerConfiguredFor(network), transferEnabled: !!signerAddress && sameAddress(address, signerAddress) && String(process.env.CRYPTO_AUTOMATION_ENABLED || "").toLowerCase() === "true", automationEnabled: String(process.env.CRYPTO_AUTOMATION_ENABLED || "").toLowerCase() === "true" };
       try {
         if (network === "BNB") {
           const provider = new ethers.JsonRpcProvider(process.env.BSC_RPC_URL || "https://bsc-dataseed.binance.org/", 56);
@@ -2537,6 +2540,139 @@ async function adminWalletBalances(request, env) {
   }
   return Response.json({ wallets, updatedAt: Date.now(), automationEnabled: String(process.env.CRYPTO_AUTOMATION_ENABLED || "").toLowerCase() === "true" }, { headers: { "Cache-Control": "no-store" } });
 }
+function configuredPlatformSignerAddress(network) {
+  if (network === "BNB") {
+    const key = String(process.env.BSC_USDT_PRIVATE_KEY || "").trim();
+    if (!key) throw new Error("BNB signer is not configured");
+    return new ethers.Wallet(key).address;
+  }
+  if (network === "TRC20") {
+    const key = String(process.env.TRON_USDT_PRIVATE_KEY || "").trim().replace(/^0x/i, "");
+    if (!key) throw new Error("TRON signer is not configured");
+    const tron = new TronWeb({ fullHost: (process.env.TRON_FULL_HOST || "https://api.trongrid.io").replace(/\/$/, ""), privateKey: key });
+    const address = tron.address.fromPrivateKey(key);
+    if (!address) throw new Error("TRON signer address is invalid");
+    return address;
+  }
+  if (network === "BTC") {
+    const wif = String(process.env.BTC_PRIVATE_KEY_WIF || "").trim();
+    if (!wif) throw new Error("BTC signer is not configured");
+    const pair = ECPair.fromWIF(wif, bitcoin.networks.bitcoin);
+    const source = bitcoin.payments.p2wpkh({ pubkey: Buffer.from(pair.publicKey), network: bitcoin.networks.bitcoin });
+    if (!source.address) throw new Error("BTC signer address is invalid");
+    return source.address;
+  }
+  throw new Error("Unsupported wallet network");
+}
+
+function platformTransferUnits(value, decimals) {
+  const raw = String(value).trim(), pieces = raw.split(".");
+  if (!raw || pieces.length > 2 || !pieces[0] || [...pieces[0], ...(pieces[1] || "")].some(char => char < "0" || char > "9")) throw new Error("Importo non valido.");
+  const [whole, fraction = ""] = pieces;
+  if (fraction.length > decimals) throw new Error("Troppe cifre decimali per questo asset.");
+  return BigInt(whole) * (10n ** BigInt(decimals)) + BigInt((fraction + "0".repeat(decimals)).slice(0, decimals) || "0");
+}
+
+async function sendAdminBnbTransfer({ asset, from, to, amount }) {
+  const key = String(process.env.BSC_USDT_PRIVATE_KEY || "").trim();
+  const provider = new ethers.JsonRpcProvider(process.env.BSC_RPC_URL || "https://bsc-dataseed.binance.org/", 56);
+  const signer = new ethers.Wallet(key, provider);
+  await assertSignerMatchesPlatformAddress("BNB", signer.address);
+  if (!sameAddress(signer.address, from) || !ethers.isAddress(to)) throw new Error("Wallet sorgente o destinazione BNB non valido.");
+  if (asset === "USDT") {
+    const token = new ethers.Contract(ethers.getAddress(process.env.BSC_USDT_CONTRACT || BSC_USDT_DEFAULT), [...AUTO_TRANSFER_ABI, "function balanceOf(address) view returns (uint256)"], signer);
+    const decimals = Number(await token.decimals()), units = platformTransferUnits(amount, decimals);
+    if (units <= 0n || BigInt(await token.balanceOf(signer.address)) < units) throw new Error("Saldo USDT insufficiente.");
+    return (await token.transfer(ethers.getAddress(to), units)).hash;
+  }
+  if (asset !== "BNB") throw new Error("Asset non supportato su BNB Smart Chain.");
+  const units = ethers.parseEther(String(amount)), balance = await provider.getBalance(signer.address);
+  if (units <= 0n || balance < units) throw new Error("Saldo BNB insufficiente.");
+  return (await signer.sendTransaction({ to: ethers.getAddress(to), value: units })).hash;
+}
+
+async function sendAdminTronTransfer({ asset, from, to, amount }) {
+  const key = String(process.env.TRON_USDT_PRIVATE_KEY || "").trim().replace(/^0x/i, "");
+  const host = (process.env.TRON_FULL_HOST || "https://api.trongrid.io").replace(/\/$/, ""), headers = {};
+  if (process.env.TRON_API_KEY) headers["TRON-PRO-API-KEY"] = process.env.TRON_API_KEY;
+  const tron = new TronWeb({ fullHost: host, privateKey: key, headers }), signerAddress = tron.address.fromPrivateKey(key);
+  await assertSignerMatchesPlatformAddress("TRC20", signerAddress);
+  if (!sameAddress(signerAddress, from) || !TronWeb.isAddress(to)) throw new Error("Wallet sorgente o destinazione TRON non valido.");
+  if (asset === "USDT") {
+    const contract = await tron.contract().at(process.env.TRON_USDT_CONTRACT || TRON_USDT_DEFAULT);
+    const decimals = Number(await contract.decimals().call()), units = platformTransferUnits(amount, decimals);
+    if (units <= 0n || BigInt(await contract.balanceOf(signerAddress).call()) < units) throw new Error("Saldo USDT insufficiente.");
+    const sent = await contract.transfer(to, units.toString()).send({ feeLimit: Number(process.env.TRON_FEE_LIMIT_SUN || 100000000) });
+    const hash = cleanHash(typeof sent === "string" ? sent : sent?.txid || sent?.txID || sent?.transaction?.txID || "");
+    if (!/^[a-fA-F0-9]{64}$/.test(hash)) throw new Error("Il provider TRON non ha restituito il TX hash.");
+    return hash;
+  }
+  if (asset !== "TRX") throw new Error("Asset non supportato su TRON.");
+  const units = platformTransferUnits(amount, 6);
+  if (units <= 0n || units > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("Importo TRX non valido.");
+  const transaction = await tron.transactionBuilder.sendTrx(to, Number(units), signerAddress);
+  const signed = await tron.trx.sign(transaction, key), result = await tron.trx.sendRawTransaction(signed);
+  const hash = cleanHash(result?.txid || result?.txID || signed?.txID || "");
+  if (result?.result !== true || !/^[a-fA-F0-9]{64}$/.test(hash)) throw new Error("Il provider TRON non ha accettato la transazione.");
+  return hash;
+}
+
+async function sendAdminBtcTransfer({ from, to, amount }) {
+  const { keyPair, source } = await getBtcSigner();
+  if (!sameAddress(source.address, from)) throw new Error("Il wallet sorgente BTC non corrisponde al signer attivo.");
+  bitcoin.address.toOutputScript(to, bitcoin.networks.bitcoin);
+  const sats = Number(platformTransferUnits(amount, 8));
+  if (!Number.isSafeInteger(sats) || sats < 546) throw new Error("Il trasferimento BTC minimo è 0,00000546 BTC.");
+  const base = (process.env.BTC_API_BASE || BTC_API_DEFAULT).replace(/\/$/, "");
+  const [utxos, feeData] = await Promise.all([cryptoJson(base + "/address/" + encodeURIComponent(source.address) + "/utxo"), cryptoJson(base + "/v1/fees/recommended")]);
+  const feeRate = Math.max(1, Math.ceil(Number(feeData.fastestFee || feeData.halfHourFee || 5)));
+  const available = (utxos || []).filter(item => item.status?.confirmed === true && Number(item.value) > 0).sort((a,b) => Number(b.value)-Number(a.value));
+  const selected = []; let total = 0, fee = 0;
+  for (const item of available) { selected.push(item); total += Number(item.value); fee = Math.ceil((10 + selected.length * 68 + 2 * 31) * feeRate); if (total >= sats + fee || selected.length >= 100) break; }
+  if (total < sats + fee) throw new Error("Saldo BTC confermato insufficiente per importo e commissione miner.");
+  const psbt = new bitcoin.Psbt({ network: bitcoin.networks.bitcoin });
+  for (const item of selected) psbt.addInput({ hash: item.txid, index: Number(item.vout), witnessUtxo: { script: source.output, value: Number(item.value) } });
+  psbt.addOutput({ address: to, value: sats });
+  const change = total - sats - fee; if (change >= 546) psbt.addOutput({ address: source.address, value: change });
+  psbt.signAllInputs(keyPair); psbt.finalizeAllInputs();
+  const response = await fetch(base + "/tx", { method: "POST", headers: { "content-type": "text/plain" }, body: psbt.extractTransaction().toHex(), signal: AbortSignal.timeout(20000) });
+  const hash = (await response.text()).trim();
+  if (!response.ok || !/^[a-fA-F0-9]{64}$/.test(hash)) throw new Error("Il broadcaster BTC non ha accettato la transazione.");
+  return hash;
+}
+
+const adminWalletTransferLocks = new Set();
+async function adminPlatformWalletTransfer(request, env) {
+  const actor = await adminAccess(request, env, "fullPanel");
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  if (String(process.env.CRYPTO_AUTOMATION_ENABLED || "").toLowerCase() !== "true") return Response.json({ error: "L'automazione crypto deve essere abilitata prima di trasferire fondi." }, { status: 409 });
+  const body = await request.json().catch(() => ({}));
+  const network = String(body.network || ""), asset = String(body.asset || ""), from = String(body.from || "").trim(), to = String(body.to || "").trim(), amount = String(body.amount || "").trim(), requestId = String(body.requestId || "").trim();
+  const supported = { BNB: ["USDT", "BNB"], TRC20: ["USDT", "TRX"], BTC: ["BTC"] };
+  if (!supported[network] || !supported[network].includes(asset)) return bad("Rete o asset non supportato.");
+  if (!(Number(amount) > 0) || !Number.isFinite(Number(amount)) || Number(amount) > 1000000000000 || requestId.length < 12 || requestId.length > 80) return bad("Importo o identificativo operazione non valido.");
+  const pool = addressPoolForNetwork(await readDepositAddresses(env), network);
+  if (!pool.some(address => sameAddress(address, from)) || !pool.some(address => sameAddress(address, to)) || sameAddress(from, to)) return bad("Sorgente e destinazione devono essere wallet configurati sulla stessa rete.");
+  let signerAddress; try { signerAddress = await configuredPlatformSignerAddress(network); } catch (error) { return Response.json({ error: error.message }, { status: 409 }); }
+  if (!sameAddress(from, signerAddress)) return Response.json({ error: "Il wallet sorgente non corrisponde al signer attivo." }, { status: 409 });
+  const lockKey = network + ":" + from.toLowerCase();
+  if (adminWalletTransferLocks.has(lockKey)) return Response.json({ error: "È già in corso un trasferimento da questo wallet." }, { status: 409 });
+  const key = "admin_wallet_transfer:" + requestId, operation = { requestId, adminId: actor.id, network, asset, from, to, amount, status: "broadcasting", createdAt: Date.now() };
+  const reserved = await env.DB.prepare("INSERT OR IGNORE INTO platform_config(config_key, config_value) VALUES(?, ?)").bind(key, JSON.stringify(operation)).run();
+  if (!(reserved.meta?.changes > 0)) return Response.json({ error: "Operazione già inviata o elaborata." }, { status: 409 });
+  adminWalletTransferLocks.add(lockKey);
+  try {
+    const txHash = network === "BNB" ? await sendAdminBnbTransfer({ asset, from, to, amount }) : network === "TRC20" ? await sendAdminTronTransfer({ asset, from, to, amount }) : await sendAdminBtcTransfer({ from, to, amount });
+    operation.status = "broadcast"; operation.txHash = txHash; operation.broadcastAt = Date.now();
+    try { await env.DB.prepare("UPDATE platform_config SET config_value = ? WHERE config_key = ?").bind(JSON.stringify(operation), key).run(); } catch (auditError) { console.error("Transfer broadcast but audit update failed:", auditError); }
+    return Response.json({ ok: true, txHash, network, asset, amount, from, to, status: "broadcast" });
+  } catch (error) {
+    operation.status = "failed_or_unconfirmed"; operation.error = String(error?.message || "Transfer failed").slice(0, 240); operation.finishedAt = Date.now();
+    try { await env.DB.prepare("UPDATE platform_config SET config_value = ? WHERE config_key = ?").bind(JSON.stringify(operation), key).run(); } catch (auditError) { console.error("Could not save platform wallet transfer state:", auditError); }
+    return Response.json({ error: operation.error, retryWarning: "Prima di riprovare, verifica la transazione sull'explorer." }, { status: 502 });
+  } finally { adminWalletTransferLocks.delete(lockKey); }
+}
+
 async function saveAdminDepositAddresses(request, env) {
   const operator = await privilegedAdminActor(request, env);
   if (!operator) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
