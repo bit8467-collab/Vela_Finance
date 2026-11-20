@@ -586,6 +586,11 @@
             <label for="commission-early-close">Early plan closure fee (%)</label><input id="commission-early-close" type="number" min="0" max="100" step="0.01" required>
             <label for="commission-investment-withholding">Plan investment withholding (%)</label><input id="commission-investment-withholding" type="number" min="0" max="100" step="0.01" required>
             <label for="commission-simple-earn-withholding">Simple Earn withholding (%)</label><input id="commission-simple-earn-withholding" type="number" min="0" max="100" step="0.01" required>
+            <h3>Rates for users with no recorded earnings</h3>
+            <label for="commission-no-earnings-early-close">Early plan closure fee (%)</label><input id="commission-no-earnings-early-close" type="number" min="0" max="100" step="0.01" required>
+            <label for="commission-no-earnings-withdraw-deposit">Withdrawal · deposit balance (%)</label><input id="commission-no-earnings-withdraw-deposit" type="number" min="0" max="50" step="0.01" required>
+            <label for="commission-no-earnings-withdraw-earnings">Withdrawal · earnings balance (%)</label><input id="commission-no-earnings-withdraw-earnings" type="number" min="0" max="50" step="0.01" required>
+            <label for="commission-no-earnings-withdraw-released">Withdrawal · released capital (%)</label><input id="commission-no-earnings-withdraw-released" type="number" min="0" max="50" step="0.01" required>
             <button class="primary-button" id="save-commission-settings" type="submit">Save commissions</button>
             <p class="payment-admin-config-status" id="commission-settings-status" role="status" aria-live="polite"></p>
           </form>

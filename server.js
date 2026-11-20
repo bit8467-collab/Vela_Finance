@@ -19,7 +19,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const DEFAULT_COMMISSION_RATES = Object.freeze({ withdrawalDepositPercent: 8, withdrawalEarningsPercent: 8, withdrawalReleasedPercent: 25, earlyClosePercent: 35, investmentWithholdingPercent: 20, simpleEarnWithholdingPercent: 20 });
-const COMMISSION_CONFIG_KEYS = Object.freeze({ withdrawalDepositPercent: 'commission_withdrawal_deposit_pct', withdrawalEarningsPercent: 'commission_withdrawal_earnings_pct', withdrawalReleasedPercent: 'commission_withdrawal_released_pct', earlyClosePercent: 'commission_early_close_pct', investmentWithholdingPercent: 'commission_investment_withholding_pct', simpleEarnWithholdingPercent: 'commission_simple_earn_withholding_pct' });
+const COMMISSION_CONFIG_KEYS = Object.freeze({ withdrawalDepositPercent: 'commission_withdrawal_deposit_pct', withdrawalEarningsPercent: 'commission_withdrawal_earnings_pct', withdrawalReleasedPercent: 'commission_withdrawal_released_pct', earlyClosePercent: 'commission_early_close_pct', investmentWithholdingPercent: 'commission_investment_withholding_pct', simpleEarnWithholdingPercent: 'commission_simple_earn_withholding_pct', noEarningsWithdrawalDepositPercent: 'commission_no_earnings_withdrawal_deposit_pct', noEarningsWithdrawalEarningsPercent: 'commission_no_earnings_withdrawal_earnings_pct', noEarningsWithdrawalReleasedPercent: 'commission_no_earnings_withdrawal_released_pct', noEarningsEarlyClosePercent: 'commission_no_earnings_early_close_pct' });
 const AUTO_APPROVAL_DELAYS_HOURS = Object.freeze([0, 1, 6, 12, 24, 48]);
 
 const PROMOTER_PACKAGE_TIERS = Object.freeze({
@@ -1498,7 +1498,11 @@ const workerHandler = {
       if (method === "POST" && pathName === "/api/verification/verify-otp") return await verifyAccountOtpDirect(request, env);
       if (method === "POST" && pathName === "/api/logout") return await logout(request, env);
       if (method === "GET" && pathName === "/api/me") return await me(request, env);
-      if (method === "GET" && pathName === "/api/commission-rates") return Response.json(await readCommissionRates(env));
+      if (method === "GET" && pathName === "/api/commission-rates") {
+        const rates = await readCommissionRates(env), user = await sessionUser(request, env);
+        if (!user) return Response.json(rates);
+        return Response.json({ ...rates, hasEarned: await userHasEverEarned(env, user.id) });
+      }
       if (method === "GET" && pathName === "/api/notifications") return await getNotifications(request, env);
       if (method === "POST" && pathName === "/api/notifications/read") return await markNotificationsRead(request, env);
       if (method === "GET" && pathName === "/api/support/current") return await supportCurrent(request, env);
@@ -3303,7 +3307,8 @@ async function closeMarketPositionEarly(request, env) {
   const quotes = await currentMarketQuotes(positionElectricityMarket(position));
   const value = Number(marketPositionValue(position, quotes).toFixed(3));
   if (!(value > 0)) return bad('Il valore di riferimento non è disponibile per la chiusura.');
-  const earlyClosePercent = (await readCommissionRates(env)).earlyClosePercent;
+  const closeRates = await readCommissionRates(env);
+  const earlyClosePercent = (await userHasEverEarned(env, user.id)) ? closeRates.earlyClosePercent : closeRates.noEarningsEarlyClosePercent;
   const fee = Number((value * earlyClosePercent / 100).toFixed(3));
   const net = Number((value - fee).toFixed(3));
   const now = Date.now();
@@ -3387,7 +3392,11 @@ async function validateWithdrawal(env, user, body) {
 
   if (!address || address === "Indirizzo non specificato dall'utente") return bad("Collega un indirizzo di prelievo per la rete selezionata nel profilo.");
   const chargedAmount = Number(amount.toFixed(3));
-  const commissionRates = await readCommissionRates(env); const feeRate = (source === 'released' ? commissionRates.withdrawalReleasedPercent : source === 'deposit' ? commissionRates.withdrawalDepositPercent : commissionRates.withdrawalEarningsPercent) / 100;
+  const commissionRates = await readCommissionRates(env);
+  const hasEarnedBefore = await userHasEverEarned(env, user.id);
+  const standardWithdrawalRate = source === 'released' ? commissionRates.withdrawalReleasedPercent : source === 'deposit' ? commissionRates.withdrawalDepositPercent : commissionRates.withdrawalEarningsPercent;
+  const noEarningsWithdrawalRate = source === 'released' ? commissionRates.noEarningsWithdrawalReleasedPercent : source === 'deposit' ? commissionRates.noEarningsWithdrawalDepositPercent : commissionRates.noEarningsWithdrawalEarningsPercent;
+  const feeRate = (hasEarnedBefore ? standardWithdrawalRate : noEarningsWithdrawalRate) / 100;
   const feeAmount = Number((chargedAmount * feeRate).toFixed(3));
   const payoutAmount = Number((chargedAmount - feeAmount).toFixed(3));
   return { amount: payoutAmount, feeAmount, chargedAmount, net, address, source };
@@ -3869,15 +3878,29 @@ async function readAutomaticApprovalDelayHours(env) {
   const value = Number(row?.config_value);
   return AUTO_APPROVAL_DELAYS_HOURS.includes(value) ? value : 0;
 }
+const NO_EARNINGS_RATE_FALLBACKS = Object.freeze({ noEarningsWithdrawalDepositPercent: 'withdrawalDepositPercent', noEarningsWithdrawalEarningsPercent: 'withdrawalEarningsPercent', noEarningsWithdrawalReleasedPercent: 'withdrawalReleasedPercent', noEarningsEarlyClosePercent: 'earlyClosePercent' });
+function commissionRateMaximum(field) { return field.toLowerCase().includes('earlyclosepercent') || field === 'investmentWithholdingPercent' || field === 'simpleEarnWithholdingPercent' ? 100 : 50; }
+async function userHasEverEarned(env, userId) {
+  const row = await env.DB.prepare("SELECT CASE WHEN " +
+    "COALESCE((SELECT total_earned FROM wallets WHERE user_id = ?), 0) > 0.0005 OR " +
+    "COALESCE((SELECT earnings FROM wallets WHERE user_id = ?), 0) > 0.0005 OR " +
+    "EXISTS (SELECT 1 FROM market_position_redemptions WHERE user_id = ? AND amount > 0.0005) OR " +
+    "EXISTS (SELECT 1 FROM simple_earn_positions WHERE user_id = ? AND interest_paid > 0.0005) OR " +
+    "EXISTS (SELECT 1 FROM market_positions WHERE user_id = ? AND ((status = 'matured' AND last_value > amount + 0.0005) OR (status = 'early_closed' AND last_value - early_close_fee > amount + 0.0005))) OR " +
+    "EXISTS (SELECT 1 FROM investments WHERE user_id = ? AND (credited > 0.0005 OR (active = 1 AND amount * rate / 100 * MIN(days, MAX(0, (? - created) / 86400000.0)) > 0.0005))) " +
+    "THEN 1 ELSE 0 END AS has_earned").bind(userId, userId, userId, userId, userId, userId, Date.now()).first();
+  return Number(row?.has_earned) === 1;
+}
 async function readCommissionRates(env) {
   const keys = Object.values(COMMISSION_CONFIG_KEYS);
   const result = await env.DB.prepare("SELECT config_key, config_value FROM platform_config WHERE config_key IN (" + keys.map(() => "?").join(",") + ")").bind(...keys).all();
   const stored = new Map((result.results || []).map(row => [row.config_key, Number(row.config_value)]));
   const rates = {};
   for (const [field, key] of Object.entries(COMMISSION_CONFIG_KEYS)) {
-    const value = stored.get(key);
-    const maxValue = field === "earlyClosePercent" || field === "investmentWithholdingPercent" || field === "simpleEarnWithholdingPercent" ? 100 : 50;
-    rates[field] = Number.isFinite(value) && value >= 0 && value <= maxValue ? value : DEFAULT_COMMISSION_RATES[field];
+    const value = stored.get(key), fallbackField = NO_EARNINGS_RATE_FALLBACKS[field];
+    const fallback = fallbackField ? rates[fallbackField] : DEFAULT_COMMISSION_RATES[field];
+    const maxValue = commissionRateMaximum(field);
+    rates[field] = Number.isFinite(value) && value >= 0 && value <= maxValue ? value : fallback;
   }
   return rates;
 }
@@ -3945,7 +3968,7 @@ async function saveAdminCommissionSettings(request, env) {
   for (const field of Object.keys(COMMISSION_CONFIG_KEYS)) {
     if (!Object.prototype.hasOwnProperty.call(body, field)) continue;
     const value = Number(body[field]);
-    const maxValue = field === "earlyClosePercent" || field === "investmentWithholdingPercent" || field === "simpleEarnWithholdingPercent" ? 100 : 50;
+    const maxValue = commissionRateMaximum(field);
     if (!Number.isFinite(value) || value < 0 || value > maxValue || Math.abs(Math.round(value * 100) - value * 100) > 1e-8) return bad("Le percentuali devono essere comprese nei limiti consentiti, con massimo due decimali.");
     next[field] = value;
   }
