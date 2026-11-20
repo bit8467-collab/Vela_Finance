@@ -1534,6 +1534,7 @@ const workerHandler = {
       if (method === "POST" && pathName === "/api/admin/antifraud/delete") return await deleteAntifraudEvent(request, env);
       if (method === "POST" && pathName === "/api/admin/antifraud/clear") return await clearAntifraudHistory(request, env);
       if (method === "GET" && pathName === "/api/admin/backup/export") return await adminDatabaseBackup(request, env);
+      if (method === "GET" && pathName === "/api/admin/financial-control") return await getAdminFinancialControl(request, env);
       if (method === "GET" && pathName === "/api/admin/transactions") return await adminTransactions(request, env);
       if (method === "GET" && pathName === "/api/admin/ledger") return await adminGlobalLedger(request, env);
        if (method === "GET" && pathName === "/api/admin/password-reset-requests") return await listPasswordResetRequests(request, env);
@@ -3340,13 +3341,12 @@ async function adminDatabaseBackup(request, env) {
   });
 }
 
-async function adminTransactions(request, env) {
+async function getAdminFinancialControl(request, env) {
   const user = await adminActor(request, env);
   if (!user) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
   const permissions = await readAdminPermissions(user, env);
-  const deposits = permissions.requests ? (await env.DB.prepare("SELECT d.*, u.username FROM deposits d JOIN users u ON u.id = d.user_id WHERE d.status = 'pending' ORDER BY d.date ASC").all()).results : [];
-  const withdrawals = permissions.requests ? (await env.DB.prepare("SELECT w.*, u.username FROM withdrawals w JOIN users u ON u.id = w.user_id WHERE w.status = 'pending' ORDER BY w.date ASC").all()).results : [];
-  const financial = permissions.requests ? await env.DB.prepare(
+  if (!permissions.requests) return Response.json({ error: "Permessi richiesti." }, { status: 403 });
+  const financial = await env.DB.prepare(
     "SELECT " +
     "(SELECT COUNT(*) FROM users) AS platform_accounts, " +
     "(SELECT COUNT(*) FROM deposits WHERE status = 'approved') AS inflow_count, " +
@@ -3361,8 +3361,16 @@ async function adminTransactions(request, env) {
     "(SELECT COALESCE(SUM(deposit + earnings + released), 0) FROM wallets) + " +
     "(SELECT COALESCE(SUM(amount), 0) FROM investments WHERE active = 1) + " +
     "(SELECT COALESCE(SUM(last_value), 0) FROM market_positions WHERE status IN ('active', 'paused', 'stop_loss')) AS global_volume"
-  ).first() : null;
-  
+  ).first();
+  return Response.json(financial || {}, { headers: { "Cache-Control": "no-store" } });
+}
+
+async function adminTransactions(request, env) {
+  const user = await adminActor(request, env);
+  if (!user) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const permissions = await readAdminPermissions(user, env);
+  const deposits = permissions.requests ? (await env.DB.prepare("SELECT d.*, u.username FROM deposits d JOIN users u ON u.id = d.user_id WHERE d.status = 'pending' ORDER BY d.date ASC").all()).results : [];
+  const withdrawals = permissions.requests ? (await env.DB.prepare("SELECT w.*, u.username FROM withdrawals w JOIN users u ON u.id = w.user_id WHERE w.status = 'pending' ORDER BY w.date ASC").all()).results : [];
   const rawWalletChanges = (await env.DB.prepare(`
     SELECT r.id, r.user_id, r.net, r.old_address, r.new_address, r.created_at, r.status, u.username, u.identifier,
        EXISTS(SELECT 1 FROM user_withdrawal_addresses a WHERE a.net = r.net AND lower(a.address) = lower(r.new_address) AND a.user_id != r.user_id) AS address_conflict
@@ -3395,7 +3403,7 @@ async function adminTransactions(request, env) {
   const sensitiveActionVerifications = permissions.otp ? (await env.DB.prepare("SELECT r.user_id, r.action, r.payload_json, r.requested_at, r.otp_expires_at, u.username, u.identifier FROM sensitive_action_verifications r JOIN users u ON u.id = r.user_id WHERE r.consumed_at IS NULL AND r.issued_by IS NOT NULL").all()).results : [];
   const passwordResets = (await env.DB.prepare("SELECT r.user_id, r.requested_at, r.otp_expires_at, r.issued_at, u.username, u.identifier FROM password_reset_requests r JOIN users u ON u.id = r.user_id WHERE r.issued_by IS NOT NULL ORDER BY r.requested_at DESC").all()).results;
 
-  return Response.json({ deposits, withdrawals, financial, walletChanges, emailVerifications, sensitiveActionVerifications, passwordResets, operator: user.username, permissions });
+  return Response.json({ deposits, withdrawals, walletChanges, emailVerifications, sensitiveActionVerifications, passwordResets, operator: user.username, permissions });
 }
 
 async function adminGlobalLedger(request, env) {
@@ -4419,6 +4427,22 @@ app.post('/api/admin/balance-report-attachments', express.raw({ type: 'applicati
   } catch (err) {
     console.error('Balance report attachment upload failed:', err);
     res.status(500).json({ error: 'File upload failed.' });
+  }
+});
+
+app.get('/api/admin/financial-control', async (req, res) => {
+  try {
+    const fullUrl = req.protocol + '://' + req.get('host') + req.originalUrl;
+    const headers = new Headers(req.headers);
+    headers.delete('x-platform-client-ip');
+    if (req.ip) headers.set('x-platform-client-ip', String(req.ip));
+    const response = await workerHandler.fetch(new Request(fullUrl, { method: 'GET', headers }), env);
+    res.status(response.status);
+    response.headers.forEach((value, key) => res.setHeader(key, value));
+    res.send(await response.text());
+  } catch (error) {
+    console.error('Financial control API error:', error);
+    res.status(500).json({ error: 'Impossibile caricare il controllo finanziario.' });
   }
 });
 
