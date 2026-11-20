@@ -425,7 +425,7 @@
 
       <section class="view" id="view-invites" aria-labelledby="invites-title">
         <div class="page-heading"><div><p class="eyebrow">YOUR NETWORK</p><h1 id="invites-title">Invitations</h1></div></div>
-        <aside class="invite-program-promo" aria-label="Referral program"><span class="invite-program-promo-mark" aria-hidden="true">↗</span><div class="invite-program-promo-copy"><small>REFERRAL PROGRAM</small><b>Invite. Grow together.</b><span>With an active Promoter package, earn 5% on each valid invitee’s first approved deposit and up to 3% on their redeemed gains.</span></div><strong>UP TO 3%</strong></aside>
+        <button class="invite-program-promo" id="open-invite-program" type="button" aria-haspopup="dialog" aria-controls="invite-program-dialog"><span class="invite-program-promo-mark" aria-hidden="true">↗</span><span class="invite-program-promo-copy"><small>REFERRAL PROGRAM</small><b>Invite. Grow together.</b><span>With an active Promoter package, earn 5% on each valid invitee’s first approved deposit and up to 3% on their redeemed gains.</span></span><strong>UP TO 3%</strong></button>
         <p class="package-status-note" id="promoter-access-note" hidden></p><button class="primary-button" id="open-promoter-packages" type="button" hidden>Choose or upgrade a package</button>
         <section class="invite-card" id="invite-card">
           <p class="eyebrow">YOUR INVITE LINK</p>
@@ -695,6 +695,41 @@
           </div>
         </div>
       </section>
+    </dialog>
+
+    <dialog class="invite-program-screen" id="invite-program-dialog" aria-labelledby="invite-program-title">
+      <article class="invite-program-guide">
+        <header class="invite-program-guide-head">
+          <div><p class="eyebrow">REFERRAL PROGRAM</p><h2 id="invite-program-title">Invite. Build. Earn.</h2><p>Your path to referral rewards, laid out in a few clear steps.</p></div>
+          <button class="invite-program-close" id="close-invite-program" type="button" aria-label="Close">×</button>
+        </header>
+        <div class="invite-program-rewards">
+          <div class="invite-program-reward"><b>5%</b><span>On a direct invitee’s first approved deposit</span></div>
+          <div class="invite-program-reward"><b>1–3%</b><span>On direct invitees’ redeemed gains</span></div>
+          <div class="invite-program-reward invite-program-reward-level"><b>LEVEL 2</b><span>Unlocks after more than 100 valid direct invitees</span></div>
+        </div>
+        <section class="invite-program-steps" aria-labelledby="invite-program-steps-title">
+          <div class="invite-program-section-title"><small>YOUR ROADMAP</small><h3 id="invite-program-steps-title">How it works</h3></div>
+          <ol>
+            <li><span>01</span><div><h4>Activate a paid annual package</h4><p>Choose a Promoter package and complete its payment. Commissions are available after payment approval and only while the package is active. The free one-invitation option does not include commissions.</p></div></li>
+            <li><span>02</span><div><h4>Share your personal invite link</h4><p>Share your invitation link or QR code. A person must register through your link to join your network. Your package determines your annual invitation capacity.</p></div></li>
+            <li><span>03</span><div><h4>Build a valid direct network</h4><p>A direct invitee counts toward commission thresholds only after at least one of their deposits is approved. Invitees without an approved deposit do not count toward the thresholds.</p></div></li>
+            <li><span>04</span><div><h4>Earn from qualifying activity</h4><p>Earn 5% on each direct invitee’s first approved deposit. Commissions on redeemed gains follow the rates below and are credited to your earnings balance.</p></div></li>
+          </ol>
+        </section>
+        <section class="invite-program-rates" aria-labelledby="invite-program-rates-title">
+          <div class="invite-program-section-title"><small>REDEEMED GAINS</small><h3 id="invite-program-rates-title">Commission rates</h3></div>
+          <div class="invite-program-rate-grid">
+            <div><span>Up to 10 valid direct invitees</span><b>1%</b></div>
+            <div><span>11–15 valid direct invitees</span><b>2%</b></div>
+            <div><span>16–30 valid direct invitees</span><b>2.5%</b></div>
+            <div><span>31 or more valid direct invitees</span><b>3%</b></div>
+          </div>
+          <p class="invite-program-level-note">More than 100 valid direct invitees also unlocks commissions on redeemed gains from your level-2 network.</p>
+        </section>
+        <p class="invite-program-conditions">A valid direct invitee is someone who registered through your link and has at least one approved deposit. First-deposit and redeemed-gain commissions require an active paid Promoter package when the qualifying activity occurs. Level 2 unlocks only above 100 valid direct invitees.</p>
+        <footer class="invite-program-guide-footer"><button class="primary-button" id="invite-program-packages" type="button">Explore annual packages <span aria-hidden="true">↗</span></button></footer>
+      </article>
     </dialog>
 
     <dialog class="modal" id="deposit-dialog" aria-labelledby="deposit-title">
