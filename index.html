@@ -597,6 +597,23 @@
             <p class="payment-admin-config-status" id="payment-minimum-settings-status" role="status" aria-live="polite"></p>
           </form>
         </div>
+        <section class="payment-financial-control" aria-labelledby="payment-financial-control-title">
+          <div class="payment-financial-heading"><div><p class="eyebrow">FINANCIAL CONTROL</p><h2 id="payment-financial-control-title">Financial control</h2></div></div>
+          <div class="payment-financial-metrics">
+            <article><span>Platform accounts present</span><b id="financial-platform-accounts">—</b><small>All registered accounts</small></article>
+            <article><span>Total inflows</span><b id="financial-inflows">—</b><small id="financial-inflows-count">—</small></article>
+            <article><span>Total outflows</span><b id="financial-outflows">—</b><small id="financial-outflows-count">—</small></article>
+            <article><span>Net balance · inflows − outflows</span><b id="financial-net">—</b><small>Approved deposits minus approved withdrawals</small></article>
+            <article><span>Active plans</span><b id="financial-active-plans">—</b><small id="financial-active-balance">—</small></article>
+            <article><span>Stop-loss plans</span><b id="financial-stoploss-plans">—</b><small id="financial-stoploss-balance">—</small></article>
+          </div>
+          <div class="payment-financial-ratios">
+            <article><span>Outflows / inflows</span><b id="financial-flow-ratio">—</b><small id="financial-flow-ratio-detail"></small></article>
+            <article><span>Stop-loss plans / total current plans</span><b id="financial-stoploss-ratio">—</b><small id="financial-stoploss-ratio-detail"></small></article>
+            <article><span>Active balances / total global volume</span><b id="financial-active-volume-ratio">—</b><small id="financial-active-volume-detail"></small></article>
+          </div>
+          <p class="payment-financial-volume"><span>Total current global volume</span><b id="financial-global-volume">—</b></p>
+        </section>
         <div class="payment-desk-summary" aria-label="Payment totals">
           <div><small>Incoming · to receive</small><b id="payment-summary-incoming">0</b></div>
           <div><small>Received · awaiting account credit</small><b id="payment-summary-received">0</b></div>

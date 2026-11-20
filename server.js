@@ -3346,6 +3346,22 @@ async function adminTransactions(request, env) {
   const permissions = await readAdminPermissions(user, env);
   const deposits = permissions.requests ? (await env.DB.prepare("SELECT d.*, u.username FROM deposits d JOIN users u ON u.id = d.user_id WHERE d.status = 'pending' ORDER BY d.date ASC").all()).results : [];
   const withdrawals = permissions.requests ? (await env.DB.prepare("SELECT w.*, u.username FROM withdrawals w JOIN users u ON u.id = w.user_id WHERE w.status = 'pending' ORDER BY w.date ASC").all()).results : [];
+  const financial = permissions.requests ? await env.DB.prepare(
+    "SELECT " +
+    "(SELECT COUNT(*) FROM users) AS platform_accounts, " +
+    "(SELECT COUNT(*) FROM deposits WHERE status = 'approved') AS inflow_count, " +
+    "(SELECT COALESCE(SUM(amount), 0) FROM deposits WHERE status = 'approved') AS inflow_amount, " +
+    "(SELECT COUNT(*) FROM withdrawals WHERE status = 'approved') AS outflow_count, " +
+    "(SELECT COALESCE(SUM(amount), 0) FROM withdrawals WHERE status = 'approved') AS outflow_amount, " +
+    "(SELECT COUNT(*) FROM investments WHERE active = 1) + (SELECT COUNT(*) FROM market_positions WHERE status = 'active') AS active_plan_count, " +
+    "(SELECT COALESCE(SUM(amount), 0) FROM investments WHERE active = 1) + (SELECT COALESCE(SUM(last_value), 0) FROM market_positions WHERE status = 'active') AS active_plan_balance, " +
+    "(SELECT COUNT(*) FROM market_positions WHERE status IN ('paused', 'stop_loss')) AS stop_loss_plan_count, " +
+    "(SELECT COALESCE(SUM(last_value), 0) FROM market_positions WHERE status IN ('paused', 'stop_loss')) AS stop_loss_plan_balance, " +
+    "(SELECT COUNT(*) FROM investments WHERE active = 1) + (SELECT COUNT(*) FROM market_positions WHERE status IN ('active', 'paused', 'stop_loss')) AS current_plan_count, " +
+    "(SELECT COALESCE(SUM(deposit + earnings + released), 0) FROM wallets) + " +
+    "(SELECT COALESCE(SUM(amount), 0) FROM investments WHERE active = 1) + " +
+    "(SELECT COALESCE(SUM(last_value), 0) FROM market_positions WHERE status IN ('active', 'paused', 'stop_loss')) AS global_volume"
+  ).first() : null;
   
   const rawWalletChanges = (await env.DB.prepare(`
     SELECT r.id, r.user_id, r.net, r.old_address, r.new_address, r.created_at, r.status, u.username, u.identifier,
@@ -3379,7 +3395,7 @@ async function adminTransactions(request, env) {
   const sensitiveActionVerifications = permissions.otp ? (await env.DB.prepare("SELECT r.user_id, r.action, r.payload_json, r.requested_at, r.otp_expires_at, u.username, u.identifier FROM sensitive_action_verifications r JOIN users u ON u.id = r.user_id WHERE r.consumed_at IS NULL AND r.issued_by IS NOT NULL").all()).results : [];
   const passwordResets = (await env.DB.prepare("SELECT r.user_id, r.requested_at, r.otp_expires_at, r.issued_at, u.username, u.identifier FROM password_reset_requests r JOIN users u ON u.id = r.user_id WHERE r.issued_by IS NOT NULL ORDER BY r.requested_at DESC").all()).results;
 
-  return Response.json({ deposits, withdrawals, walletChanges, emailVerifications, sensitiveActionVerifications, passwordResets, operator: user.username, permissions });
+  return Response.json({ deposits, withdrawals, financial, walletChanges, emailVerifications, sensitiveActionVerifications, passwordResets, operator: user.username, permissions });
 }
 
 async function adminGlobalLedger(request, env) {

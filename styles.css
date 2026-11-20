@@ -3980,3 +3980,21 @@ body.asset-catalog-open{overflow:hidden}
   scroll-snap-align:start;
   scroll-snap-stop:always;
 }
+
+#admin-payment-desk .payment-financial-control { display:grid; gap:14px; min-width:0; padding:16px; border:1px solid var(--line); border-radius:14px; background:var(--surface); }
+#admin-payment-desk .payment-financial-heading h2 { margin:0; font-size:18px; }
+#admin-payment-desk .payment-financial-heading .eyebrow { margin:0 0 4px; }
+#admin-payment-desk .payment-financial-metrics,
+#admin-payment-desk .payment-financial-ratios { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
+#admin-payment-desk .payment-financial-metrics article,
+#admin-payment-desk .payment-financial-ratios article { display:grid; align-content:start; gap:5px; min-width:0; padding:11px; border:1px solid var(--line); border-radius:10px; background:var(--surface-2); }
+#admin-payment-desk .payment-financial-metrics span,
+#admin-payment-desk .payment-financial-ratios span,
+#admin-payment-desk .payment-financial-volume span { color:var(--muted); font-size:10px; line-height:1.4; }
+#admin-payment-desk .payment-financial-metrics b,
+#admin-payment-desk .payment-financial-ratios b,
+#admin-payment-desk .payment-financial-volume b { font-size:16px; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+#admin-payment-desk .payment-financial-metrics small,
+#admin-payment-desk .payment-financial-ratios small { color:var(--muted); font-size:9px; line-height:1.4; }
+#admin-payment-desk .payment-financial-volume { display:flex; justify-content:space-between; align-items:center; gap:12px; margin:0; padding-top:10px; border-top:1px solid var(--line); }
+@media(max-width:640px) { #admin-payment-desk .payment-financial-control { padding:11px; } #admin-payment-desk .payment-financial-metrics,#admin-payment-desk .payment-financial-ratios { grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; } #admin-payment-desk .payment-financial-metrics article,#admin-payment-desk .payment-financial-ratios article { padding:9px; } #admin-payment-desk .payment-financial-metrics b,#admin-payment-desk .payment-financial-ratios b { font-size:13px; } }
