@@ -2382,14 +2382,126 @@ function marketPositionValue(position, quotes) {
   return Number((Number(position.amount) * (multiplier || 1)).toFixed(3));
 }
 
+const autoRedeemHistoryData = new Map();
+const autoRedeemHistoryFetches = new Map();
+async function loadAutoRedeemHistory(market) {
+  const selectedMarket = normalizeElectricityMarket(market);
+  const now = Date.now();
+  const cached = autoRedeemHistoryData.get(selectedMarket);
+  if (cached && now - cached.at < 300000) return cached.data;
+  let task = autoRedeemHistoryFetches.get(selectedMarket);
+  if (!task) {
+    task = (async () => {
+      try {
+        const url = new URL('https://internal.local/api/asset-history');
+        url.searchParams.set('electricity', selectedMarket);
+        const response = await marketApi.fetch(new Request(url));
+        if (!response.ok) return null;
+        const data = await response.json();
+        if (!data || typeof data !== 'object') return null;
+        autoRedeemHistoryData.set(selectedMarket, { at: Date.now(), data });
+        return data;
+      } catch (error) {
+        console.warn('Automatic redemption history unavailable:', error?.message || error);
+        return null;
+      }
+    })().finally(() => autoRedeemHistoryFetches.delete(selectedMarket));
+    autoRedeemHistoryFetches.set(selectedMarket, task);
+  }
+  return task;
+}
+
+async function replayMissedAutoRedemptions(env, userId, position, now, history) {
+  if (!history || Number(position.auto_redeem_enabled) !== 1 || position.status !== 'active') return;
+  const autoPct = Number(position.auto_redeem_pct || 10);
+  const amount = Number(position.amount);
+  if (!(amount > 0 && autoPct >= 1 && autoPct <= 100)) return;
+  let allocations = [], basis = {};
+  try { allocations = JSON.parse(position.allocations_json || '[]'); } catch { return; }
+  try { basis = JSON.parse(position.entry_quotes_json || '{}'); } catch { return; }
+  if (!allocations.length) return;
+  const segmentStart = Math.max(Number(position.basis_updated_at) || Number(position.created_at) || 0, Number(position.created_at) || 0);
+  const maturity = calendarMaturity(Number(position.created_at), Number(position.months));
+  const through = Math.min(now, maturity);
+  if (!(segmentStart > 0 && segmentStart < through)) return;
+
+  const pointsByAsset = new Map();
+  for (const key of allocations.map(([asset]) => asset)) {
+    const points = new Map();
+    for (const point of history.histories?.[key] || []) {
+      const time = Number(point?.time), value = Number(point?.value);
+      if (time > segmentStart && time <= through && value > 0) points.set(time, value);
+    }
+    for (const point of history.intraday?.[key] || []) {
+      const time = Number(point?.time), value = Number(point?.value);
+      if (time > segmentStart && time <= through && value > 0) points.set(time, value);
+    }
+    pointsByAsset.set(key, points);
+  }
+  const timeline = new Map();
+  for (const [key, points] of pointsByAsset) {
+    for (const [time, value] of points) {
+      if (!timeline.has(time)) timeline.set(time, []);
+      timeline.get(time).push([key, value]);
+    }
+  }
+  if (!timeline.size) return;
+  const prices = Object.fromEntries(allocations.map(([key]) => [key, Number(basis[key]) || 0]));
+  const ordered = [...timeline.entries()].sort((a, b) => a[0] - b[0]);
+  for (const [eventAt, updates] of ordered) {
+    for (const [key, price] of updates) prices[key] = price;
+    let multiplier = 0, ready = true;
+    for (const [key, weight] of allocations) {
+      const initial = Number(basis[key]), current = Number(prices[key]);
+      if (!(initial > 0 && current > 0)) { ready = false; break; }
+      multiplier += Number(weight) / 100 * current / initial;
+    }
+    if (!ready) continue;
+    const referenceValue = Number((amount * (multiplier || 1)).toFixed(3));
+    const stop = amount * (1 - Number(position.stop_loss_pct) / 100);
+    if (referenceValue < amount * (1 + autoPct / 100) || referenceValue <= stop) continue;
+    const gain = Number(Math.max(0, referenceValue - amount).toFixed(3));
+    if (gain < 0.001) continue;
+
+    const nextBasis = { ...basis, __electricityMarket: positionElectricityMarket(position) };
+    for (const [key] of allocations) nextBasis[key] = prices[key];
+    const basisJson = JSON.stringify(nextBasis), transactionId = makeToken();
+    const referralStatements = await referralRedemptionCommissionStatements(
+      env, userId, gain, 'market-auto:' + position.id + ':' + transactionId, now,
+      'EXISTS (SELECT 1 FROM market_position_redemptions WHERE user_id=? AND event_id=?)', [userId, transactionId]
+    );
+    const redemption = await env.DB.batch([
+      env.DB.prepare("UPDATE market_positions SET last_value = ?, entry_quotes_json = ?, last_redemption_id = ?, basis_updated_at = ?, auto_add_anchor_value = ? WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND entry_quotes_json = ? AND auto_redeem_enabled = 1 AND auto_redeem_pct = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ?)")
+        .bind(amount, basisJson, transactionId, eventAt, amount, position.id, userId, Number(position.last_value), position.entry_quotes_json, autoPct, userId),
+      env.DB.prepare("INSERT INTO market_position_redemptions (position_id, user_id, event_id, amount, reference_value, created_at, segment_start_at, basis_quotes_json) SELECT ?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND last_redemption_id = ?)")
+        .bind(position.id, userId, transactionId, gain, referenceValue, now, Number(position.basis_updated_at || position.created_at), position.entry_quotes_json || '{}', position.id, userId, amount, transactionId),
+      env.DB.prepare("UPDATE wallets SET earnings = earnings + ? WHERE user_id = ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND last_redemption_id = ?)")
+        .bind(gain, userId, position.id, userId, amount, transactionId),
+      env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND last_redemption_id = ?)")
+        .bind(userId, 'Plan gains redeemed', gain.toFixed(3) + ' USDT auto-redeemed from recovered market history. The invested principal remains in the plan.', now, position.id, userId, amount, transactionId),
+      ...referralStatements,
+    ]);
+    if (!(redemption[0]?.meta?.changes > 0)) break;
+    position.last_value = amount;
+    position.entry_quotes_json = basisJson;
+    position.last_redemption_id = transactionId;
+    position.basis_updated_at = eventAt;
+    position.auto_add_anchor_value = amount;
+    basis = nextBasis;
+  }
+}
+
 async function syncMarketPositions(env, userId) {
   const rows = (await env.DB.prepare("SELECT * FROM market_positions WHERE user_id = ? ORDER BY created_at DESC").bind(userId).all()).results || [];
   if (!rows.length) return [];
   const now = Date.now();
   const activeMarkets = [...new Set(rows.filter(row => ['active', 'paused'].includes(row.status)).map(positionElectricityMarket))];
   const marketQuotes = new Map(await Promise.all(activeMarkets.map(async market => [market, await currentMarketQuotes(market)])));
+  const autoRedeemMarkets = [...new Set(rows.filter(row => row.status === 'active' && Number(row.auto_redeem_enabled) === 1).map(positionElectricityMarket))];
+  const autoRedeemHistories = new Map(await Promise.all(autoRedeemMarkets.map(async market => [market, await loadAutoRedeemHistory(market)])));
   for (const row of rows) {
     if (!['active', 'paused'].includes(row.status)) continue;
+    if (row.status === 'active' && Number(row.auto_redeem_enabled) === 1) await replayMissedAutoRedemptions(env, userId, row, now, autoRedeemHistories.get(positionElectricityMarket(row)));
     const quotes = marketQuotes.get(positionElectricityMarket(row)) || {};
     const marketValue = marketPositionValue(row, quotes);
     const amount = Number(row.amount);
@@ -2425,7 +2537,7 @@ async function syncMarketPositions(env, userId) {
       if (status === 'active' && Number(row.auto_redeem_enabled) === 1 && autoPct >= 1 && value >= autoThreshold) {
         let allocation = [], basisReady = true;
         try { allocation = JSON.parse(row.allocations_json || '[]'); } catch { basisReady = false; }
-        const nextBasis = {};
+        const nextBasis = { __electricityMarket: positionElectricityMarket(row) };
         for (const [key] of allocation) {
           const price = Number(quotes[key]?.price);
           if (!(price > 0)) { basisReady = false; break; }
