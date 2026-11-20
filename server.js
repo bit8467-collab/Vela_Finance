@@ -1574,6 +1574,7 @@ const workerHandler = {
       if (method === "POST" && pathName === "/api/admin/payment-settings") return await saveAdminPaymentSettings(request, env);
       if (method === "GET" && pathName === "/api/admin/commission-settings") return await getAdminCommissionSettings(request, env);
       if (method === "POST" && pathName === "/api/admin/commission-settings") return await saveAdminCommissionSettings(request, env);
+      if (method === "POST" && pathName === "/api/admin/market-plans/sync") return await adminSyncAllMarketPlans(request, env);
       if (method === "GET" && pathName === "/api/admin/statistics") return await adminStatistics(request, env);
       if (method === "GET" && pathName === "/api/admin/users") return await adminUsers(request, env);
       if (method === "GET" && pathName === "/api/admin/operator-audit") return await adminOperatorAudit(request, env);
@@ -2601,6 +2602,30 @@ async function syncMarketPositions(env, userId) {
     status: row.status, createdAt: Number(row.created_at), closedAt: row.closed_at ? Number(row.closed_at) : null,
     allocations: (() => { try { return JSON.parse(row.allocations_json || '[]'); } catch { return []; } })(),
   }));
+}
+
+let adminMarketPlanSyncPromise = null;
+async function adminSyncAllMarketPlans(request, env) {
+  const actor = await adminAccess(request, env, "fullPanel");
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  if (adminMarketPlanSyncPromise) return Response.json({ ok: true, running: true });
+  adminMarketPlanSyncPromise = (async () => {
+    const owners = (await env.DB.prepare("SELECT user_id, COUNT(*) AS plan_count FROM market_positions WHERE status IN ('active','paused') GROUP BY user_id ORDER BY user_id").all()).results || [];
+    let syncedUsers = 0, syncedPlans = 0, failedUsers = 0;
+    for (const owner of owners) {
+      try {
+        await syncMarketPositions(env, owner.user_id);
+        syncedUsers += 1;
+        syncedPlans += Number(owner.plan_count || 0);
+      } catch (error) {
+        failedUsers += 1;
+        console.error("Admin market-plan synchronization failed for user:", owner.user_id, error?.message || error);
+      }
+    }
+    return { ok: true, users: syncedUsers, plans: syncedPlans, failedUsers };
+  })();
+  try { return Response.json(await adminMarketPlanSyncPromise); }
+  finally { adminMarketPlanSyncPromise = null; }
 }
 
 async function readDepositAddresses(env) {

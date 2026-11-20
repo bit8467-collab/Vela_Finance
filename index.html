@@ -599,6 +599,13 @@
         </div>
         <section class="payment-financial-control" aria-labelledby="payment-financial-control-title">
           <div class="payment-financial-heading"><div><p class="eyebrow">FINANCIAL CONTROL</p><h2 id="payment-financial-control-title">Financial control</h2></div></div>
+          <div class="admin-plan-sync-controls" aria-label="Active plan synchronization">
+            <button class="primary-button" id="admin-plan-sync-now" type="button">Sync all active plans</button>
+            <label class="admin-plan-sync-auto"><input id="admin-plan-sync-auto" type="checkbox"> Automatic</label>
+            <label class="admin-plan-sync-frequency">Every <input id="admin-plan-sync-interval" type="number" min="1" max="1440" step="1" value="5" inputmode="numeric"> minutes</label>
+            <span id="admin-plan-sync-status" role="status" aria-live="polite"></span>
+            <small>Automatic sync runs only while this admin session is open.</small>
+          </div>
           <div class="payment-financial-metrics">
             <article><span>Platform accounts present</span><b id="financial-platform-accounts">—</b><small>All registered accounts</small></article>
             <article><span>Total inflows</span><b id="financial-inflows">—</b><small id="financial-inflows-count">—</small></article>

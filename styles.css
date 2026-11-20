@@ -3984,6 +3984,12 @@ body.asset-catalog-open{overflow:hidden}
 #admin-payment-desk .payment-financial-control { display:grid; gap:14px; min-width:0; padding:16px; border:1px solid var(--line); border-radius:14px; background:var(--surface); }
 #admin-payment-desk .payment-financial-heading h2 { margin:0; font-size:18px; }
 #admin-payment-desk .payment-financial-heading .eyebrow { margin:0 0 4px; }
+#admin-payment-desk .admin-plan-sync-controls { display:flex; align-items:center; flex-wrap:wrap; gap:10px 14px; padding:11px; border:1px solid var(--line); border-radius:10px; background:var(--surface-2); }
+#admin-payment-desk .admin-plan-sync-controls label { display:inline-flex; align-items:center; gap:6px; color:var(--text); font-size:12px; }
+#admin-payment-desk .admin-plan-sync-controls input[type=checkbox] { accent-color:var(--accent); }
+#admin-payment-desk .admin-plan-sync-controls input[type=number] { width:70px; padding:6px 8px; border:1px solid var(--line); border-radius:7px; background:var(--surface); color:var(--text); }
+#admin-payment-desk #admin-plan-sync-status { flex:1 1 180px; color:var(--muted); font-size:11px; }
+#admin-payment-desk .admin-plan-sync-controls>small { flex-basis:100%; color:var(--muted); font-size:10px; }
 #admin-payment-desk .payment-financial-metrics,
 #admin-payment-desk .payment-financial-ratios { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
 #admin-payment-desk .payment-financial-metrics article,
