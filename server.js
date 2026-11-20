@@ -19,6 +19,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const DEFAULT_COMMISSION_RATES = Object.freeze({ withdrawalDepositPercent: 8, withdrawalEarningsPercent: 8, withdrawalReleasedPercent: 25, earlyClosePercent: 35, investmentWithholdingPercent: 20, simpleEarnWithholdingPercent: 20, noEarningsEarlyCloseThreshold: 0 });
+const COMMISSION_CLOSE_RANGES_KEY = 'commission_no_earnings_early_close_ranges';
 const COMMISSION_CONFIG_KEYS = Object.freeze({ withdrawalDepositPercent: 'commission_withdrawal_deposit_pct', withdrawalEarningsPercent: 'commission_withdrawal_earnings_pct', withdrawalReleasedPercent: 'commission_withdrawal_released_pct', earlyClosePercent: 'commission_early_close_pct', investmentWithholdingPercent: 'commission_investment_withholding_pct', simpleEarnWithholdingPercent: 'commission_simple_earn_withholding_pct', noEarningsWithdrawalDepositPercent: 'commission_no_earnings_withdrawal_deposit_pct', noEarningsWithdrawalEarningsPercent: 'commission_no_earnings_withdrawal_earnings_pct', noEarningsWithdrawalReleasedPercent: 'commission_no_earnings_withdrawal_released_pct', noEarningsEarlyClosePercent: 'commission_no_earnings_early_close_pct', noEarningsEarlyCloseThreshold: 'commission_no_earnings_early_close_threshold', noEarningsEarlyCloseBelowPercent: 'commission_no_earnings_early_close_below_pct', noEarningsEarlyCloseAtOrAbovePercent: 'commission_no_earnings_early_close_above_pct' });
 const AUTO_APPROVAL_DELAYS_HOURS = Object.freeze([0, 1, 6, 12, 24, 48]);
 
@@ -3313,7 +3314,9 @@ async function closeMarketPositionEarly(request, env) {
   const closeRates = await readCommissionRates(env);
   const planHasEarned = (await marketPositionHasEarned(env, user.id, position.id)) || value > Number(position.amount) + 0.0005;
   const amountThreshold = Number(closeRates.noEarningsEarlyCloseThreshold) || 0;
-  const earlyClosePercent = planHasEarned ? closeRates.earlyClosePercent : amountThreshold > 0 ? (Number(position.amount) < amountThreshold ? closeRates.noEarningsEarlyCloseBelowPercent : closeRates.noEarningsEarlyCloseAtOrAbovePercent) : closeRates.noEarningsEarlyClosePercent;
+  const investedAmount = Number(position.amount);
+  const matchingRange = (closeRates.noEarningsEarlyCloseRanges || []).find(range => investedAmount >= range.from && investedAmount <= range.to);
+  const earlyClosePercent = planHasEarned ? closeRates.earlyClosePercent : matchingRange ? matchingRange.percent : amountThreshold > 0 ? (investedAmount < amountThreshold ? closeRates.noEarningsEarlyCloseBelowPercent : closeRates.noEarningsEarlyCloseAtOrAbovePercent) : closeRates.noEarningsEarlyClosePercent;
   const fee = Number((value * earlyClosePercent / 100).toFixed(3));
   const net = Number((value - fee).toFixed(3));
   const now = Date.now();
@@ -3911,6 +3914,11 @@ async function readCommissionRates(env) {
     const maxValue = commissionRateMaximum(field);
     rates[field] = Number.isFinite(value) && value >= 0 && value <= maxValue ? value : fallback;
   }
+  const rangeRow = await env.DB.prepare("SELECT config_value FROM platform_config WHERE config_key = ?").bind(COMMISSION_CLOSE_RANGES_KEY).first();
+  try {
+    const ranges = JSON.parse(rangeRow?.config_value || '[]');
+    rates.noEarningsEarlyCloseRanges = Array.isArray(ranges) ? ranges.filter(range => Number.isFinite(Number(range.from)) && Number.isFinite(Number(range.to)) && Number.isFinite(Number(range.percent)) && Number(range.from) >= 0 && Number(range.to) >= Number(range.from) && Number(range.percent) >= 0 && Number(range.percent) <= 100).map(range => ({ from: Number(range.from), to: Number(range.to), percent: Number(range.percent) })).sort((a, b) => a.from - b.from) : [];
+  } catch { rates.noEarningsEarlyCloseRanges = []; }
   return rates;
 }
 const PAYMENT_MINIMUM_DEFAULTS = Object.freeze({ deposit: 50, withdrawal: 50 });
@@ -3982,9 +3990,23 @@ async function saveAdminCommissionSettings(request, env) {
     if (!Number.isFinite(value) || value < 0 || value > maxValue || Math.abs(Math.round(value * precision) - value * precision) > 1e-8) return bad(field === "noEarningsEarlyCloseThreshold" ? "La soglia deve essere un importo valido con massimo tre decimali." : "Le percentuali devono essere comprese nei limiti consentiti, con massimo due decimali.");
     next[field] = value;
   }
-  if (!Object.keys(COMMISSION_CONFIG_KEYS).some(field => Object.prototype.hasOwnProperty.call(body, field))) return bad("Nessuna commissione valida ricevuta.");
-  await env.DB.batch(Object.entries(COMMISSION_CONFIG_KEYS).map(([field, key]) => env.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES(?, ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind(key, String(next[field]))));
-  return Response.json({ ok: true, ...next });
+  let closeRanges = current.noEarningsEarlyCloseRanges || [];
+  if (Object.prototype.hasOwnProperty.call(body, 'noEarningsEarlyCloseRanges')) {
+    if (!Array.isArray(body.noEarningsEarlyCloseRanges) || body.noEarningsEarlyCloseRanges.length > 50) return bad("Inserire al massimo 50 fasce.");
+    closeRanges = body.noEarningsEarlyCloseRanges.map(range => ({ from: Number(range?.from), to: Number(range?.to), percent: Number(range?.percent) })).sort((a, b) => a.from - b.from);
+    for (let i = 0; i < closeRanges.length; i++) {
+      const range = closeRanges[i], validAmount = value => Number.isFinite(value) && value >= 0 && value <= 1000000000000 && Math.abs(Math.round(value * 1000) - value * 1000) < 1e-8;
+      if (!validAmount(range.from) || !validAmount(range.to) || range.to < range.from || !Number.isFinite(range.percent) || range.percent < 0 || range.percent > 100 || Math.abs(Math.round(range.percent * 100) - range.percent * 100) > 1e-8) return bad("Fascia non valida: importi con massimo tre decimali e commissione tra 0 e 100%.");
+      if (i && range.from <= closeRanges[i - 1].to) return bad("Le fasce di importo non possono sovrapporsi.");
+    }
+  }
+  const hasRates = Object.keys(COMMISSION_CONFIG_KEYS).some(field => Object.prototype.hasOwnProperty.call(body, field));
+  const hasRanges = Object.prototype.hasOwnProperty.call(body, 'noEarningsEarlyCloseRanges');
+  if (!hasRates && !hasRanges) return bad("Nessuna commissione valida ricevuta.");
+  const writes = Object.entries(COMMISSION_CONFIG_KEYS).map(([field, key]) => env.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES(?, ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind(key, String(next[field])));
+  if (hasRanges) writes.push(env.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES(?, ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind(COMMISSION_CLOSE_RANGES_KEY, JSON.stringify(closeRanges)));
+  await env.DB.batch(writes);
+  return Response.json({ ok: true, ...next, noEarningsEarlyCloseRanges: closeRanges });
 }
 async function queueAutomaticApproval(env, kind, id) {
   const table = kind === "deposit" ? "deposits" : kind === "withdrawal" ? "withdrawals" : null;
