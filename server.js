@@ -1254,7 +1254,8 @@ const workerHandler = {
           auto_add_drawdown_pct REAL NOT NULL DEFAULT 10,
           auto_add_mode TEXT NOT NULL DEFAULT 'fixed',
           auto_add_value REAL NOT NULL DEFAULT 10,
-          auto_add_anchor_value REAL NOT NULL DEFAULT 0
+          auto_add_anchor_value REAL NOT NULL DEFAULT 0,
+          stop_loss_anchor_value REAL NOT NULL DEFAULT 0
         );`,
         `CREATE INDEX IF NOT EXISTS market_positions_user ON market_positions(user_id, status, created_at DESC);`,
         `CREATE TABLE IF NOT EXISTS market_position_redemptions (
@@ -1450,6 +1451,7 @@ const workerHandler = {
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_add_mode TEXT NOT NULL DEFAULT 'fixed'").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_add_value REAL NOT NULL DEFAULT 10").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_add_anchor_value REAL NOT NULL DEFAULT 0").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN stop_loss_anchor_value REAL NOT NULL DEFAULT 0").run(); } catch {}
     await env.DB.prepare("UPDATE market_positions SET basis_updated_at = created_at WHERE basis_updated_at = 0").run();
     await env.DB.prepare("UPDATE market_positions SET risk_level = CASE WHEN stop_loss_pct <= 8 THEN 'conservative' WHEN stop_loss_pct >= 30 THEN 'aggressive' ELSE 'balanced' END WHERE risk_level = 'legacy'").run();
     
@@ -2535,7 +2537,9 @@ async function syncMarketPositions(env, userId) {
     const quotes = marketQuotes.get(positionElectricityMarket(row)) || {};
     const marketValue = marketPositionValue(row, quotes);
     const amount = Number(row.amount);
-    const stop = amount * (1 - Number(row.stop_loss_pct) / 100);
+    const stopLossBasis = row.risk_level === 'custom' && Number(row.stop_loss_anchor_value) > 0
+      ? Number(row.stop_loss_anchor_value) : amount;
+    const stop = stopLossBasis * (1 - Number(row.stop_loss_pct) / 100);
     const value = Math.max(marketValue, stop);
     const maturity = calendarMaturity(Number(row.created_at), Number(row.months));
     let status;
@@ -2626,7 +2630,7 @@ async function syncMarketPositions(env, userId) {
   }
   return rows.map(row => ({
     id: row.id, planId: row.plan_id, months: Number(row.months), amount: Number(row.amount),
-    stopLossPct: Number(row.stop_loss_pct), riskLevel: row.risk_level || 'legacy', earlyCloseFee: Number(row.early_close_fee || 0), basisUpdatedAt: Number(row.basis_updated_at || row.created_at), entryQuotes: (() => { try { return JSON.parse(row.entry_quotes_json || '{}'); } catch { return {}; } })(), currentValue: Number(row.last_value),
+    stopLossPct: Number(row.stop_loss_pct), stopLossAnchorValue: Number(row.stop_loss_anchor_value || 0), riskLevel: row.risk_level || 'legacy', earlyCloseFee: Number(row.early_close_fee || 0), basisUpdatedAt: Number(row.basis_updated_at || row.created_at), entryQuotes: (() => { try { return JSON.parse(row.entry_quotes_json || '{}'); } catch { return {}; } })(), currentValue: Number(row.last_value),
     autoRedeemEnabled: Number(row.auto_redeem_enabled) === 1, autoRedeemPct: Number(row.auto_redeem_pct || 10), autoAddEnabled: Number(row.auto_add_enabled) === 1, autoAddDrawdownPct: Number(row.auto_add_drawdown_pct || 10), autoAddMode: row.auto_add_mode === 'balance_pct' ? 'balance_pct' : 'fixed', autoAddValue: Number(row.auto_add_value || 10), autoAddAnchorValue: Number(row.auto_add_anchor_value || row.last_value || row.amount), customFee: Number(row.custom_fee || 0),
     status: row.status, createdAt: Number(row.created_at), closedAt: row.closed_at ? Number(row.closed_at) : null,
     allocations: (() => { try { return JSON.parse(row.allocations_json || '[]'); } catch { return []; } })(),
@@ -3204,9 +3208,9 @@ async function customMarketInvest(request, env) {
   const now = Date.now();
   const results = await env.DB.batch([
     env.DB.prepare(
-      "INSERT INTO market_positions (user_id, plan_id, months, amount, stop_loss_pct, risk_level, allocations_json, entry_quotes_json, last_value, status, created_at, basis_updated_at, custom_fee) " +
-      "SELECT ?, ?, ?, ?, ?, 'custom', ?, ?, ?, 'active', ?, ?, ? WHERE EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + source + " >= ?)"
-    ).bind(user.id, 'custom-' + months + 'm', months, principal, stopLossPct, JSON.stringify(allocations), JSON.stringify(entry), principal, now, now, fee, user.id, totalCharge),
+      "INSERT INTO market_positions (user_id, plan_id, months, amount, stop_loss_pct, risk_level, allocations_json, entry_quotes_json, last_value, status, created_at, basis_updated_at, custom_fee, stop_loss_anchor_value) " +
+      "SELECT ?, ?, ?, ?, ?, 'custom', ?, ?, ?, 'active', ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + source + " >= ?)"
+    ).bind(user.id, 'custom-' + months + 'm', months, principal, stopLossPct, JSON.stringify(allocations), JSON.stringify(entry), principal, now, now, fee, principal, user.id, totalCharge),
     env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?").bind(totalCharge, user.id, totalCharge),
   ]);
   if (!(results[0]?.meta?.changes > 0) || !(results[1]?.meta?.changes > 0)) return bad('Saldo insufficiente o modifica concorrente dell’account. Aggiorna e riprova.');
@@ -3365,7 +3369,8 @@ async function saveCustomPositionStopLoss(request, env) {
   const stopLossPct = Number(body.stopLossPct);
   if (!Number.isInteger(positionId) || positionId < 1) return bad('Piano non valido.');
   if (!Number.isFinite(stopLossPct) || stopLossPct < 1 || stopLossPct > 90) return bad('Lo stop loss deve essere tra 1% e 90%.');
-  const result = await env.DB.prepare("UPDATE market_positions SET stop_loss_pct = ? WHERE id = ? AND user_id = ? AND risk_level = 'custom' AND status IN ('active','paused')")
+  await syncMarketPositions(env, user.id);
+  const result = await env.DB.prepare("UPDATE market_positions SET stop_loss_pct = ?, stop_loss_anchor_value = CASE WHEN last_value > 0 THEN last_value ELSE amount END WHERE id = ? AND user_id = ? AND risk_level = 'custom' AND status IN ('active','paused')")
     .bind(stopLossPct, positionId, user.id).run();
   if (!(result.meta?.changes > 0)) return Response.json({ error: 'Lo stop-loss può essere modificato solo su un piano personalizzato attivo o in pausa.' }, { status: 409 });
   await syncMarketPositions(env, user.id);
