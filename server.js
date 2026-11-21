@@ -987,7 +987,7 @@ async function fullState(env, user, request) {
     env.DB.prepare("SELECT action, payload_json, requested_at, issued_at, otp_expires_at FROM sensitive_action_verifications WHERE user_id = ? AND consumed_at IS NULL").bind(user.id).first(),
   ]);
   const simpleEarnRows = simpleEarnResult.results || [];
-  const simpleEarnPositions = simpleEarnRows.map(position => { const elapsed = Math.max(0, Date.now() - Number(position.created_at)); const accruedInterest = Number((Number(position.principal) * Number(position.daily_rate) * elapsed / 86400000).toFixed(3)); return { ...position, accruedInterest, currentValue: Number((Number(position.principal) + accruedInterest).toFixed(3)) }; });
+  const simpleEarnPositions = simpleEarnRows.map(position => { const elapsed = Math.max(0, Date.now() - Number(position.created_at)); const accruedInterest = Number((Number(position.principal) * Number(position.daily_rate) * elapsed / (30 * 86400000)).toFixed(3)); return { ...position, accruedInterest, currentValue: Number((Number(position.principal) + accruedInterest).toFixed(3)) }; });
   const redemptionRows = redemptionResult.results || [];
   const redemptionsByPosition = new Map();
   for (const row of redemptionRows) {
@@ -1554,6 +1554,7 @@ const workerHandler = {
       if (method === "POST" && pathName === "/api/market/simple-earn/redeem") return await simpleEarnRedeem(request, env);
       if (method === "POST" && pathName === "/api/market/custom-invest") return await customMarketInvest(request, env);
       if (method === "POST" && pathName === "/api/market/redeem-gains") return await redeemMarketGains(request, env);
+      if (method === "POST" && pathName === "/api/market/custom-stop-loss") return await saveCustomPositionStopLoss(request, env);
       if (method === "POST" && pathName === "/api/market/auto-redeem") return await savePositionAutoRedeem(request, env);
       if (method === "POST" && pathName === "/api/market/auto-add") return await savePositionAutoAdd(request, env);
       if (method === "POST" && pathName === "/api/market/close-early") return await closeMarketPositionEarly(request, env);
@@ -3136,6 +3137,7 @@ async function marketInvest(request, env) {
     if (Math.abs(allocation.reduce((sum, item) => sum + item[1], 0) - 100) > 0.01) return bad('Le percentuali degli asset devono sommare esattamente 100%.');
   }
   if (!Number.isFinite(grossAmount) || grossAmount < 50) return bad("L'importo minimo è 50 USDT.");
+  if (grossAmount < 500 && riskLevel === 'conservative') return bad("Lo stop-loss dell’8% non è disponibile per piani inferiori a 500 USDT.");
   if (!Number.isFinite(stopLossPct)) return bad("Profilo stop-loss non disponibile.");
   const source = ['deposit', 'earnings', 'released'].includes(body.source) ? body.source : 'deposit';
   const wallet = await accrue(env, user.id);
@@ -3354,6 +3356,20 @@ async function closeMarketPositionEarly(request, env) {
   ]);
   if (!(batch[0]?.meta?.changes > 0)) return Response.json({ error: 'Il piano è cambiato. Aggiorna e riprova.' }, { status: 409 });
   return Response.json({ ok: true, referenceValue: value, fee, net, feePercent: earlyClosePercent });
+}
+
+async function saveCustomPositionStopLoss(request, env) {
+  const user = await authed(request, env);
+  const body = await request.json().catch(() => ({}));
+  const positionId = Number(body.positionId);
+  const stopLossPct = Number(body.stopLossPct);
+  if (!Number.isInteger(positionId) || positionId < 1) return bad('Piano non valido.');
+  if (!Number.isFinite(stopLossPct) || stopLossPct < 1 || stopLossPct > 90) return bad('Lo stop loss deve essere tra 1% e 90%.');
+  const result = await env.DB.prepare("UPDATE market_positions SET stop_loss_pct = ? WHERE id = ? AND user_id = ? AND risk_level = 'custom' AND status IN ('active','paused')")
+    .bind(stopLossPct, positionId, user.id).run();
+  if (!(result.meta?.changes > 0)) return Response.json({ error: 'Lo stop-loss può essere modificato solo su un piano personalizzato attivo o in pausa.' }, { status: 409 });
+  await syncMarketPositions(env, user.id);
+  return Response.json({ ok: true, positionId, stopLossPct });
 }
 
 async function savePositionAutoRedeem(request, env) {
