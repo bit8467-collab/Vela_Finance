@@ -593,6 +593,7 @@
             <article><span>Total outflows</span><b id="financial-outflows">—</b><small id="financial-outflows-count">—</small></article>
             <article><span>Net balance · inflows − outflows</span><b id="financial-net">—</b><small>Approved deposits minus approved withdrawals</small></article>
             <article><span>Plans in progress · active + paused</span><b id="financial-active-plans">—</b><small id="financial-active-balance">—</small></article>
+            <article><span>Active Simple Earn positions</span><b id="financial-simple-earn-count">—</b><small id="financial-simple-earn-balance">—</small></article>
             <article><span>Stop-loss plans · closed</span><b id="financial-stoploss-plans">—</b><small id="financial-stoploss-balance">—</small></article>
             <article><span>Funds in user account balances</span><b id="financial-wallet-balance">—</b><small>Currently withdrawable account balances</small></article>
             <article class="financial-reserve-card"><span>Estimated reserve for simultaneous payouts</span><b id="financial-required-reserve">—</b><small id="financial-required-reserve-detail">User balances + plans in progress + pending payouts</small></article>
@@ -603,12 +604,16 @@
             <article><span>Plans in progress / live volume</span><b id="financial-active-volume-ratio">—</b><small id="financial-active-volume-detail"></small></article>
             <article><span>User balances / payout reserve</span><b id="financial-cash-ratio">—</b><small id="financial-cash-ratio-detail"></small></article>
           </div>
+          <section class="simple-earn-admin-ledger" aria-labelledby="financial-simple-earn-title">
+            <h3 id="financial-simple-earn-title">Simple Earn · active user positions</h3>
+            <div class="payment-history-scroll"><table class="admin-ledger-table"><thead><tr><th>User</th><th>Account</th><th>Position</th><th>Principal</th><th>Accrued earnings</th><th>Redeemable total</th><th>Source</th><th>Started</th></tr></thead><tbody id="financial-simple-earn-rows"><tr><td colspan="8">No active Simple Earn positions.</td></tr></tbody></table></div>
+          </section>
           <div class="payment-financial-history" aria-label="Completed plan totals">
             <article><span>Completed plans · total</span><b id="financial-completed-plans">—</b><small id="financial-completed-volume">—</small></article>
             <article><span>Completed at normal maturity</span><b id="financial-matured-plans">—</b><small id="financial-matured-volume">—</small></article>
             <article><span>Closed early</span><b id="financial-early-closed-plans">—</b><small id="financial-early-closed-volume">—</small></article>
           </div>
-          <p class="payment-financial-volume"><span>Live platform volume · user balances + plans in progress + pending payouts</span><b id="financial-global-volume">—</b></p>
+          <p class="payment-financial-volume"><span>Live platform volume · user balances + plans in progress + Simple Earn + pending payouts</span><b id="financial-global-volume">—</b></p>
           <small class="payment-financial-note">Completed plan volume is historical principal only and is excluded from live volume. The reserve is an estimated customer-liability figure, not a reading of the platform's treasury assets.</small>
         </section>
         <div class="payment-desk-summary" aria-label="Payment totals">
