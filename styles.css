@@ -4005,6 +4005,13 @@ body.asset-catalog-open{overflow:hidden}
 #admin-payment-desk .payment-financial-metrics small,
 #admin-payment-desk .payment-financial-ratios small { color:var(--muted); font-size:9px; line-height:1.4; }
 #admin-payment-desk .payment-financial-volume { display:flex; justify-content:space-between; align-items:center; gap:12px; margin:0; padding-top:10px; border-top:1px solid var(--line); }
+#admin-payment-desk .payment-financial-metrics .financial-reserve-card { border-color:var(--accent); background:color-mix(in srgb,var(--accent) 8%,var(--surface-2)); }
+#admin-payment-desk .payment-financial-history { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; padding-top:12px; border-top:1px solid var(--line); }
+#admin-payment-desk .payment-financial-history article { display:grid; align-content:start; gap:5px; min-width:0; padding:11px; border:1px solid var(--line); border-radius:10px; background:var(--surface-2); }
+#admin-payment-desk .payment-financial-history span { color:var(--muted); font-size:10px; line-height:1.4; }
+#admin-payment-desk .payment-financial-history b { font-size:16px; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+#admin-payment-desk .payment-financial-history small,#admin-payment-desk .payment-financial-note { color:var(--muted); font-size:9px; line-height:1.5; }
+@media(max-width:640px) { #admin-payment-desk .payment-financial-history { grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; } #admin-payment-desk .payment-financial-history article { padding:9px; } #admin-payment-desk .payment-financial-history b { font-size:13px; } }
 @media(max-width:640px) { #admin-payment-desk .payment-financial-control { padding:11px; } #admin-payment-desk .payment-financial-metrics,#admin-payment-desk .payment-financial-ratios { grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; } #admin-payment-desk .payment-financial-metrics article,#admin-payment-desk .payment-financial-ratios article { padding:9px; } #admin-payment-desk .payment-financial-metrics b,#admin-payment-desk .payment-financial-ratios b { font-size:13px; } }
 
 .commission-close-ranges{display:grid;gap:10px;margin:10px 0}.commission-close-range{display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) auto;gap:10px;align-items:end;padding:12px;border:1px solid var(--border-color,#d8d8d8);border-radius:10px}.commission-close-range label{display:grid;gap:5px}.commission-close-range input{width:100%;min-width:0}.commission-close-range button{white-space:nowrap}@media(max-width:600px){.commission-close-range{grid-template-columns:1fr 1fr}.commission-close-range button{grid-column:1/-1}}
