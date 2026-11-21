@@ -1255,7 +1255,8 @@ const workerHandler = {
           auto_add_mode TEXT NOT NULL DEFAULT 'fixed',
           auto_add_value REAL NOT NULL DEFAULT 10,
           auto_add_anchor_value REAL NOT NULL DEFAULT 0,
-          stop_loss_anchor_value REAL NOT NULL DEFAULT 0
+          stop_loss_anchor_value REAL NOT NULL DEFAULT 0,
+          stop_loss_resume_value REAL NOT NULL DEFAULT 0
         );`,
         `CREATE INDEX IF NOT EXISTS market_positions_user ON market_positions(user_id, status, created_at DESC);`,
         `CREATE TABLE IF NOT EXISTS market_position_redemptions (
@@ -1452,6 +1453,7 @@ const workerHandler = {
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_add_value REAL NOT NULL DEFAULT 10").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_add_anchor_value REAL NOT NULL DEFAULT 0").run(); } catch {}
     try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN stop_loss_anchor_value REAL NOT NULL DEFAULT 0").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN stop_loss_resume_value REAL NOT NULL DEFAULT 0").run(); } catch {}
     await env.DB.prepare("UPDATE market_positions SET basis_updated_at = created_at WHERE basis_updated_at = 0").run();
     await env.DB.prepare("UPDATE market_positions SET risk_level = CASE WHEN stop_loss_pct <= 8 THEN 'conservative' WHEN stop_loss_pct >= 30 THEN 'aggressive' ELSE 'balanced' END WHERE risk_level = 'legacy'").run();
     
@@ -2544,12 +2546,14 @@ async function syncMarketPositions(env, userId) {
     const maturity = calendarMaturity(Number(row.created_at), Number(row.months));
     let status;
     if (now >= maturity) status = 'matured';
-    else status = marketValue <= stop ? 'paused' : 'active';
+    else if (marketValue <= stop || (row.status === 'paused' && Number(row.stop_loss_resume_value) > 0 && marketValue <= Number(row.stop_loss_resume_value))) status = 'paused';
+    else status = 'active';
     const previousStatus = row.status;
     const isClosed = status === 'matured' || status === 'stop_loss';
-    const updated = await env.DB.prepare("UPDATE market_positions SET last_value = ?, status = ?, closed_at = ? WHERE id = ? AND user_id = ? AND status = ?")
-      .bind(value, status, isClosed ? now : null, row.id, userId, previousStatus).run();
+    const updated = await env.DB.prepare("UPDATE market_positions SET last_value = ?, status = ?, closed_at = ?, stop_loss_resume_value = CASE WHEN ? = 'paused' THEN stop_loss_resume_value ELSE 0 END WHERE id = ? AND user_id = ? AND status = ?")
+      .bind(value, status, isClosed ? now : null, status, row.id, userId, previousStatus).run();
     row.last_value = value;
+    if (status !== 'paused') row.stop_loss_resume_value = 0;
     if (updated.meta?.changes > 0) {
       row.status = status;
       row.closed_at = isClosed ? now : null;
@@ -3370,7 +3374,7 @@ async function saveCustomPositionStopLoss(request, env) {
   if (!Number.isInteger(positionId) || positionId < 1) return bad('Piano non valido.');
   if (!Number.isFinite(stopLossPct) || stopLossPct < 1 || stopLossPct > 90) return bad('Lo stop loss deve essere tra 1% e 90%.');
   await syncMarketPositions(env, user.id);
-  const result = await env.DB.prepare("UPDATE market_positions SET stop_loss_pct = ?, stop_loss_anchor_value = CASE WHEN last_value > 0 THEN last_value ELSE amount END WHERE id = ? AND user_id = ? AND risk_level = 'custom' AND status IN ('active','paused')")
+  const result = await env.DB.prepare("UPDATE market_positions SET stop_loss_pct = ?, stop_loss_anchor_value = CASE WHEN last_value > 0 THEN last_value ELSE amount END, stop_loss_resume_value = CASE WHEN status = 'paused' THEN CASE WHEN last_value > 0 THEN last_value ELSE amount END ELSE 0 END WHERE id = ? AND user_id = ? AND risk_level = 'custom' AND status IN ('active','paused')")
     .bind(stopLossPct, positionId, user.id).run();
   if (!(result.meta?.changes > 0)) return Response.json({ error: 'Lo stop-loss può essere modificato solo su un piano personalizzato attivo o in pausa.' }, { status: 409 });
   await syncMarketPositions(env, user.id);

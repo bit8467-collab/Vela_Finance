@@ -1449,6 +1449,11 @@ Object.assign(rows, {
   "La posizione non è più attiva.": ["The position is no longer active.", "La position n’est plus active.", "La posición ya no está activa.", "Die Position ist nicht mehr aktiv.", "A posição já não está ativa.", "यह पोज़िशन अब सक्रिय नहीं है।", "该仓位已不再活跃。", "La posizione non è più attiva."],
 });
 
+Object.assign(rows, {
+  "Last synchronization": ["Last synchronization", "Dernière synchronisation", "Última sincronización", "Letzte Synchronisierung", "Última sincronização", "पिछला सिंक्रनाइज़ेशन", "上次同步", "Ultima sincronizzazione"],
+  "Not yet synchronized": ["Not yet synchronized", "Pas encore synchronisé", "Aún no sincronizado", "Noch nicht synchronisiert", "Ainda não sincronizado", "अभी तक सिंक्रनाइज़ नहीं हुआ", "尚未同步", "Non ancora sincronizzato"]
+});
+
 const dictionary = new Map();
 // Accurate translations for the Simple Earn tier facts and labels.
 Object.assign(rows, {
@@ -2896,6 +2901,9 @@ $('crypto-auto-limits-form').addEventListener('submit',async event=>{event.preve
 function renderPaymentFinancialControl(response){if(!response)return;const financial=response.totals||response,number=value=>Number(value||0).toLocaleString(getLocale()),percent=value=>Number(value||0).toLocaleString(getLocale(),{minimumFractionDigits:2,maximumFractionDigits:2})+'%',inflows=Number(financial.deposits_amount||0),outflows=Number(financial.withdrawals_amount||0),activeBalance=Number(financial.financial_active_plan_balance||0),stopLossBalance=Number(financial.stop_loss_plan_balance||0),globalVolume=Number(financial.current_global_volume||0),activeCount=Number(financial.financial_active_plan_count||0),stopCount=Number(financial.stop_loss_plan_count||0),allCurrent=Number(financial.current_plan_count||activeCount+stopCount),lang=localStorage.getItem('you-invest-language')||'en';$('financial-platform-accounts').textContent=number(financial.users);$('financial-inflows').textContent=amount(inflows);$('financial-outflows').textContent=amount(outflows);$('financial-net').textContent=amount(inflows-outflows);$('financial-inflows-count').textContent=number(financial.deposits_approved)+' '+translateText('approved deposits',lang);$('financial-outflows-count').textContent=number(financial.withdrawals_approved)+' '+translateText('approved withdrawals',lang);$('financial-active-plans').textContent=number(activeCount);$('financial-active-balance').textContent=translateText('active balance',lang)+': '+amount(activeBalance);$('financial-stoploss-plans').textContent=number(stopCount);$('financial-stoploss-balance').textContent=translateText('stop-loss balance',lang)+': '+amount(stopLossBalance);$('financial-flow-ratio').textContent=percent(inflows>0?outflows/inflows*100:0);$('financial-flow-ratio-detail').textContent=amount(outflows)+' / '+amount(inflows);$('financial-stoploss-ratio').textContent=percent(allCurrent>0?stopCount/allCurrent*100:0);$('financial-stoploss-ratio-detail').textContent=number(stopCount)+' / '+number(allCurrent)+' '+translateText('current plans',lang);$('financial-active-volume-ratio').textContent=percent(globalVolume>0?activeBalance/globalVolume*100:0);$('financial-active-volume-detail').textContent=amount(activeBalance)+' / '+amount(globalVolume);$('financial-global-volume').textContent=amount(globalVolume)}
 const ADMIN_PLAN_SYNC_AUTO_KEY='you-invest-admin-plan-sync-auto';
 const ADMIN_PLAN_SYNC_INTERVAL_KEY='you-invest-admin-plan-sync-interval';
+const ADMIN_PLAN_SYNC_LAST_KEY='you-invest-admin-plan-sync-last';
+function updateAdminPlanSyncLast(){const output=$('admin-plan-sync-last');if(!output)return;const stored=Number(localStorage.getItem(ADMIN_PLAN_SYNC_LAST_KEY));const lang=localStorage.getItem('you-invest-language')||'en';const label=translateText('Last synchronization',lang);output.textContent=label+': '+(Number.isFinite(stored)&&stored>0?new Date(stored).toLocaleString(getLocale()):translateText('Not yet synchronized',lang))}
+window.addEventListener('app-language-change',updateAdminPlanSyncLast);
 let adminPlanSyncTimer=null, adminPlanSyncRunning=false;
 function stopAdminPlanSyncTimer(){if(adminPlanSyncTimer){clearInterval(adminPlanSyncTimer);adminPlanSyncTimer=null}}
 function configureAdminPlanSyncTimer(){
@@ -2913,6 +2921,7 @@ async function runAdminPlanSync(manual){
  try{
   const result=await post('/api/admin/market-plans/sync',{});
   if(result.running){if(status)status.textContent='A synchronization is already running.';return}
+  localStorage.setItem(ADMIN_PLAN_SYNC_LAST_KEY,String(Date.now()));updateAdminPlanSyncLast();
   try{renderPaymentFinancialControl(await api('/api/admin/statistics'))}catch{}
   const summary='Synced '+Number(result.plans||0)+' active plan(s) across '+Number(result.users||0)+' user(s)'+(Number(result.failedUsers||0)?' · '+Number(result.failedUsers)+' failed':'');
   if(status)status.textContent=summary;
@@ -2923,6 +2932,7 @@ async function runAdminPlanSync(manual){
 function initAdminPlanSyncControl(){
  const root=$('admin-payment-desk'),automatic=$('admin-plan-sync-auto'),interval=$('admin-plan-sync-interval'),button=$('admin-plan-sync-now');
  if(!root||!automatic||!interval||!button)return;
+ updateAdminPlanSyncLast();
  if(root.dataset.planSyncReady!=='true'){
   root.dataset.planSyncReady='true';
   const storedInterval=Number(localStorage.getItem(ADMIN_PLAN_SYNC_INTERVAL_KEY));
