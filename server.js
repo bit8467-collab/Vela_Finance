@@ -3374,7 +3374,7 @@ async function saveCustomPositionStopLoss(request, env) {
   if (!Number.isInteger(positionId) || positionId < 1) return bad('Piano non valido.');
   if (!Number.isFinite(stopLossPct) || stopLossPct < 1 || stopLossPct > 90) return bad('Lo stop loss deve essere tra 1% e 90%.');
   await syncMarketPositions(env, user.id);
-  const result = await env.DB.prepare("UPDATE market_positions SET stop_loss_pct = ?, stop_loss_anchor_value = CASE WHEN last_value > 0 THEN last_value ELSE amount END, stop_loss_resume_value = CASE WHEN status = 'paused' THEN CASE WHEN last_value > 0 THEN last_value ELSE amount END ELSE 0 END WHERE id = ? AND user_id = ? AND risk_level = 'custom' AND status IN ('active','paused')")
+  const result = await env.DB.prepare("UPDATE market_positions SET stop_loss_pct = ?, stop_loss_anchor_value = CASE WHEN status = 'paused' THEN CASE WHEN last_value > 0 THEN last_value ELSE amount END ELSE amount END, stop_loss_resume_value = CASE WHEN status = 'paused' THEN CASE WHEN last_value > 0 THEN last_value ELSE amount END ELSE 0 END WHERE id = ? AND user_id = ? AND risk_level = 'custom' AND status IN ('active','paused')")
     .bind(stopLossPct, positionId, user.id).run();
   if (!(result.meta?.changes > 0)) return Response.json({ error: 'Lo stop-loss può essere modificato solo su un piano personalizzato attivo o in pausa.' }, { status: 409 });
   await syncMarketPositions(env, user.id);
