@@ -3325,3 +3325,11 @@ $('refresh-payment-desk')?.addEventListener('click',refreshCryptoAutomationContr
 
 async function refreshCryptoPayoutDelayControl(){const value=$('crypto-payout-delay-value'),unit=$('crypto-payout-delay-unit'),status=$('crypto-payout-delay-status');if(!value||!unit)return;try{const data=await api('/api/admin/payments/crypto-payout-delay');value.value=String(data.value);unit.value=data.unit;status.textContent='Applies to new withdrawal requests.'}catch(error){status.textContent=error.message||'Unable to load payout delay.'}}
 const saveCryptoPayoutDelayButton=$('save-crypto-payout-delay');if(saveCryptoPayoutDelayButton)saveCryptoPayoutDelayButton.addEventListener('click',async()=>{const value=$('crypto-payout-delay-value'),unit=$('crypto-payout-delay-unit'),status=$('crypto-payout-delay-status');const amount=Number(value.value);if(!Number.isSafeInteger(amount)||amount<0){status.textContent='Enter a whole number zero or greater.';return}saveCryptoPayoutDelayButton.disabled=true;status.textContent='Saving…';try{const data=await post('/api/admin/payments/crypto-payout-delay',{value:amount,unit:unit.value});value.value=String(data.value);unit.value=data.unit;status.textContent='Saved. Applies to new withdrawal requests.';notice('Automatic payout delay saved.')}catch(error){status.textContent=error.message||'Unable to save payout delay.';notice(status.textContent,true)}finally{saveCryptoPayoutDelayButton.disabled=false}});
+
+;(() => {
+  if (!('serviceWorker' in navigator) || location.protocol !== 'https:') return;
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js', { scope: '/' })
+      .catch((error) => console.warn('PWA service worker registration failed:', error));
+  }, { once: true });
+})();
