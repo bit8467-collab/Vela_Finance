@@ -4919,7 +4919,7 @@ async function rejectUnverifiedAutoCryptoDeposit(row) {
   if (!(updated.meta?.changes > 0)) return false;
   try {
     await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
-      .bind(row.user_id, "Deposit request automatically rejected", "No valid transaction hash was found on the selected network within one minute. No funds were credited.", Date.now()).run();
+      .bind(row.user_id, "Deposit request automatically rejected", "No valid transaction hash was found on the selected network within ten minutes. No funds were credited.", Date.now()).run();
   } catch (error) { console.error("Automatic deposit rejection notification failed:", error?.message || error); }
   return true;
 }
@@ -4930,7 +4930,7 @@ async function sweepAutomaticCryptoDeposits() {
     const rows = await env.DB.prepare("SELECT * FROM deposits WHERE status = 'pending' AND transfer_status = 'pending' AND net IN ('BNB','TRC20','BTC') ORDER BY date ASC LIMIT 20").all();
     const now = Date.now();
     for (const row of rows.results || []) {
-      if (now - Number(row.date || 0) < 60000) {
+      if (now - Number(row.date || 0) < 600000) {
         await settleVerifiedCryptoDeposit(row);
         continue;
       }
