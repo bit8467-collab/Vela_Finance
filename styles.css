@@ -4080,3 +4080,6 @@ body.asset-catalog-open{overflow:hidden}
 /* TradingView wordmark link in profile */
 .wallet-link-tradingview { grid-column: span 2; aspect-ratio: auto; min-height: 56px; border: 0; border-radius: 0; background: transparent; padding: 0; display: flex; justify-content: center; gap: 0; color: #fff; font-family: Arial, Helvetica, sans-serif; font-size: 15px; font-weight: 700; letter-spacing: -.55px; white-space: nowrap; }
 .wallet-link-tradingview:hover { border-color: transparent; transform: none; }
+
+/* Slightly more prominent TradingView wordmark. */
+.wallet-link-tradingview { font-size: 17px; letter-spacing: -.35px; text-shadow: 0 0 14px color-mix(in srgb, var(--accent) 38%, transparent); }
