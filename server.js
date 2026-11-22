@@ -2323,11 +2323,13 @@ async function deposit(request, env) {
   const addressPool = String(officialAddresses[net] || "").split(/[,;]+/).map(address => address.trim()).filter(Boolean);
   if (!addressPool.length) return bad("Questa rete non è ancora configurata per i depositi. Non inviare fondi.");
   if (!addressPool.includes(depositAddress)) return bad("Indirizzo di deposito non valido o aggiornato. Ricarica prima di inviare la richiesta.");
-  if (!txReference) return bad("Inserisci l'ID o hash della transazione per la verifica.");
+  if (!txReference && (!(await cryptoAutomationEnabled()) || !["BNB", "TRC20", "BTC"].includes(net))) return bad("Inserisci l'ID o hash della transazione per la verifica.");
   
-  const existingDep = await env.DB.prepare("SELECT id FROM deposits WHERE lower(tx_reference) = lower(?)").bind(txReference).first();
-  if (existingDep) {
-    return bad("Questo hash o ID di transazione è già stato utilizzato da un utente.");
+  if (txReference) {
+    const existingDep = await env.DB.prepare("SELECT id FROM deposits WHERE lower(tx_reference) = lower(?)").bind(txReference).first();
+    if (existingDep) {
+      return bad("Questo hash o ID di transazione è già stato utilizzato da un utente.");
+    }
   }
 
   const automaticDecisions = await readAutomaticWithdrawalDecisions(env);
@@ -4912,12 +4914,39 @@ async function settleVerifiedCryptoDeposit(row) {
   if (!approved.ok) console.error("Verified crypto deposit could not be credited; remains in admin queue", row.id, approved.status);
   return approved.ok;
 }
+async function rejectUnverifiedAutoCryptoDeposit(row) {
+  const updated = await env.DB.prepare("UPDATE deposits SET status = 'rejected', transfer_status = 'failed' WHERE id = ? AND status = 'pending' AND transfer_status = 'pending'").bind(row.id).run();
+  if (!(updated.meta?.changes > 0)) return false;
+  try {
+    await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
+      .bind(row.user_id, "Deposit request automatically rejected", "No valid transaction hash was found on the selected network within one minute. No funds were credited.", Date.now()).run();
+  } catch (error) { console.error("Automatic deposit rejection notification failed:", error?.message || error); }
+  return true;
+}
 async function sweepAutomaticCryptoDeposits() {
   if (!(await cryptoAutomationEnabled()) || autoDepositSweepRunning || !automaticApprovalSchemaReady) return;
   autoDepositSweepRunning = true;
   try {
-    const rows = await env.DB.prepare("SELECT * FROM deposits WHERE status = 'pending' AND transfer_status = 'pending' AND tx_reference != '' AND net IN ('BNB','TRC20','BTC') ORDER BY date ASC LIMIT 20").all();
-    for (const row of rows.results || []) await settleVerifiedCryptoDeposit(row);
+    const rows = await env.DB.prepare("SELECT * FROM deposits WHERE status = 'pending' AND transfer_status = 'pending' AND net IN ('BNB','TRC20','BTC') ORDER BY date ASC LIMIT 20").all();
+    const now = Date.now();
+    for (const row of rows.results || []) {
+      if (now - Number(row.date || 0) < 60000) {
+        await settleVerifiedCryptoDeposit(row);
+        continue;
+      }
+      const txReference = String(row.tx_reference || "").trim();
+      const verification = txReference ? await inspectCryptoDeposit(row) : { state: "invalid" };
+      if (verification.state === "invalid") {
+        await rejectUnverifiedAutoCryptoDeposit(row);
+        continue;
+      }
+      if (verification.state === "pending") {
+        const transactionExists = await checkDepositTransactionOnChain(row.net, txReference);
+        if (transactionExists === false) await rejectUnverifiedAutoCryptoDeposit(row);
+        continue;
+      }
+      await settleVerifiedCryptoDeposit(row);
+    }
   } catch (error) {
     console.error("Automatic deposit sweep failed:", error?.message || error);
   } finally { autoDepositSweepRunning = false; }
