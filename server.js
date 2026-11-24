@@ -1640,6 +1640,12 @@ const workerHandler = {
       const adminBalanceMatch = pathName.match(/^\/api\/admin\/users\/([^/]+)\/balance$/);
       if (method === "POST" && adminBalanceMatch) return await adminUpdateUserBalance(request, env, adminBalanceMatch[1]);
 
+      const adminMarketPlanActionMatch = pathName.match(/^\/api\/admin\/market-plans\/(\d+)\/action$/);
+      if (method === "POST" && adminMarketPlanActionMatch) return await adminManageMarketPlan(request, env, adminMarketPlanActionMatch[1]);
+
+      const adminTransactionHistoryMatch = pathName.match(/^\/api\/admin\/users\/([^/]+)\/transaction-history\/delete$/);
+      if (method === "POST" && adminTransactionHistoryMatch) return await adminClearTransactionHistory(request, env, adminTransactionHistoryMatch[1]);
+
       const adminDeleteMatch = pathName.match(/^\/api\/admin\/users\/([^/]+)\/delete$/);
       if (method === "POST" && adminDeleteMatch) return await adminDeleteUser(request, env, adminDeleteMatch[1]);
       
@@ -3900,6 +3906,49 @@ async function adminUpdateUserBalance(request, env, userId) {
     env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(userId, "System credit", "Your available balance has been updated by the administrator.", now)
   );
   await env.DB.batch(statements);
+  return Response.json({ ok: true });
+}
+
+async function adminManageMarketPlan(request, env, positionId) {
+  const actor = await privilegedAdminActor(request, env);
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const id = Number(positionId);
+  if (!Number.isSafeInteger(id) || id < 1) return bad("Piano non valido.");
+  const body = await request.json().catch(() => ({}));
+  const action = String(body.action || "");
+  if (!["suspend", "resume", "delete"].includes(action)) return bad("Azione non valida.");
+  const position = await env.DB.prepare("SELECT id, user_id, status FROM market_positions WHERE id = ?").bind(id).first();
+  if (!position) return Response.json({ error: "Piano non trovato." }, { status: 404 });
+  if (action === "delete") {
+    if (!["active", "paused", "admin_suspended"].includes(position.status)) return Response.json({ error: "È possibile eliminare solo un piano attivo." }, { status: 409 });
+    const results = await env.DB.batch([
+      env.DB.prepare("DELETE FROM market_position_redemptions WHERE position_id = ? AND user_id = ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status IN ('active','paused','admin_suspended'))").bind(id, position.user_id, id, position.user_id),
+      env.DB.prepare("DELETE FROM market_positions WHERE id = ? AND user_id = ? AND status IN ('active','paused','admin_suspended')").bind(id, position.user_id)
+    ]);
+    if (!(results[1]?.meta?.changes > 0)) return Response.json({ error: "Il piano è cambiato. Aggiorna e riprova." }, { status: 409 });
+    return Response.json({ ok: true, action });
+  }
+  if (action === "suspend") {
+    if (!["active", "paused"].includes(position.status)) return Response.json({ error: "È possibile sospendere solo un piano attivo." }, { status: 409 });
+    const result = await env.DB.prepare("UPDATE market_positions SET status = 'admin_suspended', closed_at = NULL WHERE id = ? AND user_id = ? AND status IN ('active','paused')").bind(id, position.user_id).run();
+    if (!(result.meta?.changes > 0)) return Response.json({ error: "Il piano è cambiato. Aggiorna e riprova." }, { status: 409 });
+    return Response.json({ ok: true, action });
+  }
+  if (position.status !== "admin_suspended") return Response.json({ error: "Il piano non è sospeso dall'amministratore." }, { status: 409 });
+  const result = await env.DB.prepare("UPDATE market_positions SET status = 'active', closed_at = NULL WHERE id = ? AND user_id = ? AND status = 'admin_suspended'").bind(id, position.user_id).run();
+  if (!(result.meta?.changes > 0)) return Response.json({ error: "Il piano è cambiato. Aggiorna e riprova." }, { status: 409 });
+  return Response.json({ ok: true, action });
+}
+
+async function adminClearTransactionHistory(request, env, userId) {
+  const actor = await privilegedAdminActor(request, env);
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const target = await env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(userId).first();
+  if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM deposits WHERE user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM withdrawals WHERE user_id = ?").bind(userId)
+  ]);
   return Response.json({ ok: true });
 }
 
