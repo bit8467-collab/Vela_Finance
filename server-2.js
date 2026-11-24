@@ -1,0 +1,5199 @@
+import express from 'express';
+import nodemailer from 'nodemailer';
+import { createClient } from '@libsql/client';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { readFileSync } from 'fs';
+import { deflateRawSync } from 'zlib';
+import { ethers } from 'ethers';
+import { TronWeb } from 'tronweb';
+import * as bitcoin from 'bitcoinjs-lib';
+import { ECPairFactory } from 'ecpair';
+import * as tinySecp256k1 from 'tiny-secp256k1';
+
+bitcoin.initEccLib(tinySecp256k1);
+const ECPair = ECPairFactory(tinySecp256k1);
+const cryptoTransferInterface = new ethers.Interface(['event Transfer(address indexed from, address indexed to, uint256 value)']);
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const DEFAULT_COMMISSION_RATES = Object.freeze({ withdrawalDepositPercent: 8, withdrawalEarningsPercent: 8, withdrawalReleasedPercent: 25, earlyClosePercent: 35, investmentWithholdingPercent: 20, simpleEarnWithholdingPercent: 20, noEarningsEarlyCloseThreshold: 0 });
+const COMMISSION_CLOSE_RANGES_KEY = 'commission_no_earnings_early_close_ranges';
+const COMMISSION_CONFIG_KEYS = Object.freeze({ withdrawalDepositPercent: 'commission_withdrawal_deposit_pct', withdrawalEarningsPercent: 'commission_withdrawal_earnings_pct', withdrawalReleasedPercent: 'commission_withdrawal_released_pct', earlyClosePercent: 'commission_early_close_pct', investmentWithholdingPercent: 'commission_investment_withholding_pct', simpleEarnWithholdingPercent: 'commission_simple_earn_withholding_pct', noEarningsWithdrawalDepositPercent: 'commission_no_earnings_withdrawal_deposit_pct', noEarningsWithdrawalEarningsPercent: 'commission_no_earnings_withdrawal_earnings_pct', noEarningsWithdrawalReleasedPercent: 'commission_no_earnings_withdrawal_released_pct', noEarningsEarlyClosePercent: 'commission_no_earnings_early_close_pct', noEarningsEarlyCloseThreshold: 'commission_no_earnings_early_close_threshold', noEarningsEarlyCloseBelowPercent: 'commission_no_earnings_early_close_below_pct', noEarningsEarlyCloseAtOrAbovePercent: 'commission_no_earnings_early_close_above_pct' });
+const AUTO_APPROVAL_DELAYS_HOURS = Object.freeze([0, 1, 6, 12, 24, 48]);
+
+const PROMOTER_PACKAGE_TIERS = Object.freeze({
+  starter: Object.freeze({ price: 25, limit: 3 }),
+  growth: Object.freeze({ price: 40, limit: 15 }),
+  pro: Object.freeze({ price: 70, limit: 40 }),
+  business: Object.freeze({ price: 120, limit: 100 }),
+  elite: Object.freeze({ price: 220, limit: 250 }),
+});
+const PREVIOUS_PROMOTER_PACKAGE_PRICES = Object.freeze({ starter: 5, growth: 20, pro: 50, business: 100, elite: 200 });
+function promoterPackageChangeError(account, packageTier, now = Date.now(), allowActiveSame = false) {
+  if (!account?.promoter_package) return "";
+  const currentLimit = Number(account.promoter_invite_limit || 0);
+  const used = Number(account.promoter_invites_used || 0);
+  const active = Number(account.promoter_expires_at || 0) > now;
+  if (packageTier.limit < currentLimit) return "Non è possibile ridurre il limite di inviti del pacchetto.";
+  if (packageTier.limit === currentLimit && active && !allowActiveSame) return "Il pacchetto è già attivo: per aumentare gli inviti scegli un pacchetto superiore.";
+  if (packageTier.limit === currentLimit && !active && used >= currentLimit) return "Hai esaurito gli inviti: per continuare devi passare a un pacchetto superiore.";
+  return "";
+}
+
+const app = express();
+app.set('trust proxy', 1);
+const PORT = process.env.PORT || 3000;
+const smtpPort = Number(process.env.SMTP_PORT) || 465;
+const otpMailer = nodemailer.createTransport({ host: process.env.SMTP_HOST || 'authsmtp.securemail.pro', port: smtpPort, secure: smtpPort === 465, auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS } });
+const notificationStreams = new Map();
+const assetPriceStreams = new Set();
+let assetPriceStreamTimer = null;
+let assetPriceStreamPublishPromise = null;
+let lastAssetPriceBroadcastSignature = "";
+
+function publishNotification(userId, notificationId) {
+  const clients = notificationStreams.get(String(userId));
+  if (!clients?.size) return;
+  const event = `event: notification\ndata: ${JSON.stringify({ id: Number(notificationId) })}\n\n`;
+  for (const response of clients) {
+    if (response.writableEnded || response.destroyed) clients.delete(response);
+    else response.write(event);
+  }
+  if (!clients.size) notificationStreams.delete(String(userId));
+}
+
+function notificationRecipient(sql, params) {
+  if (!/INSERT\s+INTO\s+notifications\b/i.test(sql)) return null;
+  const columns = String(sql).match(/INSERT\s+INTO\s+notifications\s*\(([^)]+)\)/i)?.[1];
+  if (!columns) return null;
+  const index = columns.split(',').findIndex((column) => column.trim().replace(/["']/g, '').toLowerCase() === 'user_id');
+  return index >= 0 ? params[index] ?? null : null;
+}
+
+const db = createClient({
+  url: process.env.TURSO_DATABASE_URL || "libsql://velafin-velazzo.aws-us-east-1.turso.io",
+  authToken: process.env.TURSO_AUTH_TOKEN,
+});
+
+const env = {
+  DB: {
+    prepare(sql) {
+      return {
+        bind(...args) {
+          const params = args.length === 1 && Array.isArray(args[0]) ? args[0] : args;
+          return {
+            sql,
+            params,
+            async all() {
+              const rs = await db.execute({ sql, args: params });
+              return { results: rs.rows };
+            },
+            async first() {
+              const rs = await db.execute({ sql, args: params });
+              return rs.rows[0] || null;
+            },
+            async run() {
+              const rs = await db.execute({ sql, args: params });
+              const recipient = notificationRecipient(sql, params);
+              if (rs.rowsAffected > 0 && recipient != null && rs.lastInsertRowid != null) publishNotification(recipient, rs.lastInsertRowid);
+              return { meta: { changes: rs.rowsAffected, last_row_id: Number(rs.lastInsertRowid) } };
+            }
+          };
+        },
+        async all(...params) { return (await this.bind(...params)).all(); },
+        async first(...params) { return (await this.bind(...params)).first(); },
+        async run(...params) { return (await this.bind(...params)).run(); }
+      };
+    },
+    async exec(sqlStatements) {
+      const statements = Array.isArray(sqlStatements) 
+        ? sqlStatements 
+        : sqlStatements.split(';').map(s => s.trim()).filter(Boolean);
+      for (const stmt of statements) {
+        if (stmt) {
+          await db.execute(stmt);
+        }
+      }
+    },
+    async batch(statements) {
+      const results = await db.batch(statements.map(stmt => ({ sql: stmt.sql, args: stmt.params })), 'write');
+      const output = [];
+      for (let i = 0; i < results.length; i++) {
+        const result = results[i], stmt = statements[i];
+        const recipient = notificationRecipient(stmt.sql, stmt.params);
+        if (result.rowsAffected > 0 && recipient != null && result.lastInsertRowid != null) publishNotification(recipient, result.lastInsertRowid);
+        output.push({ meta: { changes: result.rowsAffected, last_row_id: Number(result.lastInsertRowid) } });
+      }
+      return output;
+    }
+  }
+};
+
+app.use(express.json({ limit: '1mb' }));
+
+// PWA endpoints are embedded here so the Render deployment remains exactly five files.
+const PWA_ICON_192 = Buffer.from('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', 'base64');
+const PWA_ICON_512 = Buffer.from('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', 'base64');
+app.get('/manifest.webmanifest', (_req, res) => {
+  const manifest = {
+    id: '/', name: 'You Invest by Vela Finance', short_name: 'You Invest',
+    description: 'Market information and account tools from You Invest by Vela Finance.',
+    start_url: '/', scope: '/', display: 'standalone', display_override: ['standalone', 'minimal-ui'],
+    background_color: '#f4f1e9', theme_color: '#f4f1e9',
+    icons: [
+      { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+      { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' }
+    ]
+  };
+  res.set('Cache-Control', 'no-cache').type('application/manifest+json').send(JSON.stringify(manifest));
+});
+app.get('/icons/icon-192.png', (_req, res) => res.type('png').set('Cache-Control', 'public, max-age=31536000, immutable').send(PWA_ICON_192));
+app.get('/icons/icon-512.png', (_req, res) => res.type('png').set('Cache-Control', 'public, max-age=31536000, immutable').send(PWA_ICON_512));
+app.get('/sw.js', (_req, res) => res.set({ 'Service-Worker-Allowed': '/', 'Cache-Control': 'no-cache' }).type('application/javascript').send("const CACHE_NAME = 'you-invest-pwa-assets-v1';\nconst APP_ICONS = ['/icons/icon-192.png', '/icons/icon-512.png'];\nself.addEventListener('install', (event) => { event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_ICONS))); self.skipWaiting(); });\nself.addEventListener('activate', (event) => { event.waitUntil((async () => { const names = await caches.keys(); await Promise.all(names.filter((name) => name.startsWith('you-invest-pwa-') && name !== CACHE_NAME).map((name) => caches.delete(name))); await self.clients.claim(); })()); });\nself.addEventListener('fetch', (event) => { const request = event.request; if (request.method !== 'GET') return; const url = new URL(request.url); if (url.origin !== self.location.origin || request.mode === 'navigate' || /\\.(?:html?|js|css)$/i.test(url.pathname) || url.pathname.startsWith('/api/')) return; if (!url.pathname.startsWith('/icons/')) return; event.respondWith((async () => { try { const response = await fetch(request); if (response.ok) event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.put(request, response.clone()))); return response; } catch { return (await caches.match(request)) || Response.error(); } })()); });\n"));
+app.get(['/FULL_VELA.zip', '/download-app'], (req, res) => res.sendStatus(404));
+app.use(express.static(__dirname));
+
+function crc32(data) {
+  let crc = 0xffffffff;
+  for (const byte of data) { crc ^= byte; for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0); }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+function buildApplicationZip() {
+  const files = ['index.html', 'styles.css', 'script.js', 'server.js', 'package.json'];
+  const localParts = [], centralParts = []; let offset = 0;
+  const now = new Date();
+  const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | Math.floor(now.getSeconds() / 2);
+  const dosDate = ((Math.max(1980, now.getFullYear()) - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+  for (const filename of files) {
+    const name = Buffer.from(filename, 'utf8'), raw = readFileSync(path.join(__dirname, filename));
+    const compressed = deflateRawSync(raw), checksum = crc32(raw), local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(0x0800, 6); local.writeUInt16LE(8, 8);
+    local.writeUInt16LE(dosTime, 10); local.writeUInt16LE(dosDate, 12); local.writeUInt32LE(checksum, 14);
+    local.writeUInt32LE(compressed.length, 18); local.writeUInt32LE(raw.length, 22); local.writeUInt16LE(name.length, 26); local.writeUInt16LE(0, 28);
+    localParts.push(local, name, compressed);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0); central.writeUInt16LE(20, 4); central.writeUInt16LE(20, 6); central.writeUInt16LE(0x0800, 8);
+    central.writeUInt16LE(8, 10); central.writeUInt16LE(dosTime, 12); central.writeUInt16LE(dosDate, 14); central.writeUInt32LE(checksum, 16);
+    central.writeUInt32LE(compressed.length, 20); central.writeUInt32LE(raw.length, 24); central.writeUInt16LE(name.length, 28);
+    central.writeUInt16LE(0, 30); central.writeUInt16LE(0, 32); central.writeUInt16LE(0, 34); central.writeUInt16LE(0, 36);
+    central.writeUInt32LE(0, 38); central.writeUInt32LE(offset, 42); centralParts.push(central, name);
+    offset += local.length + name.length + compressed.length;
+  }
+  const centralDirectory = Buffer.concat(centralParts), end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(0, 4); end.writeUInt16LE(0, 6);
+  end.writeUInt16LE(files.length, 8); end.writeUInt16LE(files.length, 10); end.writeUInt32LE(centralDirectory.length, 12);
+  end.writeUInt32LE(offset, 16); end.writeUInt16LE(0, 20);
+  return Buffer.concat([...localParts, centralDirectory, end]);
+}
+
+const yahooInstruments = {
+  gold: { symbol: "GC=F", instrument: "Gold futures · USD per troy ounce" },
+  oil: { symbol: "CL=F", instrument: "WTI crude futures · USD per barrel" },
+  sp500: { symbol: "^GSPC", instrument: "S&P 500 index · index points" },
+  nasdaq: { symbol: "^IXIC", instrument: "NASDAQ Composite · index points" },
+  tesla: { symbol: "TSLA", instrument: "Tesla common stock · USD per share" },
+  artificialIntelligence: { symbol: "AIQ", instrument: "Global X AI & Technology ETF · USD per share" },
+  dowJones: { symbol: "^DJI", instrument: "Dow Jones Industrial Average · index points" },
+  russell2000: { symbol: "^RUT", instrument: "Russell 2000 · index points" },
+  silver: { symbol: "SI=F", instrument: "Silver futures · USD per troy ounce" },
+  naturalGas: { symbol: "NG=F", instrument: "Henry Hub natural gas futures · USD per MMBtu" },
+  copper: { symbol: "HG=F", instrument: "Copper futures · USD per pound" },
+  euroUsd: { symbol: "EURUSD=X", instrument: "EUR/USD spot exchange rate" },
+};
+const ELECTRICITY_MARKETS = Object.freeze({ "DE-LU": "Germany–Luxembourg", FR: "France", NL: "Netherlands", BE: "Belgium", AT: "Austria", CH: "Switzerland", DK1: "Denmark West", DK2: "Denmark East" });
+function normalizeElectricityMarket(value) { return Object.prototype.hasOwnProperty.call(ELECTRICITY_MARKETS, value) ? value : "DE-LU"; }
+
+let cachedQuotes = null;
+let cachedAt = 0;
+let refreshInFlight = new Map();
+let cachedQuotesMarket = "DE-LU";
+let cachedHistory = null;
+let historyAt = 0;
+let historyInFlight = new Map();
+let cachedHistoryMarket = "DE-LU";
+const positionQuoteCache = new Map();
+
+async function fetchJson(url, yahooRequest = false) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3000);
+  try {
+    const response = await fetch(url, {
+      headers: yahooRequest
+        ? { accept: "application/json", "user-agent": "Mozilla/5.0 (compatible; YouInvestMarket/1.0)", referer: "https://finance.yahoo.com/" }
+        : { accept: "application/json" },
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    return await response.json();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function yahooQuote(key, asset) {
+  const url = "https://query2.finance.yahoo.com/v8/finance/chart/" + encodeURIComponent(asset.symbol) + "?range=1d&interval=1m";
+  const body = await fetchJson(url, true);
+  const result = body?.chart?.result?.[0];
+  const meta = result?.meta;
+  const price = Number(meta?.regularMarketPrice);
+  if (!Number.isFinite(price) || price <= 0) return null;
+  const chartTime = result?.timestamp?.at(-1);
+  const marketAt = Number(meta?.regularMarketTime || chartTime) * 1000;
+  return {
+    price,
+    currency: "USD",
+    unit: ["sp500", "nasdaq", "dowJones", "russell2000"].includes(key) ? "index points" : "",
+    instrument: asset.instrument,
+    symbol: asset.symbol,
+    provider: "Yahoo Finance · delay may vary",
+    marketAt: Number.isFinite(marketAt) ? marketAt : Date.now(),
+  };
+}
+
+async function cryptoQuotes(now) {
+  const [body, extraBody] = await Promise.all([
+    fetchJson("https://api.kraken.com/0/public/Ticker?pair=XBTUSD,ETHUSD"),
+    fetchJson("https://api.kraken.com/0/public/Ticker?pair=BNBUSD,TRXUSD"),
+  ]);
+  const result = body?.result;
+  if (body?.error?.length || !result) return {};
+  const quotes = {};
+  for (const [key, ticker, instrument, symbol, source] of [
+    ["bitcoin", "XXBTZUSD", "Bitcoin spot · USD per BTC", "BTC/USD", result],
+    ["ethereum", "XETHZUSD", "Ethereum spot · USD per ETH", "ETH/USD", result],
+    ["bnb", "BNBUSD", "BNB spot · USD per BNB", "BNB/USD", extraBody?.result],
+    ["trx", "TRXUSD", "TRON spot · USD per TRX", "TRX/USD", extraBody?.result],
+  ]) {
+    const price = Number(source?.[ticker]?.c?.[0]);
+    if (!Number.isFinite(price) || price <= 0) continue;
+    quotes[key] = {
+      price, currency: "USD", unit: "", instrument, symbol,
+      provider: "Kraken", marketAt: now,
+    };
+  }
+  return quotes;
+}
+
+async function electricityQuote(now, selectedMarket = "DE-LU") {
+  const market = normalizeElectricityMarket(selectedMarket);
+  const start = new Date(now - 72 * 60 * 60 * 1000).toISOString();
+  const end = new Date(now).toISOString();
+  const params = new URLSearchParams({ bzn: market, start, end });
+  const body = await fetchJson("https://api.energy-charts.info/price?" + params);
+  if (!Array.isArray(body?.unix_seconds) || !Array.isArray(body?.price)) return null;
+  let latest = -1;
+  for (let i = 0; i < body.unix_seconds.length; i += 1) {
+    const timestamp = Number(body.unix_seconds[i]) * 1000;
+    const price = Number(body.price[i]);
+    if (Number.isFinite(timestamp) && timestamp <= now && Number.isFinite(price) && timestamp > latest) latest = timestamp;
+  }
+  if (latest < 0) return null;
+  const index = body.unix_seconds.findIndex((timestamp) => Number(timestamp) * 1000 === latest);
+  const marketName = ELECTRICITY_MARKETS[market];
+  return { price: Number(body.price[index]), currency: "EUR", unit: "per MWh", instrument: marketName + " day-ahead electricity · regional wholesale price", symbol: market, marketName, provider: "Energy-Charts · Fraunhofer ISE", marketAt: latest };
+}
+
+function aggregateCandles(points, intervalMs) {
+  const buckets = new Map();
+  for (const point of points) {
+    const start = Math.floor(point.time / intervalMs) * intervalMs;
+    const candle = buckets.get(start);
+    if (!candle) buckets.set(start, { time: point.time, open: point.open ?? point.value, high: point.high ?? point.value, low: point.low ?? point.value, close: point.close ?? point.value });
+    else {
+      candle.time = point.time;
+      candle.high = Math.max(candle.high, point.high ?? point.value);
+      candle.low = Math.min(candle.low, point.low ?? point.value);
+      candle.close = point.close ?? point.value;
+    }
+  }
+  return [...buckets.values()].sort((a, b) => a.time - b.time);
+}
+
+async function yahooHistory(asset, since) {
+  const symbol = encodeURIComponent(asset.symbol);
+  const url = 'https://query2.finance.yahoo.com/v8/finance/chart/' + symbol + '?range=1y&interval=1d';
+  const body = await fetchJson(url, true);
+  const result = body?.chart?.result?.[0];
+  const timestamps = result?.timestamp || [];
+  const quote = result?.indicators?.quote?.[0] || {};
+  const candles = timestamps.flatMap((timestamp, index) => {
+    const time = Number(timestamp) * 1000;
+    const open = Number(quote.open?.[index]);
+    const high = Number(quote.high?.[index]);
+    const low = Number(quote.low?.[index]);
+    const close = Number(quote.close?.[index]);
+    return Number.isFinite(time) && time >= since * 1000 && close > 0 && Number.isFinite(open) && Number.isFinite(high) && Number.isFinite(low)
+      ? [{ time, open, high, low, close }]
+      : [];
+  });
+  return { candles, points: candles.map((candle) => ({ time: candle.time, value: candle.close })) };
+}
+
+async function yahooIntraday(asset) {
+  const symbol = encodeURIComponent(asset.symbol);
+  const url = 'https://query2.finance.yahoo.com/v8/finance/chart/' + symbol + '?range=1d&interval=5m';
+  const body = await fetchJson(url, true);
+  const result = body?.chart?.result?.[0];
+  const timestamps = result?.timestamp || [];
+  const closes = result?.indicators?.quote?.[0]?.close || [];
+  return timestamps.flatMap((timestamp, index) => {
+    const time = Number(timestamp) * 1000;
+    const value = Number(closes[index]);
+    return Number.isFinite(time) && Number.isFinite(value) && value > 0 ? [{ time, value }] : [];
+  });
+}
+
+function electricityHistory(body, since) {
+  return (body?.unix_seconds || []).flatMap((seconds, index) => {
+    const time = Number(seconds) * 1000;
+    const value = Number(body.price[index]);
+    return Number.isFinite(time) && time >= since * 1000 && Number.isFinite(value)
+      ? [{ time, value }]
+      : [];
+  });
+}
+
+function electricityUsdHistory(points, fxPoints) {
+  let index = 0;
+  return points.flatMap((point) => {
+    while (index + 1 < fxPoints.length && fxPoints[index + 1].time <= point.time) index += 1;
+    const rate = Number(fxPoints[index]?.value);
+    return rate > 0 ? [{ time: point.time, value: point.value * rate }] : [];
+  });
+}
+
+async function loadAssetHistory(selectedMarket = "DE-LU") {
+  const electricityMarket = normalizeElectricityMarket(selectedMarket);
+  const now = Date.now();
+  const since = Math.floor((now - 365 * 24 * 60 * 60 * 1000) / 1000);
+  const electricityParams = new URLSearchParams({
+    bzn: electricityMarket,
+    start: new Date(now - 365 * 24 * 60 * 60 * 1000).toISOString(),
+    end: new Date(now).toISOString(),
+  });
+  const [yahooEntries, yahooIntradayEntries, bitcoinBody, ethereumBody, bitcoinYahoo, ethereumYahoo, bitcoinIntraday, ethereumIntraday, electricityBody, eurUsdHistory] = await Promise.all([
+    Promise.all(Object.entries(yahooInstruments).map(async ([key, asset]) => [key, await yahooHistory(asset, since)])),
+    Promise.all(Object.entries(yahooInstruments).map(async ([key, asset]) => [key, await yahooIntraday(asset)])),
+    fetchJson("https://api.kraken.com/0/public/OHLC?pair=XBTUSD&interval=30&since=" + since),
+    fetchJson("https://api.kraken.com/0/public/OHLC?pair=ETHUSD&interval=30&since=" + since),
+    yahooHistory({ symbol: "BTC-USD" }, since),
+    yahooHistory({ symbol: "ETH-USD" }, since),
+    yahooIntraday({ symbol: "BTC-USD" }),
+    yahooIntraday({ symbol: "ETH-USD" }),
+    fetchJson("https://api.energy-charts.info/price?" + electricityParams),
+    yahooHistory({ symbol: "EURUSD=X" }, since),
+  ]);
+  const histories = {};
+  const candles = {};
+  const intraday = Object.fromEntries(yahooIntradayEntries.filter(([, points]) => points.length));
+  for (const [key, series] of yahooEntries) {
+    if (!series.candles.length) continue;
+    histories[key] = series.points;
+    candles[key] = series.candles;
+  }
+  for (const [key, body, fallback] of [["bitcoin", bitcoinBody, bitcoinYahoo], ["ethereum", ethereumBody, ethereumYahoo]]) {
+    const result = body?.result || {};
+    const ticker = Object.keys(result).find((name) => name !== "last");
+    const exchangeCandles = (ticker ? result[ticker] : []).flatMap((row) => {
+      const time = Number(row[0]) * 1000;
+      const open = Number(row[1]), high = Number(row[2]), low = Number(row[3]), close = Number(row[4]);
+      return Number.isFinite(time) && time >= since * 1000 && open > 0 && high > 0 && low > 0 && close > 0
+        ? [{ time, open, high, low, close }]
+        : [];
+    });
+    if (fallback.candles.length) {
+      candles[key] = fallback.candles;
+      histories[key] = fallback.points;
+    } else if (exchangeCandles.length) {
+      candles[key] = exchangeCandles;
+      histories[key] = exchangeCandles.map((candle) => ({ time: candle.time, value: candle.close }));
+    }
+    const intradayYahoo = key === 'bitcoin' ? bitcoinIntraday : ethereumIntraday;
+    const recentExchange = exchangeCandles
+      .filter((candle) => candle.time >= Date.now() - 24 * 60 * 60_000)
+      .map((candle) => ({ time: candle.time, value: candle.close }));
+    if (intradayYahoo.length) intraday[key] = intradayYahoo;
+    else if (recentExchange.length) intraday[key] = recentExchange;
+  }
+  const electricity = electricityUsdHistory(electricityHistory(electricityBody, since), eurUsdHistory.points);
+  if (electricity.length) {
+    histories.electricity = electricity;
+    candles.electricity = aggregateCandles(electricity, 60 * 60_000);
+    intraday.electricity = electricity.filter((point) => point.time >= Date.now() - 24 * 60 * 60_000);
+  }
+  return { histories, candles, intraday, fetchedAt: Date.now() };
+}
+
+async function loadQuotes(selectedMarket = "DE-LU") {
+  const now = Date.now(), electricityMarket = normalizeElectricityMarket(selectedMarket);
+  const [entries, crypto, electricity] = await Promise.all([
+    Promise.all(Object.entries(yahooInstruments).map(async ([key, asset]) => [key, await yahooQuote(key, asset)])),
+    cryptoQuotes(now), electricityQuote(now, electricityMarket),
+  ]);
+  const quotes = Object.fromEntries(entries.filter(([, quote]) => quote));
+  Object.assign(quotes, crypto);
+  if (electricity) {
+    const eurUsd = quotes.euroUsd;
+    quotes.electricity = eurUsd
+      ? { ...electricity, price: Number((electricity.price * eurUsd.price).toFixed(6)), currency: 'USD', instrument: electricity.marketName + ' day-ahead electricity · USD per MWh', provider: electricity.provider + ' · EUR/USD reference conversion', unit: 'per MWh' }
+      : electricity;
+  }
+  for (const [key, quote] of Object.entries(quotes)) { const price = Number(quote?.price); if (Number.isFinite(price)) quote.price = Number(price.toFixed(key === "bnb" || key === "trx" ? 8 : 3)); }
+  return { quotes, electricityMarket, fetchedAt: Date.now() };
+}
+
+const marketApi = {
+  async fetch(request) {
+    const url = new URL(request.url);
+    if (request.method !== "GET") return new Response("Not found", { status: 404 });
+    const selectedMarket = normalizeElectricityMarket(url.searchParams.get("electricity"));
+    if (url.pathname === "/api/asset-history") {
+      if (cachedHistory && cachedHistoryMarket === selectedMarket && Date.now() - historyAt < 300_000) return Response.json(cachedHistory, { headers: { "Cache-Control": "no-store" } });
+      if (!historyInFlight.has(selectedMarket)) {
+        const task = loadAssetHistory(selectedMarket).then((data) => { cachedHistory = data; cachedHistoryMarket = selectedMarket; historyAt = Date.now(); return data; }).finally(() => historyInFlight.delete(selectedMarket));
+        historyInFlight.set(selectedMarket, task);
+      }
+      return Response.json(await historyInFlight.get(selectedMarket), { headers: { "Cache-Control": "no-store" } });
+    }
+    if (url.pathname !== "/api/asset-prices") return new Response("Not found", { status: 404 });
+    if (cachedQuotes && cachedQuotesMarket === selectedMarket && Date.now() - cachedAt < 2_500) return Response.json({ ...cachedQuotes, electricityMarket: selectedMarket }, { headers: { "Cache-Control": "no-store" } });
+    if (!refreshInFlight.has(selectedMarket)) {
+      const task = loadQuotes(selectedMarket).then((data) => {
+        if (Object.keys(data.quotes).length) { cachedQuotes = { quotes: { ...(cachedQuotes?.quotes || {}), ...data.quotes }, fetchedAt: data.fetchedAt }; cachedAt = Date.now(); cachedQuotesMarket = selectedMarket; }
+        return { ...(cachedQuotes || data), electricityMarket: selectedMarket };
+      }).finally(() => refreshInFlight.delete(selectedMarket));
+      refreshInFlight.set(selectedMarket, task);
+    }
+    return Response.json(await refreshInFlight.get(selectedMarket), { headers: { "Cache-Control": "no-store" } });
+  },
+};
+
+async function publishAssetPriceUpdate() {
+  if (!assetPriceStreams.size || assetPriceStreamPublishPromise) return assetPriceStreamPublishPromise;
+  assetPriceStreamPublishPromise = (async () => {
+    const response = await marketApi.fetch(new Request('http://localhost/api/asset-prices'));
+    if (!response.ok) return;
+    const data = await response.json();
+    const fetchedAt = Number(data?.fetchedAt) || 0;
+    const signature = JSON.stringify(Object.entries(data?.quotes || {}).map(([key, quote]) => [key, Number(quote?.price)]).sort((a, b) => a[0].localeCompare(b[0])));
+    if (!fetchedAt || !signature || signature === lastAssetPriceBroadcastSignature) return;
+    lastAssetPriceBroadcastSignature = signature;
+    const event = ['event: quotes', 'data: ' + JSON.stringify(data), '', ''].join(String.fromCharCode(10));
+    for (const client of assetPriceStreams) {
+      if (client.writableEnded || client.destroyed) assetPriceStreams.delete(client);
+      else client.write(event);
+    }
+  })().catch((error) => console.warn('Asset price broadcast failed:', error)).finally(() => { assetPriceStreamPublishPromise = null; });
+  return assetPriceStreamPublishPromise;
+}
+
+// Persistent market history survives Render sleep/wake and process restarts.
+// API values are merged by timestamp; new API values replace matching points.
+let marketHistoryTablePromise = null;
+let storedMarketHistory = null;
+let marketHistoryQueue = Promise.resolve();
+let lastMarketHistoryPruneAt = 0;
+
+function emptyStoredMarketHistory() { return { histories: {}, candles: {}, intraday: {} }; }
+function addStoredMarketPoint(target, type, key, row) {
+  if (!target[type][key]) target[type][key] = [];
+  target[type][key].push(row);
+}
+
+async function ensureStoredMarketHistory(env) {
+  if (!marketHistoryTablePromise) {
+    marketHistoryTablePromise = (async () => {
+      await env.DB.exec('CREATE TABLE IF NOT EXISTS market_history_points (asset_key TEXT NOT NULL, series_type TEXT NOT NULL, point_time INTEGER NOT NULL, value REAL, open REAL, high REAL, low REAL, close REAL, PRIMARY KEY (asset_key, series_type, point_time))');
+      await env.DB.exec(['CREATE INDEX IF NOT EXISTS market_history_point_time ON market_history_points(point_time)', 'CREATE INDEX IF NOT EXISTS market_history_series_time ON market_history_points(series_type, point_time)']);
+      const historyCutoff = Date.now() - 366 * 86400000;
+      const result = await env.DB.prepare('SELECT asset_key, series_type, point_time, value, open, high, low, close FROM market_history_points WHERE point_time >= ? ORDER BY point_time ASC').bind(historyCutoff).all();
+      const loaded = emptyStoredMarketHistory();
+      const cutoff = Date.now() - 2 * 86400000;
+      for (const row of result.results || []) {
+        const time = Number(row.point_time);
+        if (!Number.isFinite(time)) continue;
+        const key = String(row.asset_key);
+        if (row.series_type === 'candles') {
+          const candle = { time, open: Number(row.open), high: Number(row.high), low: Number(row.low), close: Number(row.close) };
+          if ([candle.open, candle.high, candle.low, candle.close].every(Number.isFinite)) addStoredMarketPoint(loaded, 'candles', key, candle);
+        } else if (row.series_type === 'histories' || row.series_type === 'intraday') {
+          if (row.series_type === 'intraday' && time < cutoff) continue;
+          const point = { time, value: Number(row.value) };
+          if (Number.isFinite(point.value)) addStoredMarketPoint(loaded, row.series_type, key, point);
+        }
+      }
+      storedMarketHistory = loaded;
+      return loaded;
+    })().catch((error) => { marketHistoryTablePromise = null; throw error; });
+  }
+  await marketHistoryTablePromise;
+  return storedMarketHistory;
+}
+
+function normalizeMarketHistory(data) {
+  const normalized = emptyStoredMarketHistory();
+  for (const type of ['histories', 'intraday']) {
+    for (const [key, points] of Object.entries(data?.[type] || {})) {
+      if (!Array.isArray(points)) continue;
+      const valid = points.map((point) => ({ time: Number(point?.time), value: Number(point?.value) }))
+        .filter((point) => Number.isFinite(point.time) && Number.isFinite(point.value));
+      if (valid.length) normalized[type][key] = valid;
+    }
+  }
+  for (const [key, candles] of Object.entries(data?.candles || {})) {
+    if (!Array.isArray(candles)) continue;
+    const valid = candles.map((candle) => ({ time: Number(candle?.time), open: Number(candle?.open), high: Number(candle?.high), low: Number(candle?.low), close: Number(candle?.close) }))
+      .filter((candle) => Number.isFinite(candle.time) && [candle.open, candle.high, candle.low, candle.close].every(Number.isFinite));
+    if (valid.length) normalized.candles[key] = valid;
+  }
+  return normalized;
+}
+
+function sameMarketPoint(a, b, type) {
+  if (!a) return false;
+  return type === 'candles' ? a.open === b.open && a.high === b.high && a.low === b.low && a.close === b.close : a.value === b.value;
+}
+
+async function mergeAndStoreMarketHistory(env, apiData) {
+  await ensureStoredMarketHistory(env);
+  const incoming = normalizeMarketHistory(apiData);
+  const merged = emptyStoredMarketHistory();
+  const changedRows = [];
+  const now = Date.now();
+  const cutoff = now - 2 * 86400000;
+  for (const type of ['histories', 'candles', 'intraday']) {
+    const keys = new Set([...Object.keys(storedMarketHistory[type]), ...Object.keys(incoming[type])]);
+    for (const key of keys) {
+      const oldPoints = (storedMarketHistory[type][key] || []).filter((point) => point.time >= now - 366 * 86400000 && (type !== 'intraday' || point.time >= cutoff));
+      const byTime = new Map(oldPoints.map((point) => [point.time, point]));
+      for (const point of incoming[type][key] || []) {
+        if (type === 'intraday' && point.time < cutoff) continue;
+        const previous = byTime.get(point.time);
+        byTime.set(point.time, point);
+        if (!sameMarketPoint(previous, point, type)) changedRows.push({ key, type, point });
+      }
+      const points = [...byTime.values()].sort((a, b) => a.time - b.time);
+      if (points.length) merged[type][key] = points;
+    }
+  }
+  const writeStatements = [];
+  for (let start = 0; start < changedRows.length; start += 80) {
+    const batch = changedRows.slice(start, start + 80);
+    const placeholders = batch.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(',');
+    const args = [];
+    for (const { key, type, point } of batch) args.push(key, type, point.time,
+      type === 'candles' ? null : point.value, type === 'candles' ? point.open : null,
+      type === 'candles' ? point.high : null, type === 'candles' ? point.low : null,
+      type === 'candles' ? point.close : null);
+    const sql = 'INSERT INTO market_history_points (asset_key, series_type, point_time, value, open, high, low, close) VALUES ' + placeholders +
+      ' ON CONFLICT(asset_key, series_type, point_time) DO UPDATE SET value=excluded.value, open=excluded.open, high=excluded.high, low=excluded.low, close=excluded.close';
+    writeStatements.push(env.DB.prepare(sql).bind(...args));
+  }
+  if (writeStatements.length) await env.DB.batch(writeStatements);
+  if (now - lastMarketHistoryPruneAt >= 86400000) {
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM market_history_points WHERE series_type = 'intraday' AND point_time < ?").bind(cutoff),
+      env.DB.prepare('DELETE FROM market_history_points WHERE point_time < ?').bind(now - 366 * 86400000),
+    ]);
+    lastMarketHistoryPruneAt = now;
+  }
+  storedMarketHistory = merged;
+  return { ...merged, fetchedAt: Number(apiData?.fetchedAt) || now };
+}
+
+function persistMarketHistory(env, data) {
+  const task = marketHistoryQueue.then(() => mergeAndStoreMarketHistory(env, data));
+  marketHistoryQueue = task.catch(() => {});
+  return task;
+}
+
+const DAY = 86400000;
+const PLANS = [
+  { days: 10, rate: 1.0, min: 50 },
+  { days: 30, rate: 1.2, min: 500 },
+  { days: 90, rate: 1.5, min: 1000 },
+];
+const REFERRAL_PCTS = [0.05];
+const PLAN_BONUSES = [0, 0.05, 0.15, 0.33];
+const PHONE_CALLING_CODES = new Set(("1 20 211 212 213 216 218 220 221 222 223 224 225 226 227 228 229 230 231 232 233 234 235 236 237 238 239 240 241 242 243 244 245 246 247 248 249 250 251 252 253 254 255 256 257 258 260 261 262 263 264 265 266 267 268 269 27 290 291 297 298 299 30 31 32 33 34 350 351 352 353 354 355 356 357 358 359 36 370 371 372 373 374 375 376 377 378 380 381 382 383 385 386 387 389 39 40 41 420 421 423 43 44 45 46 47 48 49 500 501 502 503 504 505 506 507 508 509 51 52 53 54 55 56 57 58 590 591 592 593 594 595 596 597 598 599 60 61 62 63 64 65 66 670 672 673 674 675 676 677 678 679 680 681 682 683 685 686 687 688 689 690 691 692 7 81 82 84 850 852 853 855 856 86 880 881 882 883 886 90 91 92 93 94 95 960 961 962 963 964 965 966 967 968 970 971 972 973 974 975 976 977 98 992 993 994 995 996 998").split(" "));
+
+function genSalt() {
+  const a = new Uint8Array(16);
+  crypto.getRandomValues(a);
+  return [...a].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+function normalizeEmail(value) {
+  const email = String(value || "").trim();
+  const at = email.lastIndexOf("@");
+  if (at < 1 || at > 64 || email.length > 254) return null;
+  const local = email.slice(0, at);
+  const domainInput = email.slice(at + 1);
+  if (!/^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+$/.test(local) || local.startsWith(".") || local.endsWith(".") || local.includes("..")) return null;
+  if (/[\s\/:?#@\\]/.test(domainInput)) return null;
+  let domain;
+  try { domain = new URL(`http://${domainInput}`).hostname.toLowerCase(); } catch { return null; }
+  const labels = domain.split(".");
+  if (domain.length > 253 || labels.length < 2 || labels.some(label => !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))) return null;
+  if (!/^[a-z0-9-]{2,63}$/.test(labels.at(-1))) return null;
+  return `${local.toLowerCase()}@${domain}`;
+}
+
+async function recordOtpRequestHistory(env, user, type, requestedAt, expiresAt, status) {
+  try {
+    await env.DB.prepare("INSERT INTO otp_request_history (user_id, username, email, otp_type, requested_at, expires_at, delivery_status) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(user.id, user.username || "user", user.identifier, type, requestedAt, expiresAt, status).run();
+  } catch (error) {
+    console.error("OTP history write failed:", error);
+  }
+}
+
+async function listOtpRequestHistory(request, env) {
+  const actor = await adminAccess(request, env, "otp");
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const requests = (await env.DB.prepare("SELECT id, user_id, username, email, otp_type, requested_at, expires_at, delivery_status FROM otp_request_history ORDER BY requested_at DESC LIMIT 200").all()).results;
+  return Response.json({ requests });
+}
+
+async function listOtpMailCopies(request, env) {
+  const actor = await adminAccess(request, env, "otp");
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const copies = (await env.DB.prepare("SELECT id, username, email, otp_type, sent_at, subject, body_text FROM otp_mail_copies ORDER BY sent_at DESC LIMIT 200").all()).results;
+  return Response.json({ copies });
+}
+
+async function deleteOtpMailCopy(request, env) {
+  const actor = await adminAccess(request, env, "otp");
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const body = await request.json().catch(() => ({}));
+  const id = Number(body.id);
+  if (!Number.isSafeInteger(id) || id < 1) return Response.json({ error: "Email non valida." }, { status: 400 });
+  const result = await env.DB.prepare("DELETE FROM otp_mail_copies WHERE id = ?").bind(id).run();
+  if (!(result.meta?.changes > 0)) return Response.json({ error: "Email non trovata." }, { status: 404 });
+  return Response.json({ ok: true });
+}
+
+async function recordOtpMailCopy(env, user, type, sentAt, copy) {
+  if (!copy) return;
+  try {
+    await env.DB.prepare("INSERT INTO otp_mail_copies (user_id, username, email, otp_type, sent_at, subject, body_text) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(user.id, user.username || "user", user.identifier, type, sentAt, copy.subject, copy.bodyText).run();
+  } catch (error) {
+    console.error("OTP email copy write failed:", error);
+  }
+}
+
+function generateEmailOtp() {
+  const value = new Uint32Array(1);
+  crypto.getRandomValues(value);
+  return String(value[0] % 1000000).padStart(6, "0");
+}
+
+async function sendOtpEmail(to, code, purpose, language) {
+  const user = process.env.SMTP_USER;
+  const pass = process.env.SMTP_PASS;
+  const recipient = normalizeEmail(to);
+  if (!user || !pass) throw new Error("SMTP_USER and SMTP_PASS must be configured.");
+  if (!recipient) throw new Error("OTP recipient is not a valid email address.");
+  const locale = String(language || "en").toLowerCase().split(/[-_]/)[0];
+  const messages = {
+    en: { subject: "Your Vela Finance verification code", heading: "Security verification", before: "Use this code to ", after: " on Vela Finance:", actions: { "password-reset": "reset your password", "email-verification": "verify your email address", "wallet-change": "confirm your wallet change" }, expires: "This code expires in 15 minutes.", ignore: "If you did not request this, ignore this email." },
+    fr: { subject: "Votre code de vérification Vela Finance", heading: "Vérification de sécurité", before: "Utilisez ce code pour ", after: " sur Vela Finance :", actions: { "password-reset": "réinitialiser votre mot de passe", "email-verification": "vérifier votre adresse e-mail", "wallet-change": "confirmer la modification de votre portefeuille" }, expires: "Ce code expire dans 15 minutes.", ignore: "Si vous n’êtes pas à l’origine de cette demande, ignorez cet e-mail." },
+    es: { subject: "Tu código de verificación de Vela Finance", heading: "Verificación de seguridad", before: "Usa este código para ", after: " en Vela Finance:", actions: { "password-reset": "restablecer tu contraseña", "email-verification": "verificar tu dirección de correo", "wallet-change": "confirmar el cambio de tu wallet" }, expires: "Este código caduca en 15 minutos.", ignore: "Si no solicitaste esto, ignora este correo." },
+    de: { subject: "Dein Vela Finance Bestätigungscode", heading: "Sicherheitsprüfung", before: "Verwende diesen Code, um ", after: " bei Vela Finance:", actions: { "password-reset": "dein Passwort zurückzusetzen", "email-verification": "deine E-Mail-Adresse zu bestätigen", "wallet-change": "deine Wallet-Änderung zu bestätigen" }, expires: "Dieser Code ist 15 Minuten gültig.", ignore: "Falls du dies nicht angefordert hast, ignoriere diese E-Mail." },
+    pt: { subject: "O seu código de verificação Vela Finance", heading: "Verificação de segurança", before: "Use este código para ", after: " na Vela Finance:", actions: { "password-reset": "redefinir a sua palavra-passe", "email-verification": "verificar o seu endereço de e-mail", "wallet-change": "confirmar a alteração da sua wallet" }, expires: "Este código expira em 15 minutos.", ignore: "Se não pediu isto, ignore este e-mail." },
+    hi: { subject: "आपका Vela Finance सत्यापन कोड", heading: "सुरक्षा सत्यापन", before: "इस कोड का उपयोग करें: ", after: " (Vela Finance):", actions: { "password-reset": "अपना पासवर्ड रीसेट करें", "email-verification": "अपना ईमेल पता सत्यापित करें", "wallet-change": "वॉलेट परिवर्तन की पुष्टि करें" }, expires: "यह कोड 15 मिनट में समाप्त होगा।", ignore: "यदि आपने यह अनुरोध नहीं किया, तो इस ईमेल को अनदेखा करें।" },
+    zh: { subject: "您的 Vela Finance 验证码", heading: "安全验证", before: "请使用此验证码 ", after: "（Vela Finance）：", actions: { "password-reset": "重置密码", "email-verification": "验证电子邮箱", "wallet-change": "确认钱包更改" }, expires: "验证码将在 15 分钟后失效。", ignore: "如果这不是您发起的请求，请忽略此邮件。" },
+    it: { subject: "Il tuo codice di verifica Vela Finance", heading: "Verifica di sicurezza", before: "Usa questo codice per ", after: " su Vela Finance:", actions: { "password-reset": "reimpostare la password", "email-verification": "verificare il tuo indirizzo email", "wallet-change": "confermare la modifica del wallet" }, expires: "Il codice scade tra 15 minuti.", ignore: "Se non hai richiesto questa operazione, ignora questa email." }
+  };
+  const copy = messages[locale] || messages.en;
+  const action = copy.actions[purpose] || copy.actions["email-verification"];
+  const introduction = copy.before + action + copy.after;
+  const details = copy.expires + " " + copy.ignore;
+  await otpMailer.sendMail({
+    from: process.env.SMTP_FROM || '"Vela Finance" <' + user + '>',
+    to: recipient,
+    subject: code + " · " + copy.subject,
+    text: introduction + String.fromCharCode(10) + String.fromCharCode(10) + copy.heading + ": " + code + String.fromCharCode(10) + details,
+    html: '<div style="font-family:Arial,sans-serif;max-width:500px;margin:0 auto;padding:24px;border:1px solid #e0e0e0;border-radius:8px"><h2>' + copy.heading + '</h2><p>' + introduction + '</p><div style="background:#f4f6f8;padding:16px;text-align:center;border-radius:6px;margin:24px 0"><span style="font-size:28px;font-weight:bold;letter-spacing:6px;color:#0052cc">' + code + '</span></div><p style="color:#666;font-size:13px">' + details + '</p></div>',
+  });
+  return {
+    subject: "•••••• · " + copy.subject,
+    bodyText: introduction + String.fromCharCode(10) + String.fromCharCode(10) + copy.heading + ": [OTP hidden]" + String.fromCharCode(10) + details,
+  };
+}
+
+function normalizePhone(value) {
+  const raw = String(value || "").trim();
+  if (!/^\+[0-9 ()-]+$/.test(raw)) return null;
+  const phone = "+" + raw.slice(1).replace(/[ ()-]/g, "");
+  if (!/^\+[1-9][0-9]{6,14}$/.test(phone)) return null;
+  const digits = phone.slice(1);
+  const callingCode = [...PHONE_CALLING_CODES].sort((a, b) => b.length - a.length).find(code => digits.startsWith(code));
+  if (!callingCode || digits.length - callingCode.length < 4) return null;
+  return phone;
+}
+
+function makeToken() {
+  const a = new Uint8Array(24);
+  crypto.getRandomValues(a);
+  return [...a].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function hash(pw, salt) {
+  const data = new TextEncoder().encode(salt + "::" + pw);
+  const buf = await crypto.subtle.digest("SHA-256", data);
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function hashAdminSecret(secret, saltHex, iterations = 20000) {
+  const salt = Uint8Array.from(saltHex.match(/.{2}/g), pair => parseInt(pair, 16));
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt, iterations, hash: "SHA-256" }, key, 256);
+  return [...new Uint8Array(bits)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function sessionUser(request, env) {
+  const h = (request.headers.get("x-session-token") || "").trim();
+  if (!h) return null;
+  const s = await env.DB.prepare("SELECT user_id, created_at FROM sessions WHERE token = ?").bind(h).first();
+  if (!s) return null;
+  if (s.created_at < Date.now() - 30 * DAY) {
+    await env.DB.prepare("DELETE FROM sessions WHERE token = ?").bind(h).run();
+    return null;
+  }
+  return env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(s.user_id).first();
+}
+
+async function adminSessionUser(request, env) {
+  const token = (request.headers.get("x-admin-token") || "").trim();
+  if (!token) return null;
+  const session = await env.DB.prepare("SELECT user_id FROM admin_sessions WHERE token = ? AND expires_at > ?").bind(token, Date.now()).first();
+  if (!session) return null;
+  if (session.user_id === PRIMARY_ADMIN_ID) return { id: PRIMARY_ADMIN_ID, username: "Admin", identifier: PRIMARY_ADMIN_EMAIL, email_verified: 1, created_at: 0 };
+  return env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(session.user_id).first();
+}
+
+function isPrimaryAdmin(actor) {
+  return String(actor?.identifier || "").trim().toLowerCase() === PRIMARY_ADMIN_EMAIL.toLowerCase();
+}
+
+async function adminActor(request, env) {
+  const actor = await adminSessionUser(request, env);
+  if (!actor) return null;
+  const authenticator = await env.DB.prepare("SELECT enabled FROM admin_authenticator WHERE user_id = ?").bind(actor.id).first();
+  if (Number(authenticator?.enabled) !== 1) return null;
+  const role = await env.DB.prepare("SELECT role FROM admin_roles WHERE user_id = ?").bind(actor.id).first();
+  return role || isPrimaryAdmin(actor) ? actor : null;
+}
+
+async function privilegedAdminActor(request, env) {
+  const actor = await adminActor(request, env);
+  if (!actor) return null;
+  if (isPrimaryAdmin(actor)) return actor;
+  const permissions = await readAdminPermissions(actor, env);
+  return permissions.allAdmin ? actor : null;
+}
+
+const ADMIN_PERMISSION_KEYS = ["fullPanel", "requests", "walletChanges", "otp", "support", "users", "antifraud", "allAdmin"];
+async function readAdminPermissions(actor, env) {
+  if (isPrimaryAdmin(actor)) return { fullPanel: true, requests: true, walletChanges: true, otp: true, support: true, users: true, allAdmin: true };
+  const role = await env.DB.prepare("SELECT role, permissions_json FROM admin_roles WHERE user_id = ?").bind(actor.id).first();
+  let stored = {};
+  try { stored = JSON.parse(role?.permissions_json || "{}"); } catch {}
+  const permissions = Object.fromEntries(ADMIN_PERMISSION_KEYS.map(key => [key, stored[key] === true]));
+  if (permissions.fullPanel) for (const key of ADMIN_PERMISSION_KEYS.filter(key => key !== "allAdmin")) permissions[key] = true;
+  if (permissions.allAdmin) for (const key of ADMIN_PERMISSION_KEYS) permissions[key] = true;
+  return permissions;
+}
+async function adminAccess(request, env, permission) {
+  const actor = await adminActor(request, env);
+  if (!actor) return null;
+  const permissions = await readAdminPermissions(actor, env);
+  if (permission === "antifraud") {
+    const assignedRole = await env.DB.prepare("SELECT role FROM admin_roles WHERE user_id = ?").bind(actor.id).first();
+    if (isPrimaryAdmin(actor) || assignedRole?.role === "admin" || permissions.allAdmin === true || permissions.fullPanel === true || permissions.antifraud === true) return actor;
+    return null;
+  }
+  return permissions[permission] ? actor : null;
+}
+
+async function accrue(env, userId) {
+  let wallet = await env.DB.prepare("SELECT * FROM wallets WHERE user_id = ?").bind(userId).first();
+  if (!wallet) {
+    wallet = { user_id: userId, deposit: 0, earnings: 0, released: 0, total_deposited: 0, total_earned: 0, total_withdrawn: 0 };
+    await env.DB.prepare("INSERT INTO wallets (user_id, deposit, earnings, released, total_deposited, total_earned, total_withdrawn) VALUES (?,0,0,0,0,0,0)").bind(userId).run();
+  }
+  const now = Date.now();
+  const invs = (await env.DB.prepare("SELECT * FROM investments WHERE user_id = ? AND active = 1").bind(userId).all()).results;
+  const updates = [];
+  let changed = false;
+  for (const inv of invs) {
+    const elapsed = (now - inv.created) / DAY;
+    const target = Math.min(inv.days, elapsed);
+    if (target > inv.credited + 1e-9) {
+      const gain = Number(((inv.amount * inv.rate / 100) * (target - inv.credited)).toFixed(3));
+      wallet.earnings += gain;
+      wallet.total_earned += gain;
+
+      if (target >= inv.days && inv.credited < inv.days) {
+        wallet.earnings += inv.amount;
+      }
+
+      inv.credited = target;
+      const active = target < inv.days - 1e-9 ? 1 : 0;
+      updates.push(env.DB.prepare("UPDATE investments SET credited = ?, active = ? WHERE id = ?").bind(target, active, inv.id));
+      changed = true;
+    }
+  }
+  if (changed) {
+    const statements = [env.DB.prepare(
+      "INSERT INTO wallets (user_id, deposit, earnings, total_deposited, total_earned, total_withdrawn) VALUES (?,?,?,?,?,?) " +
+      "ON CONFLICT(user_id) DO UPDATE SET deposit=excluded.deposit, earnings=excluded.earnings, total_deposited=excluded.total_deposited, total_earned=excluded.total_earned, total_withdrawn=excluded.total_withdrawn"
+    ).bind(userId, wallet.deposit, wallet.earnings, wallet.total_deposited, wallet.total_earned, wallet.total_withdrawn), ...updates];
+    await env.DB.batch(statements);
+  }
+  return wallet;
+}
+
+async function referralCommissionPercent(env, inviterId) {
+  const row = await env.DB.prepare("SELECT COUNT(*) AS total FROM users invited WHERE invited.referred_by = ? AND EXISTS (SELECT 1 FROM deposits d WHERE d.user_id = invited.id AND d.status = 'approved')").bind(inviterId).first();
+  const total = Number(row?.total || 0);
+  return total >= 31 ? 3 : total >= 16 ? 2.5 : total >= 11 ? 2 : 1;
+}
+
+async function inviterStats(env, userId) {
+  const counts = await env.DB.prepare(
+    "WITH active_users AS (" +
+    " SELECT u.id, u.referred_by FROM users u" +
+    " WHERE EXISTS (SELECT 1 FROM deposits d WHERE d.user_id = u.id AND d.status = 'approved')" +
+    " AND EXISTS (SELECT 1 FROM investments i WHERE i.user_id = u.id)" +
+    ") SELECT" +
+    " (SELECT COUNT(*) FROM active_users WHERE referred_by = ?) AS direct," +
+    " (SELECT COUNT(*) FROM active_users u JOIN users parent ON u.referred_by = parent.id WHERE parent.referred_by = ?) AS second," +
+    " (SELECT COALESCE(SUM(amount), 0) FROM referral_commissions WHERE user_id = ?) AS commission_earned"
+  ).bind(userId, userId, userId).first();
+  const direct = counts.direct;
+  const second = counts.second;
+  const level = direct >= 50 ? 3 : direct >= 5 && second >= 20 ? 2 : direct >= 5 ? 1 : 0;
+  return { direct, second, level, planBonus: PLAN_BONUSES[level], commissionEarned: Number(counts.commission_earned || 0) };
+}
+
+async function settleMonthlyReferralProfits(env, inviterId) {
+  try {
+    const now = Date.now(), period = new Date(now).toISOString().slice(0, 7);
+    const inviter = await env.DB.prepare("SELECT account_type, promoter_package, promoter_expires_at FROM users WHERE id = ?").bind(inviterId).first();
+    if (inviter?.account_type !== "promoter" || !inviter.promoter_package || Number(inviter.promoter_expires_at || 0) <= now) return;
+    const sources = (await env.DB.prepare(
+      "SELECT u.id, u.username FROM users u WHERE u.referred_by = ? AND NOT EXISTS (SELECT 1 FROM referral_profit_settlements s WHERE s.user_id = ? AND s.source_user_id = u.id AND s.period = ?)"
+    ).bind(inviterId, inviterId, period).all()).results || [];
+    for (const source of sources) {
+      const previous = await env.DB.prepare(
+        "SELECT profit_base FROM referral_profit_settlements WHERE user_id = ? AND source_user_id = ? AND credited_at IS NOT NULL ORDER BY period DESC LIMIT 1"
+      ).bind(inviterId, source.id).first();
+      const totals = await env.DB.prepare(
+        "SELECT " +
+        "COALESCE((SELECT SUM(amount) FROM market_position_redemptions WHERE user_id = ?), 0) + " +
+        "COALESCE((SELECT SUM(interest_paid) FROM simple_earn_positions WHERE user_id = ? AND status = 'redeemed'), 0) + " +
+        "COALESCE((SELECT SUM(amount * rate / 100 * CASE WHEN active = 1 THEN MIN(days, MAX(0, (? - created) / 86400000.0)) ELSE credited END) FROM investments WHERE user_id = ?), 0) + " +
+        "COALESCE((SELECT SUM(last_value - early_close_fee - amount) FROM market_positions WHERE user_id = ? AND status IN ('matured', 'early_closed')), 0) AS profit"
+      ).bind(source.id, source.id, now, source.id, source.id).first();
+      const previousBase = Math.max(0, Number(previous?.profit_base) || 0);
+      const currentBase = Math.max(previousBase, Number(totals?.profit) || 0);
+      const commissionPercent = await referralCommissionPercent(env, inviterId);
+      const commission = Number((Math.max(0, currentBase - previousBase) * commissionPercent / 100).toFixed(3));
+      const recordedBase = commission >= 0.001 ? currentBase : previousBase;
+      const eventId = 'monthly-profit:' + inviterId + ':' + source.id + ':' + period;
+      const message = 'Credited ' + commission.toFixed(3) + ' USDT monthly referral commission (' + commissionPercent + '% of net realized investment gains) from @' + String(source.username || 'user') + '.';
+      await env.DB.batch([
+        env.DB.prepare("INSERT OR IGNORE INTO referral_profit_settlements (user_id, source_user_id, period, profit_base, commission_amount, created_at, credited_at) VALUES (?, ?, ?, ?, ?, ?, NULL)").bind(inviterId, source.id, period, recordedBase, commission, now),
+        env.DB.prepare("INSERT OR IGNORE INTO referral_commissions (user_id, source_user_id, event_id, level, amount, created_at) SELECT ?, ?, ?, 1, ?, ? WHERE EXISTS (SELECT 1 FROM referral_profit_settlements WHERE user_id = ? AND source_user_id = ? AND period = ? AND credited_at IS NULL AND commission_amount > 0)").bind(inviterId, source.id, eventId, commission, now, inviterId, source.id, period),
+        env.DB.prepare("INSERT INTO wallets (user_id, deposit, earnings, released, total_deposited, total_earned, total_withdrawn) SELECT ?, 0, ?, 0, 0, ?, 0 WHERE EXISTS (SELECT 1 FROM referral_profit_settlements WHERE user_id = ? AND source_user_id = ? AND period = ? AND credited_at IS NULL AND commission_amount > 0) ON CONFLICT(user_id) DO UPDATE SET earnings = wallets.earnings + excluded.earnings, total_earned = wallets.total_earned + excluded.total_earned").bind(inviterId, commission, commission, inviterId, source.id, period),
+        env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM referral_profit_settlements WHERE user_id = ? AND source_user_id = ? AND period = ? AND credited_at IS NULL AND commission_amount > 0)").bind(inviterId, 'Monthly referral earnings commission', message, now, inviterId, source.id, period),
+        env.DB.prepare("UPDATE referral_profit_settlements SET credited_at = ? WHERE user_id = ? AND source_user_id = ? AND period = ? AND credited_at IS NULL").bind(now, inviterId, source.id, period),
+      ]);
+    }
+  } catch (error) {
+    console.error('Monthly referral commission settlement failed:', error);
+  }
+}
+
+async function referralRedemptionCommissionStatements(env, sourceUserId, profitAmount, eventId, now, redemptionPredicate, redemptionParams=[]) {
+  const profit = Math.max(0, Number(profitAmount) || 0);
+  if (profit < 0.001) return [];
+  const relations = (await env.DB.prepare(
+    "SELECT parent.id AS id, 1 AS level FROM users source JOIN users parent ON parent.id = source.referred_by WHERE source.id = ? AND parent.account_type = 'promoter' AND parent.promoter_package IS NOT NULL AND parent.promoter_expires_at > ? " +
+    "UNION ALL SELECT grandparent.id AS id, 2 AS level FROM users source JOIN users parent ON parent.id = source.referred_by JOIN users grandparent ON grandparent.id = parent.referred_by WHERE source.id = ? AND grandparent.account_type = 'promoter' AND grandparent.promoter_package IS NOT NULL AND grandparent.promoter_expires_at > ? AND (SELECT COUNT(*) FROM users direct_invites WHERE direct_invites.referred_by = grandparent.id AND EXISTS (SELECT 1 FROM deposits d WHERE d.user_id = direct_invites.id AND d.status = 'approved')) > 100"
+  ).bind(sourceUserId, now, sourceUserId, now).all()).results || [];
+  const statements = [];
+  for (const relation of relations) {
+    const percent = await referralCommissionPercent(env, relation.id);
+    const commission = Number((profit * percent / 100).toFixed(3));
+    if (commission < 0.001) continue;
+    const condition = redemptionPredicate ? " AND (" + redemptionPredicate + ")" : "";
+    const hierarchy = Number(relation.level) === 1
+      ? "EXISTS (SELECT 1 FROM users source JOIN users parent ON parent.id = source.referred_by WHERE source.id = ? AND parent.id = ? AND parent.account_type = 'promoter' AND parent.promoter_package IS NOT NULL AND parent.promoter_expires_at > ?)"
+      : "EXISTS (SELECT 1 FROM users source JOIN users parent ON parent.id = source.referred_by JOIN users grandparent ON grandparent.id = parent.referred_by WHERE source.id = ? AND grandparent.id = ? AND grandparent.account_type = 'promoter' AND grandparent.promoter_package IS NOT NULL AND grandparent.promoter_expires_at > ? AND (SELECT COUNT(*) FROM users direct_invites WHERE direct_invites.referred_by = grandparent.id AND EXISTS (SELECT 1 FROM deposits d WHERE d.user_id = direct_invites.id AND d.status = 'approved')) > 100)";
+    statements.push(
+      env.DB.prepare("INSERT OR IGNORE INTO referral_commissions (user_id, source_user_id, event_id, level, amount, created_at) SELECT ?, ?, ?, ?, ?, ? WHERE " + hierarchy + condition).bind(relation.id, sourceUserId, eventId, Number(relation.level), commission, now, sourceUserId, relation.id, now, ...redemptionParams),
+      env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE changes() > 0").bind(relation.id, 'Referral earnings commission', 'A level ' + relation.level + ' invitee redeemed gains. ' + commission.toFixed(3) + ' USDT (' + percent + '%) was added to your earnings balance.', now),
+      env.DB.prepare("INSERT INTO wallets (user_id, deposit, earnings, released, total_deposited, total_earned, total_withdrawn) SELECT ?, 0, ?, 0, 0, ?, 0 WHERE changes() > 0 ON CONFLICT(user_id) DO UPDATE SET earnings = wallets.earnings + excluded.earnings, total_earned = wallets.total_earned + excluded.total_earned").bind(relation.id, commission, commission)
+    );
+  }
+  return statements;
+}
+
+async function seedPromoterReferralBaselines(env, inviterId, now) {
+  const period = new Date(now).toISOString().slice(0, 7);
+  await env.DB.prepare(
+    "INSERT OR IGNORE INTO referral_profit_settlements (user_id, source_user_id, period, profit_base, commission_amount, created_at, credited_at) " +
+    "SELECT ?, invitee.id, ?, MAX(0, COALESCE((SELECT SUM(amount) FROM market_position_redemptions WHERE user_id = invitee.id), 0) + " +
+    "COALESCE((SELECT SUM(interest_paid) FROM simple_earn_positions WHERE user_id = invitee.id AND status = 'redeemed'), 0) + " +
+    "COALESCE((SELECT SUM(amount * rate / 100 * CASE WHEN active = 1 THEN MIN(days, MAX(0, (? - created) / 86400000.0)) ELSE credited END) FROM investments WHERE user_id = invitee.id), 0) + " +
+    "COALESCE((SELECT SUM(last_value - early_close_fee - amount) FROM market_positions WHERE user_id = invitee.id AND status IN ('matured', 'early_closed')), 0)), 0, ?, ? " +
+    "FROM users invitee WHERE invitee.referred_by = ?"
+  ).bind(inviterId, period, now, now, now, inviterId).run();
+}
+
+async function fullState(env, user, request) {
+  let wallet = await accrue(env, user.id);
+
+  const marketPositions = await syncMarketPositions(env, user.id);
+  const [simpleEarnResult, redemptionResult, walletResult, investmentsResult, depositsResult, withdrawalsResult, teamResult, inviteStats, s, actionRow] = await Promise.all([
+    env.DB.prepare("SELECT * FROM simple_earn_positions WHERE user_id = ? ORDER BY created_at DESC").bind(user.id).all(),
+    env.DB.prepare("SELECT position_id, amount, reference_value, created_at, segment_start_at, basis_quotes_json FROM market_position_redemptions WHERE user_id = ? ORDER BY created_at DESC").bind(user.id).all(),
+    env.DB.prepare("SELECT * FROM wallets WHERE user_id = ?").bind(user.id).first(),
+    env.DB.prepare("SELECT * FROM investments WHERE user_id = ? ORDER BY id DESC").bind(user.id).all(),
+    env.DB.prepare("SELECT * FROM deposits WHERE user_id = ? ORDER BY id DESC").bind(user.id).all(),
+    env.DB.prepare("SELECT * FROM withdrawals WHERE user_id = ? ORDER BY id DESC").bind(user.id).all(),
+    env.DB.prepare(
+      "WITH RECURSIVE referral_tree(id, username, created_at, level) AS (" +
+      " SELECT id, username, created_at, 1 FROM users WHERE referred_by = ?" +
+      " UNION ALL" +
+      " SELECT u.id, u.username, u.created_at, t.level + 1 FROM users u" +
+      " JOIN referral_tree t ON u.referred_by = t.id WHERE t.level < 1" +
+      ") SELECT t.id, t.username, t.created_at AS joined, t.level," +
+      " COALESCE(SUM(i.amount), 0) AS invested," +
+      " EXISTS (SELECT 1 FROM deposits d WHERE d.user_id = t.id AND d.status = 'approved') AS deposited," +
+      " COALESCE((SELECT SUM(c.amount) FROM referral_commissions c WHERE c.user_id = ? AND c.source_user_id = t.id), 0) AS commission_earned" +
+      " FROM referral_tree t LEFT JOIN investments i ON i.user_id = t.id" +
+      " GROUP BY t.id, t.username, t.created_at, t.level" +
+      " ORDER BY t.level, t.created_at DESC"
+    ).bind(user.id, user.id).all(),
+    inviterStats(env, user.id),
+    env.DB.prepare("SELECT * FROM settings WHERE user_id = ?").bind(user.id).first(),
+    env.DB.prepare("SELECT action, payload_json, requested_at, issued_at, otp_expires_at FROM sensitive_action_verifications WHERE user_id = ? AND consumed_at IS NULL").bind(user.id).first(),
+  ]);
+  const simpleEarnRows = simpleEarnResult.results || [];
+  const simpleEarnPositions = simpleEarnRows.map(position => { const elapsed = Math.max(0, Date.now() - Number(position.created_at)); const accruedInterest = Number((Number(position.principal) * Number(position.daily_rate) * elapsed / (30 * 86400000)).toFixed(3)); return { ...position, accruedInterest, currentValue: Number((Number(position.principal) + accruedInterest).toFixed(3)) }; });
+  const redemptionRows = redemptionResult.results || [];
+  const redemptionsByPosition = new Map();
+  for (const row of redemptionRows) {
+    let bucket = redemptionsByPosition.get(Number(row.position_id));
+    if (!bucket) redemptionsByPosition.set(Number(row.position_id), bucket = []);
+    let basisQuotes = {}; try { basisQuotes = JSON.parse(row.basis_quotes_json || '{}'); } catch {}
+    bucket.push({ amount: Number(row.amount), referenceValue: Number(row.reference_value), createdAt: Number(row.created_at), segmentStartAt: Number(row.segment_start_at), basisQuotes });
+  }
+  for (const position of marketPositions) {
+    position.redemptions = redemptionsByPosition.get(Number(position.id)) || [];
+    position.hasPlanEarned = position.redemptions.some(redemption => Number(redemption.amount) > 0.0005) || Number(position.currentValue) > Number(position.amount) + 0.0005;
+  }
+  wallet = walletResult || wallet;
+  const investments = investmentsResult.results;
+  const deposits = depositsResult.results;
+  const withdrawals = withdrawalsResult.results;
+  const team = teamResult.results;
+  let sensitiveAction = null;
+  if (actionRow) {
+    let payload = {};
+    try { payload = JSON.parse(actionRow.payload_json || "{}"); } catch {}
+    sensitiveAction = { action: actionRow.action, payload, requestedAt: actionRow.requested_at, issuedAt: actionRow.issued_at, otpExpiresAt: actionRow.otp_expires_at };
+  }
+
+  let withdraw_wallets = {};
+  let notifications = true;
+  if (s) {
+    try { withdraw_wallets = JSON.parse(s.withdraw_wallets || "{}"); } catch { withdraw_wallets = {}; }
+    notifications = !!s.notifications;
+  }
+  return {
+    user: { id: user.id, username: user.username, identifier: user.identifier, inviteCode: user.invite_code, referredBy: user.referred_by, emailVerified: user.email_verified, accountType: user.account_type || "simple", promoterPackage: user.promoter_package || null, promoterInviteLimit: Number(user.promoter_invite_limit || 0), promoterInvitesUsed: Number(user.promoter_invites_used || 0), promoterStartedAt: Number(user.promoter_started_at || 0), promoterExpiresAt: Number(user.promoter_expires_at || 0), promoterActive: user.account_type === "promoter" && Number(user.promoter_expires_at || 0) > Date.now() },
+    wallet,
+    investments,
+    marketPositions,
+    simpleEarnPositions,
+    deposits,
+    withdrawals,
+    team,
+    inviteStats,
+    acc: { withdraw_wallets, notifications },
+    sensitiveAction,
+    isOperator: !!(await adminSessionUser(request, env)),
+    isOwner: false,
+    isOwnerAccount: false,
+  };
+}
+
+let persistedMarketHistoryAt = 0;
+let persistedMarketHistoryData = null;
+let persistedMarketHistoryPromise = null;
+let schemaPromise; let automaticApprovalSchemaReady = false; let scheduledApprovalTask = null;
+
+const workerHandler = {
+  async fetch(request, env) {
+    const apiPath = new URL(request.url).pathname;
+    if (request.method === 'GET' && apiPath === '/api/asset-history') {
+      const response = await marketApi.fetch(request);
+      if (!response.ok) return response;
+      const apiData = await response.json();
+      try {
+        if (persistedMarketHistoryData && Number(apiData.fetchedAt) <= persistedMarketHistoryAt) {
+          return Response.json(persistedMarketHistoryData, { headers: { 'Cache-Control': 'no-store' } });
+        }
+        if (!persistedMarketHistoryPromise) {
+          persistedMarketHistoryPromise = persistMarketHistory(env, apiData).then((completeHistory) => {
+            persistedMarketHistoryData = completeHistory;
+            persistedMarketHistoryAt = Number(apiData.fetchedAt) || Date.now();
+            return completeHistory;
+          }).finally(() => { persistedMarketHistoryPromise = null; });
+        }
+        return Response.json(await persistedMarketHistoryPromise, { headers: { 'Cache-Control': 'no-store' } });
+      } catch (error) {
+        console.error('Market history persistence failed:', error);
+        return Response.json(apiData, { headers: { 'Cache-Control': 'no-store' } });
+      }
+    }
+    if (request.method === 'GET' && apiPath === '/api/asset-prices') {
+      return marketApi.fetch(request);
+    }
+    if (!schemaPromise) schemaPromise = (async () => {
+      await env.DB.exec([
+        `CREATE TABLE IF NOT EXISTS users (
+          id TEXT PRIMARY KEY,
+          username TEXT NOT NULL,
+          identifier TEXT NOT NULL,
+          password_hash TEXT NOT NULL,
+          salt TEXT NOT NULL,
+          invite_code TEXT NOT NULL,
+          referred_by TEXT,
+          created_at INTEGER NOT NULL,
+          email_verified INTEGER NOT NULL DEFAULT 0,
+          last_login_at INTEGER,
+          account_type TEXT NOT NULL DEFAULT 'simple',
+          promoter_package TEXT,
+          promoter_invite_limit INTEGER NOT NULL DEFAULT 0,
+          promoter_started_at INTEGER,
+          promoter_expires_at INTEGER,
+          promoter_invites_used INTEGER NOT NULL DEFAULT 0
+        );`,
+        `CREATE TABLE IF NOT EXISTS sessions (
+          token TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        );`,
+        `CREATE TABLE IF NOT EXISTS email_verification_requests (
+          user_id TEXT PRIMARY KEY,
+          requested_at INTEGER NOT NULL,
+          otp_hash TEXT,
+          otp_salt TEXT,
+          otp_expires_at INTEGER,
+          otp_attempts INTEGER NOT NULL DEFAULT 0,
+          issued_at INTEGER,
+          issued_by TEXT,
+          verified_at INTEGER
+        );`,
+        `CREATE TABLE IF NOT EXISTS password_reset_requests (
+          user_id TEXT PRIMARY KEY,
+          requested_at INTEGER NOT NULL,
+          otp_hash TEXT,
+          otp_salt TEXT,
+          otp_expires_at INTEGER,
+          otp_attempts INTEGER NOT NULL DEFAULT 0,
+          issued_at INTEGER,
+          issued_by TEXT
+        );`,
+        `CREATE TABLE IF NOT EXISTS sensitive_action_verifications (
+          user_id TEXT PRIMARY KEY,
+          action TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          requested_at INTEGER NOT NULL,
+          otp_hash TEXT,
+          otp_salt TEXT,
+          otp_expires_at INTEGER,
+          otp_attempts INTEGER NOT NULL DEFAULT 0,
+          issued_at INTEGER,
+          issued_by TEXT,
+          consumed_at INTEGER
+        );`,
+        `CREATE TABLE IF NOT EXISTS otp_request_history (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, username TEXT NOT NULL, email TEXT NOT NULL, otp_type TEXT NOT NULL, requested_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, delivery_status TEXT NOT NULL);`,
+        `CREATE INDEX IF NOT EXISTS otp_request_history_time ON otp_request_history(requested_at DESC);`,
+        `CREATE TABLE IF NOT EXISTS otp_mail_copies (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, username TEXT NOT NULL, email TEXT NOT NULL, otp_type TEXT NOT NULL, sent_at INTEGER NOT NULL, subject TEXT NOT NULL, body_text TEXT NOT NULL);`,
+        `CREATE INDEX IF NOT EXISTS otp_mail_copies_sent_at ON otp_mail_copies(sent_at DESC);`,
+        `CREATE TABLE IF NOT EXISTS notifications (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          title TEXT NOT NULL,
+          message TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          read_at INTEGER,
+          expires_at INTEGER
+        );`,
+        `CREATE INDEX IF NOT EXISTS notifications_user_created ON notifications(user_id, created_at DESC);`,
+        `CREATE TABLE IF NOT EXISTS balance_reports (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, admin_id TEXT NOT NULL, format TEXT NOT NULL, report_json TEXT NOT NULL, created_at INTEGER NOT NULL);`,
+        `CREATE INDEX IF NOT EXISTS balance_reports_user_created ON balance_reports(user_id, created_at DESC);`,
+        `CREATE TABLE IF NOT EXISTS balance_report_attachments (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, file_name TEXT NOT NULL, content_type TEXT NOT NULL, file_data BLOB NOT NULL, created_at INTEGER NOT NULL);`,
+        `CREATE INDEX IF NOT EXISTS balance_report_attachments_user ON balance_report_attachments(user_id, created_at DESC);`,
+        `CREATE TABLE IF NOT EXISTS balance_report_attachment_grants (report_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, attachment_id TEXT NOT NULL);`,
+        `CREATE INDEX IF NOT EXISTS balance_report_attachment_grants_user ON balance_report_attachment_grants(user_id, report_id);`,
+        `CREATE TABLE IF NOT EXISTS antifraud_events (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, username TEXT NOT NULL, event_type TEXT NOT NULL CHECK (event_type IN ('registration','deposit','withdrawal')), ip_address TEXT, event_ref TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, shared_ip INTEGER NOT NULL DEFAULT 0);`,
+        `CREATE INDEX IF NOT EXISTS antifraud_events_ip_time ON antifraud_events(ip_address, created_at DESC);`,
+        `CREATE INDEX IF NOT EXISTS antifraud_events_created ON antifraud_events(created_at DESC);`,
+        `CREATE TABLE IF NOT EXISTS antifraud_notice_log (id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER NOT NULL, user_id TEXT NOT NULL, stage INTEGER NOT NULL CHECK (stage BETWEEN 1 AND 3), admin_id TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE(user_id, stage));`,
+        `CREATE TABLE IF NOT EXISTS support_threads (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'bot' CHECK (status IN ('bot','waiting','live','closed')),
+          question_count INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );`,
+        `CREATE INDEX IF NOT EXISTS support_threads_user_updated ON support_threads(user_id, updated_at DESC);`,
+        `CREATE TABLE IF NOT EXISTS support_messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          thread_id INTEGER NOT NULL,
+          sender_role TEXT NOT NULL CHECK (sender_role IN ('user','assistant','operator')),
+          body TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        );`,
+        `CREATE INDEX IF NOT EXISTS support_messages_thread_id ON support_messages(thread_id, id);`,
+        `CREATE TABLE IF NOT EXISTS operator_admin_requests (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          operator_id TEXT NOT NULL,
+          operator_username TEXT NOT NULL,
+          thread_id INTEGER NOT NULL,
+          user_id TEXT NOT NULL,
+          username TEXT NOT NULL,
+          user_identifier TEXT NOT NULL,
+          details TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','resolved')),
+          created_at INTEGER NOT NULL,
+          resolved_at INTEGER,
+          admin_reply TEXT NOT NULL DEFAULT '',
+          replied_at INTEGER
+        );`,
+        `CREATE INDEX IF NOT EXISTS operator_admin_requests_status_created ON operator_admin_requests(status, created_at);`,
+        `CREATE TABLE IF NOT EXISTS operator_review_audit (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          operator_id TEXT NOT NULL,
+          operator_username TEXT NOT NULL,
+          request_kind TEXT NOT NULL,
+          request_id INTEGER NOT NULL,
+          user_id TEXT NOT NULL,
+          username TEXT NOT NULL DEFAULT '',
+          action TEXT NOT NULL CHECK (action IN ('approve','reject')),
+          request_details TEXT NOT NULL DEFAULT '{}',
+          created_at INTEGER NOT NULL
+        );`,
+        `CREATE INDEX IF NOT EXISTS operator_review_audit_operator_created ON operator_review_audit(operator_id, created_at DESC);`,
+        `CREATE TABLE IF NOT EXISTS wallets (
+          user_id TEXT PRIMARY KEY,
+          deposit REAL NOT NULL DEFAULT 0,
+          earnings REAL NOT NULL DEFAULT 0,
+          released REAL NOT NULL DEFAULT 0,
+          total_deposited REAL NOT NULL DEFAULT 0,
+          total_earned REAL NOT NULL DEFAULT 0,
+          total_withdrawn REAL NOT NULL DEFAULT 0
+        );`,
+        `CREATE TABLE IF NOT EXISTS investments (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          amount REAL NOT NULL,
+          days INTEGER NOT NULL,
+          rate REAL NOT NULL,
+          created INTEGER NOT NULL,
+          credited REAL NOT NULL DEFAULT 0,
+          active INTEGER NOT NULL DEFAULT 1,
+          commission_event_id TEXT
+        );`,
+        `CREATE TABLE IF NOT EXISTS simple_earn_positions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          principal REAL NOT NULL,
+          source TEXT NOT NULL CHECK(source IN ('deposit','earnings')),
+          daily_rate REAL NOT NULL DEFAULT 0.0027,
+          status TEXT NOT NULL DEFAULT 'active',
+          created_at INTEGER NOT NULL,
+          closed_at INTEGER,
+          interest_paid REAL NOT NULL DEFAULT 0
+        );`,
+        `CREATE INDEX IF NOT EXISTS simple_earn_user_status ON simple_earn_positions(user_id, status, created_at DESC);`,
+        `CREATE TABLE IF NOT EXISTS market_positions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          plan_id TEXT NOT NULL,
+          months INTEGER NOT NULL,
+          amount REAL NOT NULL,
+          stop_loss_pct REAL NOT NULL DEFAULT 20,
+          allocations_json TEXT NOT NULL,
+          entry_quotes_json TEXT NOT NULL,
+          last_value REAL NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active',
+          created_at INTEGER NOT NULL,
+          closed_at INTEGER,
+          risk_level TEXT NOT NULL DEFAULT 'legacy',
+          early_close_fee REAL NOT NULL DEFAULT 0,
+          last_redemption_id TEXT NOT NULL DEFAULT '',
+          basis_updated_at INTEGER NOT NULL DEFAULT 0,
+          auto_redeem_enabled INTEGER NOT NULL DEFAULT 0,
+          auto_redeem_pct REAL NOT NULL DEFAULT 10,
+          custom_fee REAL NOT NULL DEFAULT 0,
+          auto_add_enabled INTEGER NOT NULL DEFAULT 0,
+          auto_add_drawdown_pct REAL NOT NULL DEFAULT 10,
+          auto_add_mode TEXT NOT NULL DEFAULT 'fixed',
+          auto_add_value REAL NOT NULL DEFAULT 10,
+          auto_add_anchor_value REAL NOT NULL DEFAULT 0,
+          stop_loss_anchor_value REAL NOT NULL DEFAULT 0,
+          stop_loss_resume_value REAL NOT NULL DEFAULT 0
+        );`,
+        `CREATE INDEX IF NOT EXISTS market_positions_user ON market_positions(user_id, status, created_at DESC);`,
+        `CREATE TABLE IF NOT EXISTS market_position_redemptions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          position_id INTEGER NOT NULL,
+          user_id TEXT NOT NULL,
+          event_id TEXT NOT NULL UNIQUE,
+          amount REAL NOT NULL,
+          reference_value REAL NOT NULL,
+          created_at INTEGER NOT NULL,
+          segment_start_at INTEGER NOT NULL,
+          basis_quotes_json TEXT NOT NULL
+        );`,
+        `CREATE INDEX IF NOT EXISTS market_position_redemptions_user_position ON market_position_redemptions(user_id, position_id, created_at DESC);`,
+        `CREATE TABLE IF NOT EXISTS referral_commissions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          source_user_id TEXT NOT NULL,
+          event_id TEXT NOT NULL,
+          level INTEGER NOT NULL,
+          amount REAL NOT NULL,
+          created_at INTEGER NOT NULL,
+          UNIQUE(event_id, level)
+        );`,
+        `CREATE TABLE IF NOT EXISTS referral_first_deposits (
+          source_user_id TEXT PRIMARY KEY,
+          deposit_id INTEGER NOT NULL UNIQUE,
+          created_at INTEGER NOT NULL
+        );`,
+        `CREATE TABLE IF NOT EXISTS referral_profit_settlements (
+          user_id TEXT NOT NULL,
+          source_user_id TEXT NOT NULL,
+          period TEXT NOT NULL,
+          profit_base REAL NOT NULL,
+          commission_amount REAL NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          credited_at INTEGER,
+          PRIMARY KEY(user_id, source_user_id, period)
+        );`,
+        `CREATE INDEX IF NOT EXISTS users_referred_by ON users(referred_by);`,
+        `CREATE INDEX IF NOT EXISTS investments_user_active ON investments(user_id, active);`,
+        `CREATE TABLE IF NOT EXISTS deposits (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          amount REAL NOT NULL,
+          net TEXT NOT NULL,
+          date INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'approved',
+          tx_reference TEXT NOT NULL DEFAULT '',
+          deposit_address TEXT NOT NULL DEFAULT '',
+          transfer_status TEXT NOT NULL DEFAULT 'pending',
+          purpose TEXT NOT NULL DEFAULT 'deposit',
+          package_id TEXT
+        );`,
+        `CREATE TABLE IF NOT EXISTS withdrawals (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          amount REAL NOT NULL,
+          net TEXT NOT NULL,
+          date INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'approved',
+          wallet_address TEXT NOT NULL DEFAULT '',
+          source TEXT NOT NULL DEFAULT 'earnings',
+          tx_reference TEXT NOT NULL DEFAULT '',
+          fee_amount REAL NOT NULL DEFAULT 0,
+          charged_amount REAL NOT NULL DEFAULT 0,
+          transfer_status TEXT NOT NULL DEFAULT 'pending'
+        );`,
+        `CREATE TABLE IF NOT EXISTS balance_transfers (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          amount REAL NOT NULL,
+          fee_amount REAL NOT NULL,
+          credited_amount REAL NOT NULL,
+          created_at INTEGER NOT NULL
+);`,
+        `CREATE TABLE IF NOT EXISTS platform_config (
+          config_key TEXT PRIMARY KEY,
+          config_value TEXT NOT NULL
+        );`,
+        `CREATE TABLE IF NOT EXISTS settings (
+          user_id TEXT PRIMARY KEY,
+          withdraw_wallets TEXT NOT NULL DEFAULT '{}',
+          notifications INTEGER NOT NULL DEFAULT 1,
+          auto_redeem_pct REAL NOT NULL DEFAULT 0
+        );`,
+        `CREATE TABLE IF NOT EXISTS user_withdrawal_addresses (
+          user_id TEXT NOT NULL,
+          net TEXT NOT NULL,
+          address TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY (user_id, net, address)
+        );`,
+        `CREATE INDEX IF NOT EXISTS idx_withdrawal_address_lookup ON user_withdrawal_addresses(net, address);`,
+        `CREATE TABLE IF NOT EXISTS wallet_change_requests (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          net TEXT NOT NULL,
+          old_address TEXT NOT NULL,
+          new_address TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending'
+        );`,
+        `CREATE TABLE IF NOT EXISTS admin_credentials (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          salt TEXT NOT NULL,
+          password_hash TEXT NOT NULL,
+          updated_by TEXT NOT NULL,
+          updated_at INTEGER NOT NULL,
+          iterations INTEGER NOT NULL DEFAULT 20000,
+          email TEXT NOT NULL DEFAULT ''
+        );`,
+        `CREATE TABLE IF NOT EXISTS admin_sessions (
+          token TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          expires_at INTEGER NOT NULL
+        );`,
+        `CREATE TABLE IF NOT EXISTS admin_roles (
+          user_id TEXT PRIMARY KEY,
+          role TEXT NOT NULL CHECK (role IN ('admin','operator')),
+          permissions_json TEXT NOT NULL DEFAULT '{}',
+          granted_by TEXT NOT NULL,
+          granted_at INTEGER NOT NULL
+        );`,
+        `CREATE TABLE IF NOT EXISTS admin_authenticator (
+          user_id TEXT PRIMARY KEY,
+          secret TEXT NOT NULL,
+          enabled INTEGER NOT NULL DEFAULT 0,
+          updated_at INTEGER NOT NULL
+        );`,
+        `CREATE TABLE IF NOT EXISTS admin_mfa_challenges (
+          challenge TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          expires_at INTEGER NOT NULL,
+          attempts INTEGER NOT NULL DEFAULT 0
+        );`
+      ].join("\n"));
+    
+    await env.DB.exec([
+      'CREATE INDEX IF NOT EXISTS users_identifier_lower ON users(lower(identifier))',
+      'CREATE INDEX IF NOT EXISTS users_username_lower ON users(lower(username))',
+      'CREATE INDEX IF NOT EXISTS users_invite_code ON users(invite_code)',
+      'CREATE INDEX IF NOT EXISTS sessions_user_id ON sessions(user_id)',
+      'CREATE INDEX IF NOT EXISTS deposits_user_status_id ON deposits(user_id, status, id DESC)',
+      'CREATE INDEX IF NOT EXISTS deposits_status_date ON deposits(status, date)',
+      'CREATE INDEX IF NOT EXISTS deposits_tx_reference_lower ON deposits(lower(tx_reference))',
+      'CREATE INDEX IF NOT EXISTS withdrawals_user_date ON withdrawals(user_id, date DESC)',
+      'CREATE INDEX IF NOT EXISTS withdrawals_status_date ON withdrawals(status, date)',
+      'CREATE INDEX IF NOT EXISTS referral_commissions_user_source ON referral_commissions(user_id, source_user_id)',
+    ]);
+    try { await env.DB.prepare("ALTER TABLE admin_roles ADD COLUMN permissions_json TEXT NOT NULL DEFAULT '{}'").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE users ADD COLUMN last_login_at INTEGER").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE deposits ADD COLUMN deposit_address TEXT NOT NULL DEFAULT ''").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE deposits ADD COLUMN transfer_status TEXT NOT NULL DEFAULT 'pending'").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN transfer_status TEXT NOT NULL DEFAULT 'pending'").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN auto_transfer_at INTEGER NOT NULL DEFAULT 0").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN auto_transfer_override INTEGER NOT NULL DEFAULT 0").run(); } catch {}
+    try { await env.DB.exec("CREATE INDEX IF NOT EXISTS withdrawals_auto_due ON withdrawals(status, transfer_status, auto_transfer_at)"); } catch {}
+
+    try { await env.DB.prepare("ALTER TABLE settings ADD COLUMN auto_redeem_pct REAL NOT NULL DEFAULT 0").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN fee_amount REAL NOT NULL DEFAULT 0").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN charged_amount REAL NOT NULL DEFAULT 0").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE support_threads ADD COLUMN final_message_id INTEGER").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE support_threads ADD COLUMN support_operator_id TEXT").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE support_threads ADD COLUMN support_operator_username TEXT").run(); } catch {}
+    await env.DB.prepare("CREATE TABLE IF NOT EXISTS support_feedback (thread_id INTEGER PRIMARY KEY, user_id TEXT NOT NULL, username TEXT NOT NULL, operator_id TEXT NOT NULL, operator_username TEXT NOT NULL, rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5), comment TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL)").run();
+    await env.DB.prepare("CREATE INDEX IF NOT EXISTS support_feedback_operator_created ON support_feedback(operator_id, created_at DESC)").run();
+    try { await env.DB.prepare("ALTER TABLE wallets ADD COLUMN released REAL NOT NULL DEFAULT 0").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE users ADD COLUMN account_type TEXT NOT NULL DEFAULT 'simple'").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE users ADD COLUMN promoter_package TEXT").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE users ADD COLUMN promoter_invite_limit INTEGER NOT NULL DEFAULT 0").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE users ADD COLUMN promoter_started_at INTEGER").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE users ADD COLUMN promoter_expires_at INTEGER").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE users ADD COLUMN promoter_invites_used INTEGER NOT NULL DEFAULT 0").run(); } catch {}
+    await env.DB.prepare("UPDATE users SET promoter_invites_used = CASE WHEN promoter_package IS NOT NULL AND promoter_started_at IS NOT NULL THEN (SELECT COUNT(*) FROM users invited WHERE invited.referred_by = users.id AND invited.created_at >= users.promoter_started_at) ELSE (SELECT COUNT(*) FROM users invited WHERE invited.referred_by = users.id AND invited.created_at >= users.created_at) END WHERE promoter_invites_used = 0 AND account_type = 'promoter'").run();
+    try { await env.DB.prepare("ALTER TABLE deposits ADD COLUMN purpose TEXT NOT NULL DEFAULT 'deposit'").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE deposits ADD COLUMN package_id TEXT").run(); } catch {}
+    await env.DB.prepare("DROP TRIGGER IF EXISTS enforce_promoter_invite_limit").run();
+    await env.DB.prepare("CREATE TRIGGER enforce_promoter_invite_limit BEFORE INSERT ON users WHEN NEW.referred_by IS NOT NULL BEGIN SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM users p WHERE p.id = NEW.referred_by AND p.account_type = 'promoter' AND p.email_verified = 1 AND ((p.promoter_package IS NOT NULL AND p.promoter_expires_at > CAST(strftime('%s','now') AS INTEGER) * 1000 AND p.promoter_started_at IS NOT NULL AND p.promoter_invites_used < p.promoter_invite_limit AND (SELECT COUNT(*) FROM users invited WHERE invited.referred_by = p.id AND invited.created_at >= p.promoter_started_at) < p.promoter_invite_limit) OR (COALESCE(TRIM(p.promoter_package), '') = '' AND (SELECT COUNT(*) FROM users invited WHERE invited.referred_by = p.id AND invited.created_at >= p.created_at) < 1))) THEN RAISE(ABORT, 'Invitation limit reached or promoter package inactive') END; END").run();
+    await env.DB.prepare("CREATE TRIGGER IF NOT EXISTS count_promoter_invite_usage AFTER INSERT ON users WHEN NEW.referred_by IS NOT NULL BEGIN UPDATE users SET promoter_invites_used = promoter_invites_used + 1 WHERE id = NEW.referred_by; END").run();
+    try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN source TEXT NOT NULL DEFAULT 'earnings'").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE withdrawals ADD COLUMN tx_reference TEXT NOT NULL DEFAULT ''").run(); } catch {}
+    await env.DB.prepare("UPDATE withdrawals SET transfer_status = 'sent' WHERE status = 'pending' AND tx_reference != '' AND transfer_status = 'pending'").run();
+    try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN risk_level TEXT NOT NULL DEFAULT 'legacy'").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN early_close_fee REAL NOT NULL DEFAULT 0").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN last_redemption_id TEXT NOT NULL DEFAULT ''").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN basis_updated_at INTEGER NOT NULL DEFAULT 0").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_redeem_enabled INTEGER NOT NULL DEFAULT 0").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_redeem_pct REAL NOT NULL DEFAULT 10").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN custom_fee REAL NOT NULL DEFAULT 0").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_add_enabled INTEGER NOT NULL DEFAULT 0").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_add_drawdown_pct REAL NOT NULL DEFAULT 10").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_add_mode TEXT NOT NULL DEFAULT 'fixed'").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_add_value REAL NOT NULL DEFAULT 10").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN auto_add_anchor_value REAL NOT NULL DEFAULT 0").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN stop_loss_anchor_value REAL NOT NULL DEFAULT 0").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE market_positions ADD COLUMN stop_loss_resume_value REAL NOT NULL DEFAULT 0").run(); } catch {}
+    await env.DB.prepare("UPDATE market_positions SET basis_updated_at = created_at WHERE basis_updated_at = 0").run();
+    await env.DB.prepare("UPDATE market_positions SET risk_level = CASE WHEN stop_loss_pct <= 8 THEN 'conservative' WHEN stop_loss_pct >= 30 THEN 'aggressive' ELSE 'balanced' END WHERE risk_level = 'legacy'").run();
+    
+    try { await env.DB.exec("DROP TRIGGER IF EXISTS market_position_release;"); } catch {}
+    try {
+      await env.DB.exec(`
+        CREATE TRIGGER market_position_release AFTER UPDATE OF status ON market_positions
+        WHEN OLD.status IN ('active','paused') AND NEW.status IN ('matured','stop_loss','early_closed')
+        BEGIN 
+          UPDATE wallets SET released = released + NEW.last_value WHERE user_id = NEW.user_id; 
+        END;
+      `);
+    } catch {}
+
+    try { await env.DB.prepare("ALTER TABLE operator_admin_requests ADD COLUMN admin_reply TEXT NOT NULL DEFAULT ''").run(); } catch {}
+    try { await env.DB.prepare("ALTER TABLE operator_admin_requests ADD COLUMN replied_at INTEGER").run(); } catch {}
+
+    // Keep normal user authentication available when Render's admin secrets are not configured.
+    // Never rewrite or clear existing administrator credentials in that case.
+    if (PRIMARY_ADMIN_EMAIL && PRIMARY_ADMIN_PASSWORD) {
+      const adminEmail = PRIMARY_ADMIN_EMAIL.toLowerCase();
+      const legacyAdmin = await env.DB.prepare("SELECT id FROM users WHERE lower(identifier) = ?").bind(adminEmail).first();
+      const existingAdminCreds = await env.DB.prepare("SELECT salt, password_hash, iterations, updated_by FROM admin_credentials WHERE id = 1").first();
+      const oldAdminIds = [...new Set([legacyAdmin?.id, existingAdminCreds?.updated_by].filter(id => id && id !== PRIMARY_ADMIN_ID))];
+      for (const oldId of oldAdminIds) {
+        await env.DB.batch([
+          env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(oldId),
+          env.DB.prepare("DELETE FROM admin_sessions WHERE user_id = ?").bind(oldId),
+          env.DB.prepare("DELETE FROM admin_mfa_challenges WHERE user_id = ?").bind(oldId),
+          env.DB.prepare("DELETE FROM admin_authenticator WHERE user_id = ?").bind(oldId),
+          env.DB.prepare("DELETE FROM admin_roles WHERE user_id = ?").bind(oldId)
+        ]);
+      }
+      if (legacyAdmin) await env.DB.prepare("DELETE FROM users WHERE id = ?").bind(legacyAdmin.id).run();
+      await env.DB.prepare("DELETE FROM admin_roles WHERE role = 'admin' AND user_id != ?").bind(PRIMARY_ADMIN_ID).run();
+
+      let iterations = 20000;
+      if (!existingAdminCreds) {
+        const saltAdmin = genSalt();
+        const passwordHashAdmin = await hashAdminSecret(PRIMARY_ADMIN_PASSWORD, saltAdmin, iterations);
+        await env.DB.prepare("INSERT INTO admin_credentials (id, salt, password_hash, updated_by, updated_at, iterations, email) VALUES (1, ?, ?, ?, ?, ?, ?)")
+          .bind(saltAdmin, passwordHashAdmin, PRIMARY_ADMIN_ID, Date.now(), iterations, adminEmail).run();
+      } else {
+        iterations = existingAdminCreds.iterations || iterations;
+        const saltAdmin = genSalt();
+        const passwordHashAdmin = await hashAdminSecret(PRIMARY_ADMIN_PASSWORD, saltAdmin, iterations);
+        await env.DB.prepare("UPDATE admin_credentials SET salt = ?, password_hash = ?, updated_by = ?, updated_at = ?, iterations = ?, email = ? WHERE id = 1")
+          .bind(saltAdmin, passwordHashAdmin, PRIMARY_ADMIN_ID, Date.now(), iterations, adminEmail).run();
+      }
+    } else {
+      console.warn("Admin authentication is disabled: ADMIN_EMAIL and ADMIN_PASSWORD must both be configured.");
+    }
+
+    })().catch(err => { schemaPromise = null; throw err; });
+    await schemaPromise;
+    automaticApprovalSchemaReady = true;
+
+    const url = new URL(request.url);
+    const pathName = url.pathname;
+    const method = request.method;
+
+    try {
+      if (method === "POST" && pathName === "/api/register") return await register(request, env);
+      if (method === "POST" && pathName === "/api/login") return await login(request, env);
+      if (method === "POST" && pathName === "/api/admin/mfa/verify") return await verifyAdminAuthenticator(request, env);
+      if (method === "POST" && pathName === "/api/auth/forgot-password") return await requestPasswordReset(request, env);
+      if (method === "POST" && pathName === "/api/auth/reset-password") return await confirmPasswordReset(request, env);
+      if (method === "POST" && pathName === "/api/verification/request") return await requestEmailVerification(request, env);
+      if (method === "POST" && pathName === "/api/verification/confirm") return await confirmEmailVerification(request, env);
+      if (method === "POST" && pathName === "/api/verification/verify-otp") return await verifyAccountOtpDirect(request, env);
+      if (method === "POST" && pathName === "/api/logout") return await logout(request, env);
+      if (method === "GET" && pathName === "/api/me") return await me(request, env);
+      if (method === "GET" && pathName === "/api/commission-rates") {
+        const rates = await readCommissionRates(env), user = await sessionUser(request, env);
+        if (!user) return Response.json(rates);
+        return Response.json({ ...rates, hasEarned: await userHasEverEarned(env, user.id) });
+      }
+      if (method === "GET" && pathName === "/api/notifications") return await getNotifications(request, env);
+      if (method === "POST" && pathName === "/api/notifications/read") return await markNotificationsRead(request, env);
+      if (method === "GET" && pathName === "/api/support/current") return await supportCurrent(request, env);
+      if (method === "POST" && pathName === "/api/support/message") return await supportMessage(request, env);
+      if (method === "POST" && pathName === "/api/support/escalate") return await supportEscalate(request, env);
+      if (method === "POST" && pathName === "/api/support/choice") return await supportChoice(request, env);
+      if (method === "POST" && pathName === "/api/support/feedback") return await submitSupportFeedback(request, env);
+      if (method === "GET" && pathName === "/api/admin/support") return await adminSupportList(request, env);
+      if (method === "GET" && pathName === "/api/admin/support-requests") return await listOperatorAdminRequests(request, env);
+      if (method === "POST" && pathName === "/api/admin/support-requests") return await createOperatorAdminRequest(request, env);
+      const adminSupportRequestResolveMatch = pathName.match(/^\/api\/admin\/support-requests\/(\d+)\/resolve$/);
+      if (method === "POST" && adminSupportRequestResolveMatch) return await resolveOperatorAdminRequest(request, env, Number(adminSupportRequestResolveMatch[1]));
+      const adminSupportRequestReplyMatch = pathName.match(/^\/api\/admin\/support-requests\/(\d+)\/reply$/);
+      if (method === "POST" && adminSupportRequestReplyMatch) return await replyToOperatorAdminRequest(request, env, Number(adminSupportRequestReplyMatch[1]));
+      const adminSupportMessagesMatch = pathName.match(/^\/api\/admin\/support\/(\d+)\/messages$/);
+      if (method === "POST" && adminSupportMessagesMatch) return await adminSupportReply(request, env, Number(adminSupportMessagesMatch[1]));
+      const adminSupportThreadMatch = pathName.match(/^\/api\/admin\/support\/(\d+)$/);
+      if (method === "GET" && adminSupportThreadMatch) return await adminSupportThread(request, env, Number(adminSupportThreadMatch[1]));
+      if (method === "POST" && pathName === "/api/deposit") return await deposit(request, env);
+      if (method === "POST" && pathName === "/api/promoter/skip") return await skipPromoterPackages(request, env);
+      if (method === "POST" && pathName === "/api/promoter/upgrade") return await upgradePromoterAccount(request, env);
+      if (method === "POST" && pathName === "/api/invest") return Response.json({ error: "I vecchi piani a rendimento fisso non accettano nuovi investimenti. Usa i portafogli market con valore variabile." }, { status: 410 });
+      if (method === "POST" && pathName === "/api/market/invest") return await marketInvest(request, env);
+      if (method === "POST" && pathName === "/api/market/simple-earn") return await simpleEarnInvest(request, env);
+      if (method === "POST" && pathName === "/api/market/simple-earn/redeem") return await simpleEarnRedeem(request, env);
+      if (method === "POST" && pathName === "/api/market/custom-invest") return await customMarketInvest(request, env);
+      if (method === "POST" && pathName === "/api/market/redeem-gains") return await redeemMarketGains(request, env);
+      if (method === "POST" && pathName === "/api/market/custom-stop-loss") return await saveCustomPositionStopLoss(request, env);
+      if (method === "POST" && pathName === "/api/market/auto-redeem") return await savePositionAutoRedeem(request, env);
+      if (method === "POST" && pathName === "/api/market/auto-add") return await savePositionAutoAdd(request, env);
+      if (method === "POST" && pathName === "/api/market/close-early") return await closeMarketPositionEarly(request, env);
+      if (method === "GET" && pathName === "/api/deposit-addresses") return await getDepositAddresses(request, env);
+      if (method === "GET" && pathName === "/api/admin/deposit-addresses") return await adminDepositAddresses(request, env);
+      if (method === "GET" && pathName === "/api/admin/wallet-balances") return await adminWalletBalances(request, env);
+      if (method === "POST" && pathName === "/api/admin/platform-wallet-transfer") return await adminPlatformWalletTransfer(request, env);
+      if (method === "POST" && pathName === "/api/admin/platform-wallet-swap-quote") return await adminPlatformWalletSwapQuote(request, env);
+      if (method === "POST" && pathName === "/api/admin/platform-wallet-swap") return await adminPlatformWalletSwap(request, env);
+      if (method === "POST" && pathName === "/api/admin/deposit-addresses") return await saveAdminDepositAddresses(request, env);
+      if (method === "POST" && pathName === "/api/withdraw") return await withdraw(request, env);
+      if (method === "POST" && pathName === "/api/transfer-deposit-earnings") return Response.json({ error: "Il trasferimento dal saldo deposito al saldo guadagni non è più disponibile." }, { status: 410 });
+      if (method === "POST" && pathName === "/api/security/confirm-otp") return await confirmSensitiveActionOtp(request, env);
+      if (method === "POST" && pathName === "/api/save-wallet") return await saveWallet(request, env);
+      if (method === "POST" && pathName === "/api/wallet-change-request") return await requestWalletChange(request, env);
+      if (method === "POST" && pathName === "/api/wallet-change-resend") return await resendWalletChangeOtp(request, env);
+      if (method === "POST" && pathName === "/api/settings") return await updateSettings(request, env);
+      if (method === "POST" && pathName === "/api/change-password") return await changePassword(request, env);
+      if (method === "GET" && pathName === "/api/admin/permissions") return await adminPermissions(request, env);
+      if (method === "GET" && pathName === "/api/admin/antifraud") return await adminAntifraudEvents(request, env);
+      if (method === "POST" && pathName === "/api/admin/antifraud/notify") return await sendAntifraudNotice(request, env);
+      if (method === "POST" && pathName === "/api/admin/antifraud/delete") return await deleteAntifraudEvent(request, env);
+      if (method === "POST" && pathName === "/api/admin/antifraud/clear") return await clearAntifraudHistory(request, env);
+      if (method === "GET" && pathName === "/api/admin/backup/export") return await adminDatabaseBackup(request, env);
+      if (method === "GET" && pathName === "/api/admin/transactions") return await adminTransactions(request, env);
+      if (method === "GET" && pathName === "/api/admin/ledger") return await adminGlobalLedger(request, env);
+       if (method === "GET" && pathName === "/api/admin/password-reset-requests") return await listPasswordResetRequests(request, env);
+      if (method === "GET" && pathName === "/api/admin/otp-history") return await listOtpRequestHistory(request, env);
+      if (method === "GET" && pathName === "/api/admin/otp-mail-copies") return await listOtpMailCopies(request, env);
+      if (method === "POST" && pathName === "/api/admin/otp-mail-copies/delete") return await deleteOtpMailCopy(request, env);
+      if (method === "POST" && pathName === "/api/admin/payments/mark-sent") return await markWithdrawalSent(request, env);
+      if (method === "POST" && pathName === "/api/admin/payments/mark-failed") return await markWithdrawalFailed(request, env);
+      if (method === "POST" && pathName === "/api/admin/payments/mark-received") return await markDepositReceived(request, env);
+      if (method === "POST" && pathName === "/api/admin/payments/mark-deposit-failed") return await markDepositFailed(request, env);
+      if (method === "GET" && pathName === "/api/admin/payments/crypto-automation") return await getCryptoAutomationSetting(request, env);
+      if (method === "POST" && pathName === "/api/admin/payments/crypto-automation") return await saveCryptoAutomationSetting(request, env);
+      if (method === "GET" && pathName === "/api/admin/payments/auto-limits") return await getCryptoPayoutLimits(request, env);
+      if (method === "POST" && pathName === "/api/admin/payments/auto-limits") return await saveCryptoPayoutLimits(request, env);
+      if (method === "POST" && pathName === "/api/admin/payments/delegate-withdrawal") return await delegateWithdrawalToAutoTransfer(request, env);
+      if (method === "GET" && pathName === "/api/admin/payments/crypto-payout-delay") return await getCryptoPayoutDelay(request, env);
+      if (method === "POST" && pathName === "/api/admin/payments/crypto-payout-delay") return await saveCryptoPayoutDelay(request, env);
+      if (method === "GET" && pathName === "/api/payment-minimums") return await getPaymentMinimums(env);
+      if (method === "GET" && pathName === "/api/admin/payment-minimums") return await getAdminPaymentMinimums(request, env);
+      if (method === "POST" && pathName === "/api/admin/payment-minimums") return await saveAdminPaymentMinimums(request, env);
+      if (method === "GET" && pathName === "/api/admin/payment-settings") return await getAdminPaymentSettings(request, env);
+      if (method === "POST" && pathName === "/api/admin/payment-settings") return await saveAdminPaymentSettings(request, env);
+      if (method === "GET" && pathName === "/api/admin/commission-settings") return await getAdminCommissionSettings(request, env);
+      if (method === "POST" && pathName === "/api/admin/commission-settings") return await saveAdminCommissionSettings(request, env);
+      if (method === "POST" && pathName === "/api/admin/market-plans/sync") return await adminSyncAllMarketPlans(request, env);
+      if (method === "GET" && pathName === "/api/admin/statistics") return await adminStatistics(request, env);
+      if (method === "GET" && pathName === "/api/admin/users") return await adminUsers(request, env);
+      if (method === "GET" && pathName === "/api/admin/operator-audit") return await adminOperatorAudit(request, env);
+      if (method === "POST" && pathName === "/api/market/add-funds") return await addMarketFunds(request, env);
+      if (method === "POST" && pathName === "/api/admin/users/role") return await adminSetUserRole(request, env);
+      
+      const adminProfileMatch = pathName.match(/^\/api\/admin\/users\/([^/]+)\/profile$/);
+      if (method === "POST" && adminProfileMatch) return await adminUpdateUserProfile(request, env, adminProfileMatch[1]);
+      
+      if (method === "POST" && pathName === "/api/admin/balance-report-attachments") return await saveBalanceReportAttachment(request, env);
+      const reportAttachmentMatch = pathName.match(/^\/api\/balance-reports\/([a-f0-9-]{36})\/attachment$/i);
+      if (method === "GET" && reportAttachmentMatch) return await getUserBalanceReportAttachment(request, env, reportAttachmentMatch[1]);
+      const adminUserReportMatch = pathName.match(/^\/api\/admin\/users\/([^/]+)\/balance-report$/);
+      if (method === "POST" && adminUserReportMatch) return await sendUserBalanceReport(request, env, adminUserReportMatch[1]);
+      const balanceReportMatch = pathName.match(/^\/api\/balance-reports\/([a-f0-9-]{36})$/i);
+      if (method === "GET" && balanceReportMatch) return await getUserBalanceReport(request, env, balanceReportMatch[1]);
+
+      const adminUserMatch = pathName.match(/^\/api\/admin\/users\/([^/]+)$/);
+      if (method === "GET" && adminUserMatch) return await adminUserDetails(request, env, adminUserMatch[1]);
+      
+      const adminOtpMatch = pathName.match(/^\/api\/admin\/users\/([^/]+)\/verification-otp$/);
+      if (method === "POST" && adminOtpMatch) return await setUserVerificationOtp(request, env, adminOtpMatch[1]);
+
+      const adminWalletOtpMatch = pathName.match(new RegExp("^/api/admin/users/([^/]+)/wallet-change-otp$"));
+      if (method === "POST" && adminWalletOtpMatch) return await setWalletChangeOtp(request, env, adminWalletOtpMatch[1]);
+
+      const adminPasswordResetOtpMatch = pathName.match(/^\/api\/admin\/users\/([^/]+)\/password-reset-otp$/);
+      if (method === "POST" && adminPasswordResetOtpMatch) return await setPasswordResetOtp(request, env, adminPasswordResetOtpMatch[1]);
+      
+      const adminBalanceMatch = pathName.match(/^\/api\/admin\/users\/([^/]+)\/balance$/);
+      if (method === "POST" && adminBalanceMatch) return await adminUpdateUserBalance(request, env, adminBalanceMatch[1]);
+
+      const adminDeleteMatch = pathName.match(/^\/api\/admin\/users\/([^/]+)\/delete$/);
+      if (method === "POST" && adminDeleteMatch) return await adminDeleteUser(request, env, adminDeleteMatch[1]);
+      
+      if (method === "POST" && pathName === "/api/admin/review") return await reviewTransaction(request, env);
+      if (method === "POST" && pathName === "/api/admin/credential") return await setAdminCredential(request, env);
+      if (method === "POST" && pathName === "/api/admin/logout") return await adminLogout(request, env);
+    } catch (e) {
+      const status = Number.isInteger(e?.status) ? e.status : 500;
+      if (status >= 500) console.error(pathName, e);
+      return Response.json({ error: status === 500 ? "Errore del server." : e.message }, { status });
+    }
+    return new Response("Not found", { status: 404 });
+  }
+};
+
+async function supportCurrent(request, env) {
+  const user = await sessionUser(request, env);
+  if (!user) return Response.json({ error: "Accedi per usare l’assistenza." }, { status: 401 });
+  const thread = await env.DB.prepare("SELECT t.id, t.user_id, t.status, t.question_count, t.final_message_id, t.created_at, t.updated_at, t.support_operator_id, t.support_operator_username FROM support_threads t WHERE t.user_id = ? AND (t.status != 'closed' OR (t.support_operator_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM support_feedback f WHERE f.thread_id = t.id))) ORDER BY CASE WHEN t.status = 'closed' THEN 1 ELSE 0 END, t.id DESC LIMIT 1").bind(user.id).first();
+  if (!thread) return Response.json({ thread: null, messages: [] });
+  const messages = (await env.DB.prepare("SELECT id, sender_role, body, created_at FROM support_messages WHERE thread_id = ? ORDER BY id ASC LIMIT 200").bind(thread.id).all()).results;
+  return Response.json({ thread, messages });
+}
+
+async function supportMessage(request, env) {
+  const user = await sessionUser(request, env);
+  if (!user) return Response.json({ error: "Accedi per usare l’assistenza." }, { status: 401 });
+  const body = await request.json();
+  const message = typeof body.message === "string" ? body.message.trim() : "";
+  if (!message || message.length > 2000) return Response.json({ error: "Il messaggio deve contenere da 1 a 2000 caratteri." }, { status: 400 });
+  const now = Date.now();
+  let thread = await env.DB.prepare("SELECT id, status, question_count, final_message_id FROM support_threads WHERE user_id = ? AND status != 'closed' ORDER BY id DESC LIMIT 1").bind(user.id).first();
+  if (!thread) {
+    const created = await env.DB.prepare("INSERT INTO support_threads (user_id, status, question_count, created_at, updated_at) VALUES (?, 'bot', 0, ?, ?)").bind(user.id, now, now).run();
+    thread = { id: Number(created.meta?.last_row_id), status: 'bot' };
+  }
+  if (thread.final_message_id) return Response.json({ error: "Rispondi prima alla domanda di chiusura." }, { status: 400 });
+  await env.DB.prepare("INSERT INTO support_messages (thread_id, sender_role, body, created_at) VALUES (?, 'user', ?, ?)").bind(thread.id, message, now).run();
+  let reply = "";
+  if (thread.status === 'bot') {
+    reply = typeof body.botReply === "string" ? body.botReply.trim().slice(0, 4000) : "";
+    if (!reply) reply = "Mi dispiace, non ho trovato una risposta precisa. Puoi riformulare la domanda o chiedermi informazioni su account, depositi, prelievi e portafogli.";
+    if (Number(thread.question_count || 0) >= 4 && (Number(thread.question_count || 0) - 4) % 3 === 0) reply += String.fromCharCode(10) + String.fromCharCode(10) + "Vuoi parlare con un operatore?";
+    await env.DB.prepare("INSERT INTO support_messages (thread_id, sender_role, body, created_at) VALUES (?, 'assistant', ?, ?)").bind(thread.id, reply, now + 1).run();
+  }
+  await env.DB.prepare("UPDATE support_threads SET question_count = question_count + 1, updated_at = ? WHERE id = ?").bind(now, thread.id).run();
+  const updated = await env.DB.prepare("SELECT id, user_id, status, question_count, final_message_id, created_at, updated_at FROM support_threads WHERE id = ?").bind(thread.id).first();
+  const messages = (await env.DB.prepare("SELECT id, sender_role, body, created_at FROM support_messages WHERE thread_id = ? ORDER BY id ASC LIMIT 200").bind(thread.id).all()).results;
+  return Response.json({ thread: updated, messages });
+}
+
+async function supportEscalate(request, env) {
+  const user = await sessionUser(request, env);
+  if (!user) return Response.json({ error: "Accedi per usare l’assistenza." }, { status: 401 });
+  const thread = await env.DB.prepare("SELECT id, status, question_count, final_message_id FROM support_threads WHERE user_id = ? AND status != 'closed' ORDER BY id DESC LIMIT 1").bind(user.id).first();
+  if (!thread) return Response.json({ error: "Invia prima cinque domande al bot." }, { status: 400 });
+  if (Number(thread.question_count) < 5) return Response.json({ error: "Puoi richiedere un operatore dopo cinque domande." }, { status: 400 });
+  if (thread.status === 'bot') await env.DB.prepare("UPDATE support_threads SET status = 'waiting', updated_at = ? WHERE id = ?").bind(Date.now(), thread.id).run();
+  const updated = await env.DB.prepare("SELECT id, user_id, status, question_count, final_message_id, created_at, updated_at FROM support_threads WHERE id = ?").bind(thread.id).first();
+  return Response.json({ thread: updated });
+}
+
+async function submitSupportFeedback(request, env) {
+  const user = await sessionUser(request, env);
+  if (!user) return Response.json({ error: "Accedi per inviare un feedback." }, { status: 401 });
+  const body = await request.json();
+  const threadId = Number(body.threadId);
+  const rating = Number(body.rating);
+  const comment = typeof body.comment === "string" ? body.comment.trim() : "";
+  if (!Number.isInteger(threadId) || threadId < 1) return bad("Conversazione non valida.");
+  if (!Number.isInteger(rating) || rating < 1 || rating > 5) return bad("Seleziona una valutazione da 1 a 5 stelle.");
+  if (comment.length > 1200) return bad("Il commento non può superare 1200 caratteri.");
+  const thread = await env.DB.prepare("SELECT id, status, support_operator_id, support_operator_username FROM support_threads WHERE id = ? AND user_id = ?").bind(threadId, user.id).first();
+  if (!thread || thread.status !== "closed" || !thread.support_operator_id) return Response.json({ error: "Il feedback è disponibile solo dopo una conversazione conclusa con un operatore." }, { status: 400 });
+  const result = await env.DB.prepare("INSERT OR IGNORE INTO support_feedback (thread_id, user_id, username, operator_id, operator_username, rating, comment, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .bind(threadId, user.id, String(user.username || "user"), thread.support_operator_id, String(thread.support_operator_username || "Operator"), rating, comment, Date.now()).run();
+  if (!result.meta?.changes) return Response.json({ error: "Hai già inviato il feedback per questa conversazione." }, { status: 409 });
+  return Response.json({ ok: true });
+}
+
+async function supportChoice(request, env) {
+  const user = await sessionUser(request, env);
+  if (!user) return Response.json({ error: "Accedi per usare l’assistenza." }, { status: 401 });
+  const body = await request.json();
+  const choice = typeof body.choice === "string" ? body.choice : "";
+  const thread = await env.DB.prepare("SELECT id, user_id, status, question_count, final_message_id, created_at, updated_at, support_operator_id, support_operator_username FROM support_threads WHERE user_id = ? AND status != 'closed' ORDER BY id DESC LIMIT 1").bind(user.id).first();
+  if (!thread || (thread.status !== "bot" && !(thread.status === "live" && thread.final_message_id && (choice === "close" || choice === "continue"))) || (thread.status === "bot" && Number(thread.question_count) < 5)) return Response.json({ error: "La scelta non è più disponibile." }, { status: 400 });
+  const last = await env.DB.prepare("SELECT id, sender_role, body FROM support_messages WHERE thread_id = ? ORDER BY id DESC LIMIT 1").bind(thread.id).first();
+  const now = Date.now();
+  if ((choice === "close" || choice === "continue") && thread.status === "live" && thread.final_message_id && Number(thread.final_message_id) === Number(last?.id) && last?.sender_role === "operator") {
+    const answer = choice === "close" ? "Sì, chiudi la chat." : "No, desidero continuare.";
+    const reply = choice === "close" ? "Chat chiusa. Puoi riaprire l’assistenza quando vuoi." : "Va bene, continuiamo con l’assistenza virtuale. Scrivi pure la tua domanda.";
+    await env.DB.prepare("INSERT INTO support_messages (thread_id, sender_role, body, created_at) VALUES (?, 'user', ?, ?)").bind(thread.id, answer, now).run();
+    if (choice === "close") await env.DB.prepare("INSERT INTO support_messages (thread_id, sender_role, body, created_at) VALUES (?, 'assistant', ?, ?)").bind(thread.id, reply, now + 1).run();
+    await env.DB.prepare("UPDATE support_threads SET status = ?, final_message_id = NULL, updated_at = ? WHERE id = ?").bind(choice === "close" ? "closed" : "live", now, thread.id).run();
+  } else if (choice === "operator" || choice === "decline") {
+    if (last?.sender_role !== "assistant" || !String(last.body).includes("Vuoi parlare con un operatore?")) return Response.json({ error: "La scelta non è più disponibile." }, { status: 400 });
+    const answer = choice === "operator" ? "Sì, desidero parlare con un operatore." : "No, grazie.";
+    await env.DB.prepare("INSERT INTO support_messages (thread_id, sender_role, body, created_at) VALUES (?, 'user', ?, ?)").bind(thread.id, answer, now).run();
+    if (choice === "operator") {
+      await env.DB.prepare("UPDATE support_threads SET status = 'waiting', updated_at = ? WHERE id = ?").bind(now, thread.id).run();
+    } else {
+      await env.DB.prepare("INSERT INTO support_messages (thread_id, sender_role, body, created_at) VALUES (?, 'assistant', ?, ?)").bind(thread.id, "Vuoi chiudere la chat?", now + 1).run();
+      await env.DB.prepare("UPDATE support_threads SET updated_at = ? WHERE id = ?").bind(now, thread.id).run();
+    }
+  } else if (choice === "close" || choice === "continue") {
+    if (thread.status !== "bot" || last?.sender_role !== "assistant" || !String(last.body).includes("Vuoi chiudere la chat?")) return Response.json({ error: "La scelta non è più disponibile." }, { status: 400 });
+    const answer = choice === "close" ? "Sì, chiudi la chat." : "No, desidero continuare.";
+    const reply = choice === "close" ? "Chat chiusa. Puoi riaprire l’assistenza quando vuoi." : "Va bene, continuiamo con l’assistenza virtuale. Scrivi pure la tua domanda.";
+    await env.DB.prepare("INSERT INTO support_messages (thread_id, sender_role, body, created_at) VALUES (?, 'user', ?, ?)").bind(thread.id, answer, now).run();
+    await env.DB.prepare("INSERT INTO support_messages (thread_id, sender_role, body, created_at) VALUES (?, 'assistant', ?, ?)").bind(thread.id, reply, now + 1).run();
+    await env.DB.prepare("UPDATE support_threads SET status = ?, final_message_id = NULL, updated_at = ? WHERE id = ?").bind(choice === "close" ? "closed" : "bot", now, thread.id).run();
+  } else {
+    return Response.json({ error: "Scelta non valida." }, { status: 400 });
+  }
+  const updated = await env.DB.prepare("SELECT id, user_id, status, question_count, final_message_id, created_at, updated_at, support_operator_id, support_operator_username FROM support_threads WHERE id = ?").bind(thread.id).first();
+  const messages = (await env.DB.prepare("SELECT id, sender_role, body, created_at FROM support_messages WHERE thread_id = ? ORDER BY id ASC LIMIT 200").bind(thread.id).all()).results;
+  return Response.json({ thread: updated, messages });
+}
+
+async function adminSupportList(request, env) {
+  const actor = await adminAccess(request, env, "support");
+  if (!actor) return Response.json({ error: "Permessi operatore richiesti." }, { status: 403 });
+  const conversations = (await env.DB.prepare("SELECT t.id, t.status, t.question_count, t.updated_at, u.username, (SELECT m.body FROM support_messages m WHERE m.thread_id = t.id ORDER BY m.id DESC LIMIT 1) AS last_message FROM support_threads t JOIN users u ON u.id = t.user_id WHERE t.status IN ('waiting','live') ORDER BY t.updated_at DESC LIMIT 100").all()).results;
+  return Response.json({ conversations });
+}
+
+async function adminSupportThread(request, env, id) {
+  const actor = await adminAccess(request, env, "support");
+  if (!actor) return Response.json({ error: "Permessi operatore richiesti." }, { status: 403 });
+  const thread = await env.DB.prepare("SELECT t.id, t.user_id, t.status, t.question_count, t.final_message_id, t.created_at, t.updated_at, u.username, u.identifier FROM support_threads t JOIN users u ON u.id = t.user_id WHERE t.id = ?").bind(id).first();
+  if (!thread) return Response.json({ error: "Conversazione non trovata." }, { status: 404 });
+  const messages = (await env.DB.prepare("SELECT id, sender_role, body, created_at FROM support_messages WHERE thread_id = ? ORDER BY id ASC LIMIT 200").bind(id).all()).results;
+  return Response.json({ thread, messages });
+}
+
+async function adminSupportReply(request, env, id) {
+  const actor = await adminAccess(request, env, "support");
+  if (!actor) return Response.json({ error: "Permessi operatore richiesti." }, { status: 403 });
+  const body = await request.json();
+  const message = typeof body.message === "string" ? body.message.trim() : "";
+  if ((!message && body.final !== true) || message.length > 2000) return Response.json({ error: "Il messaggio deve contenere da 1 a 2000 caratteri." }, { status: 400 });
+  const thread = await env.DB.prepare("SELECT id, final_message_id FROM support_threads WHERE id = ? AND status IN ('waiting','live')").bind(id).first();
+  if (!thread) return Response.json({ error: "Conversazione non trovata o non più attiva." }, { status: 404 });
+  if (thread.final_message_id) return Response.json({ error: "La conversazione attende la risposta dell’utente." }, { status: 400 });
+  await env.DB.prepare("UPDATE support_threads SET support_operator_id = ?, support_operator_username = ? WHERE id = ?").bind(actor.id, String(actor.username || "Operator"), id).run();
+  const now = Date.now();
+  if (body.final === true) {
+    await env.DB.prepare("INSERT INTO support_messages (thread_id, sender_role, body, created_at) VALUES (?, 'operator', ?, ?)").bind(id, "Vuoi chiudere la chat?", now).run();
+    const finalMessage = await env.DB.prepare("SELECT id FROM support_messages WHERE thread_id = ? ORDER BY id DESC LIMIT 1").bind(id).first();
+    await env.DB.prepare("UPDATE support_threads SET status = 'live', final_message_id = ?, updated_at = ? WHERE id = ?").bind(finalMessage.id, now, id).run();
+    return Response.json({ ok: true, finalMessageId: finalMessage.id });
+  }
+  await env.DB.prepare("INSERT INTO support_messages (thread_id, sender_role, body, created_at) VALUES (?, 'operator', ?, ?)").bind(id, message, now).run();
+  await env.DB.prepare("UPDATE support_threads SET status = 'live', updated_at = ? WHERE id = ?").bind(now, id).run();
+  return Response.json({ ok: true });
+}
+
+async function createOperatorAdminRequest(request, env) {
+  const operator = await adminAccess(request, env, "support");
+  if (!operator) return Response.json({ error: "Permessi supporto richiesti." }, { status: 403 });
+  const body = await request.json();
+  const threadId = Number(body.threadId);
+  const details = typeof body.details === "string" ? body.details.trim() : "";
+  if (!Number.isInteger(threadId) || threadId < 1) return bad("Conversazione non valida.");
+  if (!details || details.length > 2000) return bad("Descrivi il problema in massimo 2000 caratteri.");
+  const thread = await env.DB.prepare("SELECT t.id, t.user_id, u.username, u.identifier FROM support_threads t JOIN users u ON u.id = t.user_id WHERE t.id = ? AND t.status IN ('waiting','live')").bind(threadId).first();
+  if (!thread) return bad("La conversazione non è più attiva.");
+  const now = Date.now();
+  const result = await env.DB.prepare("INSERT INTO operator_admin_requests (operator_id, operator_username, thread_id, user_id, username, user_identifier, details, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?)")
+    .bind(operator.id, operator.username || "operator", thread.id, thread.user_id, thread.username, thread.identifier, details, now).run();
+  return Response.json({ ok: true, id: Number(result.meta?.last_row_id), createdAt: now });
+}
+
+async function listOperatorAdminRequests(request, env) {
+  const actor = await adminAccess(request, env, "support");
+  if (!actor) return Response.json({ error: "Permessi supporto richiesti." }, { status: 403 });
+  const url = new URL(request.url);
+  const threadId = Number(url.searchParams.get("threadId")) || 0;
+  if (isPrimaryAdmin(actor) || (await readAdminPermissions(actor, env)).allAdmin) {
+    const rows = (await env.DB.prepare("SELECT id, operator_username, thread_id, user_id, username, user_identifier, details, admin_reply, replied_at, created_at FROM operator_admin_requests WHERE status = 'open' ORDER BY created_at ASC LIMIT 100").all()).results;
+    return Response.json({ requests: rows });
+  }
+  let sql = "SELECT id, thread_id, details, admin_reply, replied_at, status, created_at FROM operator_admin_requests WHERE operator_id = ?";
+  const params = [actor.id];
+  if (Number.isInteger(threadId) && threadId > 0) { sql += " AND thread_id = ?"; params.push(threadId); }
+  sql += " ORDER BY created_at DESC LIMIT 100";
+  const rows = (await env.DB.prepare(sql).bind(...params).all()).results;
+  return Response.json({ requests: rows });
+}
+
+async function replyToOperatorAdminRequest(request, env, id) {
+  const admin = await privilegedAdminActor(request, env);
+  if (!admin) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  const body = await request.json();
+  const message = typeof body.message === "string" ? body.message.trim() : "";
+  if (!message || message.length > 2000) return bad("Le istruzioni devono contenere da 1 a 2000 caratteri.");
+  const result = await env.DB.prepare("UPDATE operator_admin_requests SET admin_reply = ?, replied_at = ? WHERE id = ? AND status = 'open'").bind(message, Date.now(), id).run();
+  if (!result.meta?.changes) return bad("Richiesta non trovata o già risolta.");
+  return Response.json({ ok: true });
+}
+
+async function resolveOperatorAdminRequest(request, env, id) {
+  const admin = await privilegedAdminActor(request, env);
+  if (!admin) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  const result = await env.DB.prepare("UPDATE operator_admin_requests SET status = 'resolved', resolved_at = ? WHERE id = ? AND status = 'open'").bind(Date.now(), id).run();
+  if (!result.meta?.changes) return bad("Richiesta non trovata o già risolta.");
+  return Response.json({ ok: true });
+}
+
+async function register(request, env) {
+  const body = await request.json();
+  const rawIdentifier = typeof body.identifier === "string" ? body.identifier.trim() : "";
+  const username = typeof body.username === "string" ? body.username.trim() : "";
+  const password = typeof body.password === "string" ? body.password : "";
+  const invite = typeof body.invite === "string" ? body.invite.trim() : "";
+  if (!rawIdentifier || !username) return Response.json({ error: "Compila tutti i campi." }, { status: 400 });
+  const email = normalizeEmail(rawIdentifier);
+  if (!email) return bad("Inserisci un indirizzo email valido.");
+  const allowedEmailDomains = new Set([
+    "icloud.com", "me.com", "mac.com", "gmail.com", "googlemail.com",
+    "outlook.com", "outlook.fr", "outlook.de", "outlook.es", "hotmail.com", "hotmail.co.uk", "hotmail.fr", "hotmail.de", "hotmail.es", "live.com", "live.co.uk", "msn.com",
+    "yahoo.com", "yahoo.co.uk", "yahoo.fr", "yahoo.de", "yahoo.es", "yahoo.it", "ymail.com", "rocketmail.com",
+    "libero.it", "virgilio.it", "tim.it", "alice.it", "tin.it",
+    "t-online.de", "gmx.de", "gmx.net", "web.de",
+    "orange.fr", "wanadoo.fr", "sfr.fr", "neuf.fr", "laposte.net",
+    "movistar.es", "telefonica.net", "orange.es"
+  ]);
+  const emailDomain = email.slice(email.lastIndexOf("@") + 1).toLowerCase();
+  if (!allowedEmailDomains.has(emailDomain)) return bad("Email non consentita");
+  if (email.toLowerCase() === PRIMARY_ADMIN_EMAIL.toLowerCase()) return bad("Indirizzo riservato all’accesso amministratore.");
+  if (password.length < 6) return Response.json({ error: "Password di almeno 6 caratteri." }, { status: 400 });
+  const existing = await env.DB.prepare("SELECT id FROM users WHERE lower(identifier) = lower(?) OR lower(username) = lower(?)").bind(email, username).first();
+  if (existing) return Response.json({ error: "Email o nome utente già registrato." }, { status: 400 });
+  let referredBy = null;
+  if (invite) {
+    const ref = await env.DB.prepare("SELECT p.id FROM users p WHERE p.invite_code = ? AND p.account_type = 'promoter' AND p.email_verified = 1 AND ((p.promoter_package IS NOT NULL AND p.promoter_expires_at > ? AND p.promoter_started_at IS NOT NULL AND p.promoter_invites_used < p.promoter_invite_limit AND (SELECT COUNT(*) FROM users invited WHERE invited.referred_by = p.id AND invited.created_at >= p.promoter_started_at) < p.promoter_invite_limit) OR (COALESCE(TRIM(p.promoter_package), '') = '' AND (SELECT COUNT(*) FROM users invited WHERE invited.referred_by = p.id AND invited.created_at >= p.created_at) < 1))").bind(invite, Date.now()).first();
+    if (!ref) return bad("Questo codice invito non è attivo o ha raggiunto il limite.");
+    referredBy = ref.id;
+  }
+  const id = makeToken();
+  const s = genSalt();
+  const inviteCode = "H9-" + username.slice(0, 4).toUpperCase() + Math.random().toString(36).slice(2, 6).toUpperCase();
+  const ph = await hash(password, s);
+  const now = Date.now();
+  const registeredUser = { id, username, identifier: email };
+  const accountType = body.accountType === "promoter" ? "promoter" : "simple";
+  try {
+    await env.DB.prepare("INSERT INTO users (id, username, identifier, password_hash, salt, invite_code, referred_by, created_at, email_verified, account_type) VALUES (?,?,?,?,?,?,?,?,0,?)")
+      .bind(id, username, email, ph, s, inviteCode, referredBy, now, accountType).run();
+  } catch (error) {
+    if (referredBy) return bad("Questo codice invito ha appena raggiunto il limite.");
+    throw error;
+  }
+  await recordAntifraudEvent(request, env, registeredUser, 'registration');
+  const otp = generateEmailOtp();
+  const otpSalt = genSalt();
+  const otpHash = await hash(otp, otpSalt);
+  const expiresAt = now + 15 * 60 * 1000;
+  await env.DB.prepare("INSERT INTO email_verification_requests (user_id, requested_at, otp_hash, otp_salt, otp_expires_at, otp_attempts, issued_at, issued_by, verified_at) VALUES (?, ?, ?, ?, ?, 0, ?, NULL, NULL)")
+    .bind(id, now, otpHash, otpSalt, expiresAt, now).run();
+  try {
+    const mailCopy = await sendOtpEmail(email, otp, "email-verification", body.language);
+    await recordOtpRequestHistory(env, registeredUser, "email-verification", now, expiresAt, "sent");
+    await recordOtpMailCopy(env, registeredUser, "email-verification", now, mailCopy);
+  } catch (error) {
+    await recordOtpRequestHistory(env, registeredUser, "email-verification", now, expiresAt, "failed");
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM email_verification_requests WHERE user_id = ?").bind(id),
+      env.DB.prepare("DELETE FROM users WHERE id = ?").bind(id),
+    ]);
+    return Response.json({ error: "Impossibile inviare il codice email. Riprova più tardi." }, { status: 503 });
+  }
+  return Response.json({ ok: true, email, username, verificationRequired: true, retryAt: expiresAt });
+}
+
+async function requestPasswordReset(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const email = normalizeEmail(body.email);
+  if (!email) return bad("Inserisci un indirizzo email valido.");
+
+  const user = await env.DB.prepare("SELECT id, username, identifier FROM users WHERE lower(identifier) = ?").bind(email).first();
+  const now = Date.now();
+  const cooldown = 15 * 60 * 1000;
+  if (user) {
+    const existing = await env.DB.prepare("SELECT requested_at, otp_expires_at FROM password_reset_requests WHERE user_id = ?").bind(user.id).first();
+    if (existing?.otp_expires_at && now < Number(existing.otp_expires_at)) return Response.json({ error: "Un codice OTP è già stato inviato. Controlla la tua email o attendi la scadenza.", requestedAt: Number(existing.requested_at), retryAt: Number(existing.otp_expires_at) }, { status: 429 });
+    const otp = generateEmailOtp();
+    const salt = genSalt();
+    const otpHash = await hash(otp, salt);
+    const expiresAt = now + cooldown;
+    if (!existing) {
+      await env.DB.prepare("INSERT INTO password_reset_requests (user_id, requested_at, otp_hash, otp_salt, otp_expires_at, otp_attempts, issued_at, issued_by) VALUES (?, ?, ?, ?, ?, 0, ?, NULL)").bind(user.id, now, otpHash, salt, expiresAt, now).run();
+    } else {
+      await env.DB.prepare("UPDATE password_reset_requests SET requested_at = ?, otp_hash = ?, otp_salt = ?, otp_expires_at = ?, otp_attempts = 0, issued_at = ?, issued_by = NULL WHERE user_id = ?").bind(now, otpHash, salt, expiresAt, now, user.id).run();
+    }
+    try { const mailCopy = await sendOtpEmail(user.identifier, otp, "password-reset", body.language); await recordOtpRequestHistory(env, user, "password-reset", now, expiresAt, "sent"); await recordOtpMailCopy(env, user, "password-reset", now, mailCopy); }
+    catch (error) {
+      await recordOtpRequestHistory(env, user, "password-reset", now, expiresAt, "failed");
+      await env.DB.prepare("UPDATE password_reset_requests SET otp_hash = NULL, otp_salt = NULL, otp_expires_at = NULL, issued_at = NULL WHERE user_id = ?").bind(user.id).run();
+      throw error;
+    }
+  }
+
+  return Response.json({
+    ok: true,
+    email: user ? user.identifier : email,
+    username: user ? user.username : 'Utente',
+    userId: user ? user.id : 'unknown',
+    requestedAt: now,
+    retryAt: now + cooldown
+  });
+}
+
+async function confirmPasswordReset(request, env) {
+  const body = await request.json();
+  const email = normalizeEmail(body.email);
+  const otp = typeof body.otp === "string" ? body.otp.trim() : "";
+  const newPassword = typeof body.newPassword === "string" ? body.newPassword : "";
+
+  if (!email || !/^\d{6}$/.test(otp) || !newPassword) {
+    return bad("Inserisci email, codice OTP valido di 6 cifre e la nuova password.");
+  }
+  if (newPassword.length < 6) {
+    return bad("La nuova password deve essere di almeno 6 caratteri.");
+  }
+
+  const user = await env.DB.prepare("SELECT * FROM users WHERE lower(identifier) = ?").bind(email).first();
+  if (!user) return bad("Utente non trovato.");
+
+  const requestRow = await env.DB.prepare("SELECT * FROM password_reset_requests WHERE user_id = ?").bind(user.id).first();
+  if (!requestRow?.otp_hash || !requestRow.otp_salt || !requestRow.otp_expires_at || requestRow.otp_expires_at < Date.now()) {
+    return bad("Codice OTP non valido o scaduto. Chiedi un nuovo codice all'operatore.");
+  }
+  if (requestRow.otp_attempts >= 5) return bad("Troppi tentativi falliti.");
+
+  if (await hash(otp, requestRow.otp_salt) !== requestRow.otp_hash) {
+    await env.DB.prepare("UPDATE password_reset_requests SET otp_attempts = otp_attempts + 1 WHERE user_id = ?").bind(user.id).run();
+    return bad("Codice OTP errato.");
+  }
+
+  const newSalt = genSalt();
+  const newPasswordHash = await hash(newPassword, newSalt);
+  const now = Date.now();
+
+  await env.DB.batch([
+    env.DB.prepare("UPDATE users SET password_hash = ?, salt = ? WHERE id = ?").bind(newPasswordHash, newSalt, user.id),
+    env.DB.prepare("DELETE FROM password_reset_requests WHERE user_id = ?").bind(user.id),
+    env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(user.id),
+    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)").bind(user.id, "Password modificata", "La password del tuo account è stata reimpostata con successo.", now),
+  ]);
+
+  return Response.json({ ok: true, message: "Password aggiornata con successo. Ora puoi effettuare il login." });
+}
+
+async function setPasswordResetOtp(request, env, userId) {
+  const actor = await adminActor(request, env);
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const body = await request.json();
+  const otp = typeof body.otp === "string" ? body.otp.trim() : "";
+  if (!/^\d{6}$/.test(otp)) return bad("L’OTP deve contenere esattamente 6 cifre.");
+  const user = await env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(userId).first();
+  if (!user) return Response.json({ error: "Utente non trovato." }, { status: 404 });
+  const expiresAt = Date.now() + 15 * 60 * 1000;
+  const salt = genSalt();
+  const otpHash = await hash(otp, salt);
+  const now = Date.now();
+
+  const row = await env.DB.prepare("SELECT user_id FROM password_reset_requests WHERE user_id = ?").bind(userId).first();
+  if (!row) {
+    await env.DB.prepare("INSERT INTO password_reset_requests (user_id, requested_at, otp_hash, otp_salt, otp_expires_at, otp_attempts, issued_at, issued_by) VALUES (?, ?, ?, ?, ?, 0, ?, ?)")
+      .bind(userId, now, otpHash, salt, expiresAt, now, actor.id).run();
+  } else {
+    await env.DB.prepare("UPDATE password_reset_requests SET otp_hash = ?, otp_salt = ?, otp_expires_at = ?, otp_attempts = 0, issued_at = ?, issued_by = ? WHERE user_id = ?")
+      .bind(otpHash, salt, expiresAt, now, actor.id, userId).run();
+  }
+
+  if (body.notify === true) {
+    await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at, expires_at) VALUES (?, 'otp', ?, ?, ?, ?)")
+      .bind(userId, "Codice OTP recupero password", `Il tuo codice OTP per il reset della password è: ${otp}. Scade tra 15 minuti.`, now, expiresAt).run();
+  }
+
+  return Response.json({ ok: true, expiresAt });
+}
+
+async function requestEmailVerification(request, env) {
+  const user = await sessionUser(request, env);
+  const body = await request.json().catch(() => ({}));
+  let targetUser = user;
+
+  if (!targetUser) {
+    const rawAccount = typeof body.account === "string" ? body.account.trim() : "";
+    const password = typeof body.password === "string" ? body.password : "";
+    const account = normalizeEmail(rawAccount) || rawAccount.toLowerCase();
+    if (!account || !password) return bad("Inserisci account e password.");
+    targetUser = await env.DB.prepare("SELECT * FROM users WHERE lower(identifier) = ? OR lower(username) = ?").bind(account, account).first();
+    if (!targetUser || (await hash(password, targetUser.salt)) !== targetUser.password_hash) return bad("Account o password non corretti.");
+  }
+
+  if (targetUser.email_verified) return bad("Questo indirizzo email è già verificato.");
+  if (!normalizeEmail(targetUser.identifier)) return bad("È necessario un indirizzo email valido per ricevere il codice OTP.");
+
+  const now = Date.now();
+  const existing = await env.DB.prepare("SELECT requested_at, otp_expires_at FROM email_verification_requests WHERE user_id = ?").bind(targetUser.id).first();
+  if (existing?.otp_expires_at && now < Number(existing.otp_expires_at)) return Response.json({ error: "Un codice OTP è già stato inviato. Controlla la tua email o attendi la scadenza." }, { status: 429 });
+  const otp = generateEmailOtp();
+  const salt = genSalt();
+  const otpHash = await hash(otp, salt);
+  const expiresAt = now + 15 * 60 * 1000;
+  await env.DB.prepare("INSERT INTO email_verification_requests (user_id, requested_at, otp_hash, otp_salt, otp_expires_at, otp_attempts, issued_at, issued_by, verified_at) VALUES (?, ?, ?, ?, ?, 0, ?, NULL, NULL) ON CONFLICT(user_id) DO UPDATE SET requested_at = excluded.requested_at, otp_hash = excluded.otp_hash, otp_salt = excluded.otp_salt, otp_expires_at = excluded.otp_expires_at, otp_attempts = 0, issued_at = excluded.issued_at, issued_by = NULL, verified_at = NULL").bind(targetUser.id, now, otpHash, salt, expiresAt, now).run();
+  try { const mailCopy = await sendOtpEmail(targetUser.identifier, otp, "email-verification", body.language); await recordOtpRequestHistory(env, targetUser, "email-verification", now, expiresAt, "sent"); await recordOtpMailCopy(env, targetUser, "email-verification", now, mailCopy); }
+  catch (error) {
+    await recordOtpRequestHistory(env, targetUser, "email-verification", now, expiresAt, "failed");
+    await env.DB.prepare("UPDATE email_verification_requests SET otp_hash = NULL, otp_salt = NULL, otp_expires_at = NULL, issued_at = NULL WHERE user_id = ?").bind(targetUser.id).run();
+    throw error;
+  }
+  await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)").bind(targetUser.id, "Email verification request", "Verification request sent. A code was sent to your email.", now).run();
+  return Response.json({ ok: true, email: targetUser.identifier, username: targetUser.username, userId: targetUser.id, requestedAt: now, retryAt: expiresAt });
+}
+
+async function verifyAccountOtpDirect(request, env) {
+  const user = await authed(request, env);
+  const body = await request.json();
+  const otp = typeof body.otp === "string" ? body.otp.trim() : "";
+  if (!/^\d{6}$/.test(otp)) return bad("Inserisci un codice OTP valido di 6 cifre.");
+  if (user.email_verified) return bad("L'account è già verificato.");
+
+  const requestRow = await env.DB.prepare("SELECT * FROM email_verification_requests WHERE user_id = ? AND verified_at IS NULL").bind(user.id).first();
+  if (!requestRow?.otp_hash || !requestRow.otp_salt || !requestRow.otp_expires_at || requestRow.otp_expires_at < Date.now()) {
+    return bad("OTP non generato o scaduto. Attendi il codice inviato dall'amministratore.");
+  }
+  if (requestRow.otp_attempts >= 5) return bad("Troppi tentativi falliti.");
+
+  if (await hash(otp, requestRow.otp_salt) !== requestRow.otp_hash) {
+    await env.DB.prepare("UPDATE email_verification_requests SET otp_attempts = otp_attempts + 1 WHERE user_id = ?").bind(user.id).run();
+    return bad("Codice OTP non corretto.");
+  }
+
+  const now = Date.now();
+  await env.DB.batch([
+    env.DB.prepare("UPDATE users SET email_verified = 1 WHERE id = ?").bind(user.id),
+    env.DB.prepare("UPDATE email_verification_requests SET verified_at = ?, otp_hash = NULL, otp_salt = NULL WHERE user_id = ?").bind(now, user.id),
+    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)").bind(user.id, "Account verificato", "La verifica dell'email è stata completata con successo.", now),
+  ]);
+
+  return Response.json({ ok: true, message: "Account verificato con successo." });
+}
+
+async function confirmEmailVerification(request, env) {
+  const body = await request.json();
+  const email = normalizeEmail(body.email);
+  const password = typeof body.password === "string" ? body.password : "";
+  const otp = typeof body.otp === "string" ? body.otp.trim() : "";
+  if (!email || !password || !/^\d{6}$/.test(otp)) return bad("Inserisci email, password e OTP di 6 cifre.");
+  const user = await env.DB.prepare("SELECT * FROM users WHERE lower(identifier) = ?").bind(email).first();
+  if (!user || (await hash(password, user.salt)) !== user.password_hash) return bad("Email o password non corrette.");
+  if (user.email_verified) return bad("Questo indirizzo email è già verificato.");
+  
+  const requestRow = await env.DB.prepare("SELECT * FROM email_verification_requests WHERE user_id = ?").bind(user.id).first();
+  if (!requestRow?.otp_hash || !requestRow.otp_salt || !requestRow.otp_expires_at || requestRow.otp_expires_at < Date.now()) return bad("OTP assente o scaduto. Chiedi il codice all'amministratore.");
+  if (requestRow.otp_attempts >= 5) return bad("Troppi tentativi.");
+  
+  if (await hash(otp, requestRow.otp_salt) !== requestRow.otp_hash) {
+    await env.DB.prepare("UPDATE email_verification_requests SET otp_attempts = otp_attempts + 1 WHERE user_id = ?").bind(user.id).run();
+    return bad("OTP non corretto.");
+  }
+  
+  const now = Date.now();
+  const token = makeToken();
+  await env.DB.batch([
+    env.DB.prepare("UPDATE users SET email_verified = 1 WHERE id = ?").bind(user.id),
+    env.DB.prepare("UPDATE email_verification_requests SET verified_at = ?, otp_hash = NULL, otp_salt = NULL WHERE user_id = ?").bind(now, user.id),
+    env.DB.prepare("INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)").bind(token, user.id, now),
+    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)").bind(user.id, "Email verificata", "La verifica del tuo account è stata completata con successo.", now),
+  ]);
+  return Response.json({ ok: true, mode: "user", token, promoterPending: user.account_type === "promoter" });
+}
+
+async function setWalletChangeOtp(request, env, userId) {
+  const actor = await adminAccess(request, env, "otp");
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const body = await request.json();
+  const otp = typeof body.otp === "string" ? body.otp.trim() : "";
+  if (otp.length !== 6 || !/^[0-9]{6}$/.test(otp)) return bad("L’OTP deve contenere esattamente 6 cifre.");
+  const row = await env.DB.prepare("SELECT action, consumed_at FROM sensitive_action_verifications WHERE user_id = ?").bind(userId).first();
+  if (!row || row.action !== "wallet-change" || row.consumed_at) return bad("Richiesta di verifica wallet non trovata o già completata.");
+  const salt = genSalt();
+  const otpHash = await hash(otp, salt);
+  const now = Date.now();
+  const expiresAt = now + 15 * 60 * 1000;
+  await env.DB.prepare("UPDATE sensitive_action_verifications SET otp_hash = ?, otp_salt = ?, otp_expires_at = ?, otp_attempts = 0, issued_at = ?, issued_by = ? WHERE user_id = ? AND action = 'wallet-change' AND consumed_at IS NULL")
+    .bind(otpHash, salt, expiresAt, now, actor.id, userId).run();
+  return Response.json({ ok: true, expiresAt });
+}
+
+async function setUserVerificationOtp(request, env, userId) {
+  const actor = await adminAccess(request, env, "otp");
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const body = await request.json();
+  const otp = typeof body.otp === "string" ? body.otp.trim() : "";
+  if (!/^\d{6}$/.test(otp)) return bad("L’OTP deve contenere esattamente 6 cifre.");
+  const user = await env.DB.prepare("SELECT id, email_verified FROM users WHERE id = ?").bind(userId).first();
+  if (!user) return Response.json({ error: "Utente non trovato." }, { status: 404 });
+  const expiresAt = Date.now() + 15 * 60 * 1000;
+  const salt = genSalt();
+  const otpHash = await hash(otp, salt);
+  const now = Date.now();
+
+  const row = await env.DB.prepare("SELECT user_id FROM email_verification_requests WHERE user_id = ?").bind(userId).first();
+  if (!row) {
+    await env.DB.prepare("INSERT INTO email_verification_requests (user_id, requested_at, otp_hash, otp_salt, otp_expires_at, otp_attempts, issued_at, issued_by) VALUES (?, ?, ?, ?, ?, 0, ?, ?)")
+      .bind(userId, now, otpHash, salt, expiresAt, now, actor.id).run();
+  } else {
+    await env.DB.prepare("UPDATE email_verification_requests SET otp_hash = ?, otp_salt = ?, otp_expires_at = ?, otp_attempts = 0, issued_at = ?, issued_by = ? WHERE user_id = ?")
+      .bind(otpHash, salt, expiresAt, now, actor.id, userId).run();
+  }
+
+  return Response.json({ ok: true, expiresAt });
+}
+
+async function login(request, env) {
+  const body = await request.json();
+  const rawId = typeof body.id === "string" ? body.id.trim() : "";
+  const emailId = normalizeEmail(rawId);
+  const id = (emailId || normalizePhone(rawId) || rawId).toLowerCase();
+  const pw = typeof body.password === "string" ? body.password : "";
+  if (!id || !pw) return Response.json({ error: "Inserisci email/telefono e password." }, { status: 400 });
+  
+  if (PRIMARY_ADMIN_EMAIL && id === PRIMARY_ADMIN_EMAIL.toLowerCase()) {
+    if (!PRIMARY_ADMIN_PASSWORD) return Response.json({ error: "Accesso amministratore non configurato sul server." }, { status: 503 });
+    const admin = await tryOperatorLogin(env, id, pw);
+    if (!admin) return Response.json({ error: "Email o password non corretti." }, { status: 401 });
+    return admin;
+  }
+
+  const user = await env.DB.prepare("SELECT * FROM users WHERE lower(username) = ? OR lower(identifier) = ?").bind(id, id).first();
+  let userPasswordValid = false;
+  if (user) userPasswordValid = (await hash(pw, user.salt)) === user.password_hash;
+  
+  if (userPasswordValid) {
+    const role = await env.DB.prepare("SELECT role FROM admin_roles WHERE user_id = ?").bind(user.id).first();
+    if (role) return await beginAdminAuthenticator(env, user.id);
+    if (!user.email_verified) return Response.json({ error: "Verifica il tuo indirizzo email con il codice OTP prima di accedere.", verificationRequired: true, email: user.identifier }, { status: 403 });
+    const token = makeToken();
+    const lastLoginAt = Date.now();
+    await env.DB.batch([
+      env.DB.prepare("UPDATE users SET last_login_at = ? WHERE id = ?").bind(lastLoginAt, user.id),
+      env.DB.prepare("INSERT INTO sessions (token, user_id, created_at) VALUES (?,?,?)").bind(token, user.id, lastLoginAt)
+    ]);
+    return Response.json({ ok: true, mode: "user", token });
+  }
+  if (!user) return Response.json({ error: "Account non trovato. Registrati prima di accedere." }, { status: 400 });
+  return Response.json({ error: "Password non corretta." }, { status: 400 });
+}
+
+async function logout(request, env) {
+  let body = {};
+  try { body = await request.json(); } catch {}
+  const h = (request.headers.get("x-session-token") || body.sessionToken || "").trim();
+  const admin = (request.headers.get("x-admin-token") || body.adminToken || "").trim();
+  if (h) await env.DB.prepare("DELETE FROM sessions WHERE token = ?").bind(h).run();
+  if (admin) await env.DB.prepare("DELETE FROM admin_sessions WHERE token = ?").bind(admin).run();
+  return Response.json({ ok: true });
+}
+
+async function me(request, env) {
+  const user = await sessionUser(request, env);
+  if (!user) return Response.json({ error: "Non autenticato." }, { status: 401 });
+  return Response.json(await fullState(env, user, request));
+}
+
+async function authed(request, env) {
+  const user = await sessionUser(request, env);
+  if (!user) throw Object.assign(new Error("Non autenticato."), { status: 401 });
+  return user;
+}
+function bad(msg) { return Response.json({ error: msg }, { status: 400 }); }
+
+async function getNotifications(request, env) {
+  const user = await authed(request, env);
+  const now = Date.now();
+  await env.DB.prepare("DELETE FROM notifications WHERE user_id = ? AND expires_at IS NOT NULL AND expires_at <= ?").bind(user.id, now).run();
+  const rows = await env.DB.prepare("SELECT id, kind, title, message, created_at, read_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 50").bind(user.id).all();
+  const unread = await env.DB.prepare("SELECT COUNT(*) AS count FROM notifications WHERE user_id = ? AND read_at IS NULL").bind(user.id).first();
+  return Response.json({ notifications: rows.results, unread: unread.count });
+}
+
+async function markNotificationsRead(request, env) {
+  const user = await authed(request, env);
+  const body = await request.json();
+  const now = Date.now();
+  if (body.all === true) {
+    await env.DB.prepare("UPDATE notifications SET read_at = ? WHERE user_id = ? AND read_at IS NULL").bind(now, user.id).run();
+  } else {
+    const id = Number(body.id);
+    if (!Number.isInteger(id) || id < 1) return bad("Notifica non valida.");
+    await env.DB.prepare("UPDATE notifications SET read_at = ? WHERE id = ? AND user_id = ? AND read_at IS NULL").bind(now, id, user.id).run();
+  }
+  return Response.json({ ok: true });
+}
+
+async function checkDepositTransactionOnChain(network, reference) {
+  let hash = String(reference || "").trim();
+  if (network === "BNB") hash = hash.replace(/^0x/i, "");
+  if (!["BNB", "TRC20", "BTC"].includes(network) || !/^[a-fA-F0-9]{64}$/.test(hash)) return false;
+  try {
+    const signal = AbortSignal.timeout(6000);
+    if (network === "BNB") {
+      const response = await fetch("https://bsc-dataseed.binance.org/", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_getTransactionByHash", params: ["0x" + hash] }), signal,
+      });
+      if (!response.ok) return null;
+      const result = await response.json();
+      if (result.error || !Object.prototype.hasOwnProperty.call(result, "result")) return null;
+      return result.result === null ? false : true;
+    }
+    if (network === "TRC20") {
+      const response = await fetch("https://api.trongrid.io/v1/transactions/" + encodeURIComponent(hash), { signal });
+      if (response.status === 404) return false;
+      if (!response.ok) return null;
+      const result = await response.json();
+      return Array.isArray(result.data) ? result.data.length > 0 : null;
+    }
+    const response = await fetch("https://mempool.space/api/tx/" + encodeURIComponent(hash), { signal });
+    if (response.status === 404) return false;
+    if (!response.ok) return null;
+    const result = await response.json();
+    return result && result.txid ? true : null;
+  } catch {
+    return null;
+  }
+}
+
+async function upgradePromoterAccount(request, env) {
+  const user = await authed(request, env);
+  const account = await env.DB.prepare("SELECT account_type FROM users WHERE id = ?").bind(user.id).first();
+  if (!account) return bad("Account non trovato.");
+  if (account.account_type !== "promoter") {
+    await env.DB.prepare("UPDATE users SET account_type = 'promoter' WHERE id = ? AND account_type = 'simple'").bind(user.id).run();
+  }
+  return Response.json({ ok: true, accountType: "promoter" });
+}
+
+async function skipPromoterPackages(request, env) {
+  const user = await authed(request, env);
+  const account = await env.DB.prepare("SELECT account_type, promoter_package, promoter_invite_limit, promoter_expires_at FROM users WHERE id = ?").bind(user.id).first();
+  if (!account || account.account_type !== "promoter") return bad("Il profilo promoter non è disponibile.");
+  if (account.promoter_expires_at > Date.now() && account.promoter_package) return bad("Un pacchetto attivo non può essere convertito in profilo semplice.");
+  const pending = await env.DB.prepare("SELECT id FROM deposits WHERE user_id = ? AND purpose = 'promoter-package' AND status = 'pending'").bind(user.id).first();
+  if (pending) return bad("Un pagamento pacchetto è già in revisione; non è possibile saltare la scelta.");
+  await env.DB.prepare("UPDATE users SET account_type = 'simple' WHERE id = ? AND account_type = 'promoter'").bind(user.id).run();
+  return Response.json({ ok: true });
+}
+
+async function deposit(request, env) {
+  const user = await authed(request, env);
+  const body = await request.json();
+  const amount = Number(body.amount);
+  const net = String(body.net || "").trim();
+  const txReference = String(body.txReference || "").trim().slice(0, 180);
+  const depositAddress = String(body.depositAddress || "").trim().slice(0, 160);
+  const purpose = body.purpose === "promoter-package" ? "promoter-package" : "deposit";
+  const packageId = purpose === "promoter-package" ? String(body.packageId || "") : null;
+  const packageTier = PROMOTER_PACKAGE_TIERS[packageId] || null;
+  if (purpose === "promoter-package") {
+    if (!packageTier || amount !== packageTier.price) return bad("Pacchetto o importo non valido.");
+    const account = await env.DB.prepare("SELECT account_type, promoter_package, promoter_invite_limit, promoter_invites_used, promoter_expires_at FROM users WHERE id = ?").bind(user.id).first();
+    if (account?.account_type !== "promoter") return bad("Seleziona il profilo promoter prima di acquistare un pacchetto.");
+    const packageChangeError = promoterPackageChangeError(account, packageTier);
+    if (packageChangeError) return bad(packageChangeError);
+    const pending = await env.DB.prepare("SELECT id FROM deposits WHERE user_id = ? AND purpose = 'promoter-package' AND status = 'pending'").bind(user.id).first();
+    if (pending) return bad("Hai già un pagamento pacchetto in attesa di revisione.");
+  } else {
+    const minimums = await readPaymentMinimums(env);
+    if (!Number.isFinite(amount) || amount < minimums.deposit) return bad("Il deposito minimo è di " + minimums.deposit + " USDT.");
+  }
+  if (!["BNB", "TRC20", "BTC", "USDC"].includes(net)) return bad("Rete non valida.");
+  if (purpose === "promoter-package" && !["BNB", "TRC20"].includes(net)) return bad("I pacchetti promoter si pagano solo in USDT su BNB o TRON.");
+  const officialAddresses = await readDepositAddresses(env);
+  const addressPool = String(officialAddresses[net] || "").split(/[,;]+/).map(address => address.trim()).filter(Boolean);
+  if (!addressPool.length) return bad("Questa rete non è ancora configurata per i depositi. Non inviare fondi.");
+  if (!addressPool.includes(depositAddress)) return bad("Indirizzo di deposito non valido o aggiornato. Ricarica prima di inviare la richiesta.");
+  if (!txReference && (!(await cryptoAutomationEnabled()) || !["BNB", "TRC20", "BTC"].includes(net))) return bad("Inserisci l'ID o hash della transazione per la verifica.");
+  
+  if (txReference) {
+    const existingDep = await env.DB.prepare("SELECT id FROM deposits WHERE lower(tx_reference) = lower(?)").bind(txReference).first();
+    if (existingDep) {
+      return bad("Questo hash o ID di transazione è già stato utilizzato da un utente.");
+    }
+  }
+
+  const automaticDecisions = await readAutomaticWithdrawalDecisions(env);
+  const transactionExists = automaticDecisions ? await checkDepositTransactionOnChain(net, txReference) : null;
+  await accrue(env, user.id);
+  const created = Date.now();
+  if (automaticDecisions && transactionExists === false) {
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO deposits (user_id, amount, net, date, status, tx_reference, deposit_address, transfer_status, purpose, package_id) VALUES (?,?,?,?, 'rejected', ?, ?, 'failed', ?, ?)").bind(user.id, amount, net, created, txReference, depositAddress, purpose, packageId),
+      env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Deposit request automatically rejected", "The transaction hash was invalid or not found on the selected network. No funds were credited.", created),
+    ]);
+    await recordAntifraudEvent(request, env, user, 'deposit', txReference);
+    return Response.json({ ok: true, status: "rejected", automaticDecision: "rejected" });
+  }
+  await env.DB.batch([
+    env.DB.prepare("INSERT INTO deposits (user_id, amount, net, date, status, tx_reference, deposit_address, purpose, package_id) VALUES (?,?,?,?, 'pending', ?, ?, ?, ?)").bind(user.id, amount, net, created, txReference, depositAddress, purpose, packageId),
+    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Deposit request submitted", amount.toFixed(3) + " USDT · " + net + " · Automatic on-chain verification pending.", created),
+  ]);
+  await recordAntifraudEvent(request, env, user, 'deposit', txReference);
+  return Response.json({ ok: true, status: "pending" });
+}
+
+const MARKET_RISK_STOP_LOSS = Object.freeze({ conservative: 8, balanced: 18, aggressive: 35 });
+const CUSTOM_PLAN_FEES = Object.freeze({ 6: 200, 12: 300, 24: 400, 36: 500, 60: 600 });
+const MARKET_CUSTOM_ASSETS = new Set(['gold','oil','electricity','sp500','nasdaq','tesla','artificialIntelligence','bitcoin','ethereum','dowJones','russell2000','silver','naturalGas','copper','euroUsd']);
+const MARKET_PLAN_ALLOCATIONS = {
+  6: [['gold',10],['oil',7],['electricity',8],['sp500',12],['nasdaq',10],['tesla',4],['artificialIntelligence',8],['bitcoin',4],['ethereum',3],['dowJones',8],['russell2000',6],['silver',5],['naturalGas',5],['copper',4],['euroUsd',6]],
+  12: [['gold',8],['oil',7],['electricity',8],['sp500',12],['nasdaq',12],['tesla',6],['artificialIntelligence',10],['bitcoin',5],['ethereum',4],['dowJones',7],['russell2000',6],['silver',4],['naturalGas',4],['copper',3],['euroUsd',4]],
+  24: [['gold',8],['oil',6],['electricity',6],['sp500',14],['nasdaq',14],['tesla',7],['artificialIntelligence',12],['bitcoin',8],['ethereum',7],['dowJones',6],['russell2000',4],['silver',3],['naturalGas',2],['copper',2],['euroUsd',1]],
+  36: [['gold',8],['oil',6],['electricity',6],['sp500',14],['nasdaq',14],['tesla',7],['artificialIntelligence',12],['bitcoin',8],['ethereum',7],['dowJones',6],['russell2000',4],['silver',3],['naturalGas',2],['copper',2],['euroUsd',1]],
+  60: [['gold',8],['oil',6],['electricity',6],['sp500',14],['nasdaq',14],['tesla',7],['artificialIntelligence',12],['bitcoin',8],['ethereum',7],['dowJones',6],['russell2000',4],['silver',3],['naturalGas',2],['copper',2],['euroUsd',1]],
+};
+
+async function currentMarketQuotes(selectedMarket = "DE-LU") {
+  const market = normalizeElectricityMarket(selectedMarket), cached = positionQuoteCache.get(market);
+  let freshQuotes = {};
+  if (!(cached && Date.now() - cached.fetchedAt < 1_000)) {
+    try { freshQuotes = (await loadQuotes(market))?.quotes || {}; } catch (error) { console.warn('Live quote refresh failed; using last known prices:', error); }
+  }
+  const sharedQuotes = cachedQuotesMarket === market ? (cachedQuotes?.quotes || {}) : {};
+  const quotes = { ...sharedQuotes, ...(cached?.quotes || {}), ...freshQuotes };
+  const storedHistory = cachedHistoryMarket === market ? cachedHistory : null;
+  for (const key of MARKET_CUSTOM_ASSETS) {
+    const current = Number(quotes[key]?.price);
+    if (Number.isFinite(current) && current > 0) continue;
+    const series = storedHistory?.histories?.[key] || (key === 'electricity' ? null : persistedMarketHistoryData?.histories?.[key]);
+    if (!Array.isArray(series)) continue;
+    for (let i = series.length - 1; i >= 0; i--) {
+      const value = Number(series[i]?.value), time = Number(series[i]?.time);
+      if (Number.isFinite(value) && value > 0) {
+        quotes[key] = { ...(quotes[key] || {}), price: value, marketAt: time, currency: quotes[key]?.currency || 'USD', provider: quotes[key]?.provider || 'Last known market data' };
+        break;
+      }
+    }
+  }
+  if (Object.keys(quotes).length) positionQuoteCache.set(market, { quotes, fetchedAt: Date.now() });
+  return quotes;
+}
+
+function calendarMaturity(startedAt, months) {
+  const start = new Date(startedAt);
+  const target = new Date(start);
+  target.setDate(1);
+  target.setMonth(target.getMonth() + months);
+  const lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+  target.setDate(Math.min(start.getDate(), lastDay));
+  target.setHours(start.getHours(), start.getMinutes(), start.getSeconds(), start.getMilliseconds());
+  return target.getTime();
+}
+
+function positionElectricityMarket(position) {
+  try { return normalizeElectricityMarket(JSON.parse(position.entry_quotes_json || '{}').__electricityMarket); } catch { return "DE-LU"; }
+}
+
+function marketPositionValue(position, quotes) {
+  let allocations = [], basis = {};
+  try { allocations = JSON.parse(position.allocations_json || '[]'); } catch {}
+  try { basis = JSON.parse(position.entry_quotes_json || '{}'); } catch {}
+  let multiplier = 0;
+  for (const [key, weight] of allocations) {
+    const initial = Number(basis[key]);
+    const current = Number(quotes[key]?.price);
+    const ratio = initial > 0 && current > 0 ? current / initial : 1;
+    multiplier += Number(weight) / 100 * ratio;
+  }
+  return Number((Number(position.amount) * (multiplier || 1)).toFixed(3));
+}
+
+const autoRedeemHistoryData = new Map();
+const autoRedeemHistoryFetches = new Map();
+async function loadAutoRedeemHistory(market) {
+  const selectedMarket = normalizeElectricityMarket(market);
+  const now = Date.now();
+  const cached = autoRedeemHistoryData.get(selectedMarket);
+  if (cached && now - cached.at < 300000) return cached.data;
+  let task = autoRedeemHistoryFetches.get(selectedMarket);
+  if (!task) {
+    task = (async () => {
+      try {
+        const url = new URL('https://internal.local/api/asset-history');
+        url.searchParams.set('electricity', selectedMarket);
+        const response = await marketApi.fetch(new Request(url));
+        if (!response.ok) return null;
+        const data = await response.json();
+        if (!data || typeof data !== 'object') return null;
+        autoRedeemHistoryData.set(selectedMarket, { at: Date.now(), data });
+        return data;
+      } catch (error) {
+        console.warn('Automatic redemption history unavailable:', error?.message || error);
+        return null;
+      }
+    })().finally(() => autoRedeemHistoryFetches.delete(selectedMarket));
+    autoRedeemHistoryFetches.set(selectedMarket, task);
+  }
+  return task;
+}
+
+async function replayMissedAutoRedemptions(env, userId, position, now, history) {
+  if (!history || Number(position.auto_redeem_enabled) !== 1 || position.status !== 'active') return;
+  const autoPct = Number(position.auto_redeem_pct || 10);
+  const amount = Number(position.amount);
+  if (!(amount > 0 && autoPct >= 1 && autoPct <= 100)) return;
+  let allocations = [], basis = {};
+  try { allocations = JSON.parse(position.allocations_json || '[]'); } catch { return; }
+  try { basis = JSON.parse(position.entry_quotes_json || '{}'); } catch { return; }
+  if (!allocations.length) return;
+  const segmentStart = Math.max(Number(position.basis_updated_at) || Number(position.created_at) || 0, Number(position.created_at) || 0);
+  const maturity = calendarMaturity(Number(position.created_at), Number(position.months));
+  const through = Math.min(now, maturity);
+  if (!(segmentStart > 0 && segmentStart < through)) return;
+
+  const pointsByAsset = new Map();
+  for (const key of allocations.map(([asset]) => asset)) {
+    const points = new Map();
+    for (const point of history.histories?.[key] || []) {
+      const time = Number(point?.time), value = Number(point?.value);
+      if (time > segmentStart && time <= through && value > 0) points.set(time, value);
+    }
+    for (const point of history.intraday?.[key] || []) {
+      const time = Number(point?.time), value = Number(point?.value);
+      if (time > segmentStart && time <= through && value > 0) points.set(time, value);
+    }
+    pointsByAsset.set(key, points);
+  }
+  const timeline = new Map();
+  for (const [key, points] of pointsByAsset) {
+    for (const [time, value] of points) {
+      if (!timeline.has(time)) timeline.set(time, []);
+      timeline.get(time).push([key, value]);
+    }
+  }
+  if (!timeline.size) return;
+  const prices = Object.fromEntries(allocations.map(([key]) => [key, Number(basis[key]) || 0]));
+  const ordered = [...timeline.entries()].sort((a, b) => a[0] - b[0]);
+  for (const [eventAt, updates] of ordered) {
+    for (const [key, price] of updates) prices[key] = price;
+    let multiplier = 0, ready = true;
+    for (const [key, weight] of allocations) {
+      const initial = Number(basis[key]), current = Number(prices[key]);
+      if (!(initial > 0 && current > 0)) { ready = false; break; }
+      multiplier += Number(weight) / 100 * current / initial;
+    }
+    if (!ready) continue;
+    const referenceValue = Number((amount * (multiplier || 1)).toFixed(3));
+    const stop = amount * (1 - Number(position.stop_loss_pct) / 100);
+    if (referenceValue < amount * (1 + autoPct / 100) || referenceValue <= stop) continue;
+    const gain = Number(Math.max(0, referenceValue - amount).toFixed(3));
+    if (gain < 0.001) continue;
+
+    const nextBasis = { ...basis, __electricityMarket: positionElectricityMarket(position) };
+    for (const [key] of allocations) nextBasis[key] = prices[key];
+    const basisJson = JSON.stringify(nextBasis), transactionId = makeToken();
+    const referralStatements = await referralRedemptionCommissionStatements(
+      env, userId, gain, 'market-auto:' + position.id + ':' + transactionId, now,
+      'EXISTS (SELECT 1 FROM market_position_redemptions WHERE user_id=? AND event_id=?)', [userId, transactionId]
+    );
+    const redemption = await env.DB.batch([
+      env.DB.prepare("UPDATE market_positions SET last_value = ?, entry_quotes_json = ?, last_redemption_id = ?, basis_updated_at = ?, auto_add_anchor_value = ? WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND entry_quotes_json = ? AND auto_redeem_enabled = 1 AND auto_redeem_pct = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ?)")
+        .bind(amount, basisJson, transactionId, eventAt, amount, position.id, userId, Number(position.last_value), position.entry_quotes_json, autoPct, userId),
+      env.DB.prepare("INSERT INTO market_position_redemptions (position_id, user_id, event_id, amount, reference_value, created_at, segment_start_at, basis_quotes_json) SELECT ?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND last_redemption_id = ?)")
+        .bind(position.id, userId, transactionId, gain, referenceValue, now, Number(position.basis_updated_at || position.created_at), position.entry_quotes_json || '{}', position.id, userId, amount, transactionId),
+      env.DB.prepare("UPDATE wallets SET earnings = earnings + ? WHERE user_id = ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND last_redemption_id = ?)")
+        .bind(gain, userId, position.id, userId, amount, transactionId),
+      env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND last_redemption_id = ?)")
+        .bind(userId, 'Plan gains redeemed', gain.toFixed(3) + ' USDT auto-redeemed from recovered market history. The invested principal remains in the plan.', now, position.id, userId, amount, transactionId),
+      ...referralStatements,
+    ]);
+    if (!(redemption[0]?.meta?.changes > 0)) break;
+    position.last_value = amount;
+    position.entry_quotes_json = basisJson;
+    position.last_redemption_id = transactionId;
+    position.basis_updated_at = eventAt;
+    position.auto_add_anchor_value = amount;
+    basis = nextBasis;
+  }
+}
+
+async function syncMarketPositions(env, userId) {
+  const rows = (await env.DB.prepare("SELECT * FROM market_positions WHERE user_id = ? ORDER BY created_at DESC").bind(userId).all()).results || [];
+  if (!rows.length) return [];
+  const now = Date.now();
+  const activeMarkets = [...new Set(rows.filter(row => ['active', 'paused'].includes(row.status)).map(positionElectricityMarket))];
+  const marketQuotes = new Map(await Promise.all(activeMarkets.map(async market => [market, await currentMarketQuotes(market)])));
+  const autoRedeemMarkets = [...new Set(rows.filter(row => row.status === 'active' && Number(row.auto_redeem_enabled) === 1).map(positionElectricityMarket))];
+  const autoRedeemHistories = new Map(await Promise.all(autoRedeemMarkets.map(async market => [market, await loadAutoRedeemHistory(market)])));
+  for (const row of rows) {
+    if (!['active', 'paused'].includes(row.status)) continue;
+    if (row.status === 'active' && Number(row.auto_redeem_enabled) === 1) await replayMissedAutoRedemptions(env, userId, row, now, autoRedeemHistories.get(positionElectricityMarket(row)));
+    const quotes = marketQuotes.get(positionElectricityMarket(row)) || {};
+    const marketValue = marketPositionValue(row, quotes);
+    const amount = Number(row.amount);
+    const stopLossBasis = row.risk_level === 'custom' && Number(row.stop_loss_anchor_value) > 0
+      ? Number(row.stop_loss_anchor_value) : amount;
+    const stop = stopLossBasis * (1 - Number(row.stop_loss_pct) / 100);
+    const value = Math.max(marketValue, stop);
+    const maturity = calendarMaturity(Number(row.created_at), Number(row.months));
+    let status;
+    if (now >= maturity) status = 'matured';
+    else if (marketValue <= stop || (row.status === 'paused' && Number(row.stop_loss_resume_value) > 0 && marketValue <= Number(row.stop_loss_resume_value))) status = 'paused';
+    else status = 'active';
+    const previousStatus = row.status;
+    const isClosed = status === 'matured' || status === 'stop_loss';
+    const updated = await env.DB.prepare("UPDATE market_positions SET last_value = ?, status = ?, closed_at = ?, stop_loss_resume_value = CASE WHEN ? = 'paused' THEN stop_loss_resume_value ELSE 0 END WHERE id = ? AND user_id = ? AND status = ?")
+      .bind(value, status, isClosed ? now : null, status, row.id, userId, previousStatus).run();
+    row.last_value = value;
+    if (status !== 'paused') row.stop_loss_resume_value = 0;
+    if (updated.meta?.changes > 0) {
+      row.status = status;
+      row.closed_at = isClosed ? now : null;
+      if (status === 'matured') {
+        await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
+          .bind(userId, 'Plan matured', 'Reference value ' + value.toFixed(3) + ' USDT. Internal balance updated; no market order or external payout was executed.', now).run();
+      } else if (status === 'stop_loss') {
+        await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
+          .bind(userId, 'Plan closed at stop', 'The aggressive plan reached its fixed ' + Number(row.stop_loss_pct) + '% stop. Remaining reference value was moved to your internal released balance.', now).run();
+      } else if (status === 'paused' && previousStatus !== 'paused') {
+        await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
+          .bind(userId, 'Plan paused at stop', 'Reference value reached the fixed ' + Number(row.stop_loss_pct) + '% stop. The plan will resume if a later market-data refresh places it above the stop.', now).run();
+      } else if (status === 'active' && previousStatus === 'paused') {
+        await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
+          .bind(userId, 'Plan resumed', 'Reference value is back above the fixed stop. The plan has resumed on this market-data refresh.', now).run();
+      }
+      const autoPct = Number(row.auto_redeem_pct || 10);
+      const autoThreshold = amount * (1 + autoPct / 100);
+      if (status === 'active' && Number(row.auto_redeem_enabled) === 1 && autoPct >= 1 && value >= autoThreshold) {
+        let allocation = [], basisReady = true;
+        try { allocation = JSON.parse(row.allocations_json || '[]'); } catch { basisReady = false; }
+        const nextBasis = { __electricityMarket: positionElectricityMarket(row) };
+        for (const [key] of allocation) {
+          const price = Number(quotes[key]?.price);
+          if (!(price > 0)) { basisReady = false; break; }
+          nextBasis[key] = price;
+        }
+        const gain = Number(Math.max(0, value - amount).toFixed(3));
+        if (basisReady && Object.keys(nextBasis).length && gain >= 0.001) {
+          const transactionId = makeToken(), basisJson = JSON.stringify(nextBasis);
+          const referralStatements=await referralRedemptionCommissionStatements(env,userId,gain,'market-auto:'+row.id+':'+transactionId,now,"EXISTS (SELECT 1 FROM market_position_redemptions WHERE user_id=? AND event_id=?)",[userId,transactionId]);
+          const redemption = await env.DB.batch([
+            env.DB.prepare("UPDATE market_positions SET last_value = ?, entry_quotes_json = ?, last_redemption_id = ?, basis_updated_at = ?, auto_add_anchor_value = ? WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND entry_quotes_json = ? AND auto_redeem_enabled = 1 AND auto_redeem_pct = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ?)")
+              .bind(amount, basisJson, transactionId, now, amount, row.id, userId, value, row.entry_quotes_json, autoPct, userId),
+            env.DB.prepare("INSERT INTO market_position_redemptions (position_id, user_id, event_id, amount, reference_value, created_at, segment_start_at, basis_quotes_json) SELECT ?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND last_redemption_id = ?)")
+              .bind(row.id, userId, transactionId, gain, value, now, Number(row.basis_updated_at || row.created_at), row.entry_quotes_json || '{}', row.id, userId, amount, transactionId),
+            env.DB.prepare("UPDATE wallets SET earnings = earnings + ? WHERE user_id = ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND last_redemption_id = ?)")
+              .bind(gain, userId, row.id, userId, amount, transactionId),
+            env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'active' AND last_value = ? AND last_redemption_id = ?)")
+              .bind(userId, 'Plan gains redeemed', gain.toFixed(3) + ' USDT moved to the redeemable balance after reaching the ' + autoPct + '% gain threshold. The plan remains active.', now, row.id, userId, amount, transactionId),
+            ...referralStatements,
+          ]);
+          if (redemption[0]?.meta?.changes > 0) {
+            row.last_value = amount;
+            row.entry_quotes_json = basisJson;
+            row.last_redemption_id = transactionId;
+            row.basis_updated_at = now;
+          }
+        }
+      }
+    }
+  }
+  for (const row of rows) {
+    if (!['active','paused'].includes(row.status) || Number(row.auto_add_enabled)!==1) continue;
+    const value=Number(row.last_value),amount=Number(row.amount),drawdown=Number(row.auto_add_drawdown_pct||10),anchor=Number(row.auto_add_anchor_value)||value,mode=row.auto_add_mode==='balance_pct'?'balance_pct':'fixed',setting=Number(row.auto_add_value||10);
+    if (!(value>0&&amount>0&&anchor>0&&drawdown>=1&&drawdown<=90&&value<=anchor*(1-drawdown/100))) continue;
+    const wallet=await env.DB.prepare("SELECT deposit, earnings, released FROM wallets WHERE user_id = ?").bind(userId).first();if(!wallet)continue;
+    const deposit=Number(wallet.deposit)||0,earnings=Number(wallet.earnings)||0,released=Number(wallet.released)||0,available=deposit+earnings+released;
+    const added=mode==='balance_pct'?Math.floor((available*setting/100+1e-9)*1000)/1000:Number(setting.toFixed(3));
+    if (!(available>0&&added>=0.001&&added<=available+1e-9&&(mode!=='fixed'||setting<=available+1e-9))) continue;
+    const investmentFee=Number((added*(await readCommissionRates(env)).investmentWithholdingPercent/100).toFixed(3)),investedAdded=Number((added-investmentFee).toFixed(3));
+    const depositPart=Number(Math.min(deposit,added).toFixed(3)),earningsPart=Number(Math.min(earnings,Math.max(0,added-depositPart)).toFixed(3)),releasedPart=Number((added-depositPart-earningsPart).toFixed(3)),newAmount=Number((amount+investedAdded).toFixed(3)),newValue=Number((value+investedAdded).toFixed(3));
+    let allocation=[],basis={};try{allocation=JSON.parse(row.allocations_json||'[]');basis=JSON.parse(row.entry_quotes_json||'{}')}catch{continue}
+    const updatedBasis={...basis};let ready=true;for(const [key] of allocation){const current=Number(quotes[key]?.price),old=Number(basis[key])||current;if(!(current>0&&old>0)){ready=false;break}updatedBasis[key]=newAmount/(amount/old+investedAdded/current)}if(!ready||!allocation.length)continue;
+    const basisJson=JSON.stringify(updatedBasis),depositAnchor=Number(row.auto_add_anchor_value)||value;
+    const batch=await env.DB.batch([
+      env.DB.prepare("UPDATE market_positions SET amount = ?, last_value = ?, entry_quotes_json = ?, basis_updated_at = ?, auto_add_anchor_value = ? WHERE id = ? AND user_id = ? AND status IN ('active','paused') AND last_value = ? AND amount = ? AND auto_add_enabled = 1 AND auto_add_anchor_value = ? AND auto_add_drawdown_pct = ? AND auto_add_mode = ? AND auto_add_value = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND deposit >= ? AND earnings >= ? AND released >= ?)")
+        .bind(newAmount,newValue,basisJson,now,newValue,row.id,userId,value,amount,depositAnchor,drawdown,mode,setting,userId,depositPart,earningsPart,releasedPart),
+      env.DB.prepare("UPDATE wallets SET deposit = deposit - ?, earnings = earnings - ?, released = released - ? WHERE user_id = ? AND deposit >= ? AND earnings >= ? AND released >= ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status IN ('active','paused') AND amount = ? AND last_value = ? AND basis_updated_at = ? AND auto_add_anchor_value = ?)")
+        .bind(depositPart,earningsPart,releasedPart,userId,depositPart,earningsPart,releasedPart,row.id,userId,newAmount,newValue,now,newValue),
+      env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND amount = ? AND last_value = ? AND basis_updated_at = ? AND auto_add_anchor_value = ?)")
+        .bind(userId,'Automatic top-up added',added.toFixed(3)+' USDT charged · platform fee '+investmentFee.toFixed(3)+' USDT · '+investedAdded.toFixed(3)+' USDT invested automatically after a '+drawdown+'% portfolio decline. Funds were taken from available balances.',now,row.id,userId,newAmount,newValue,now,newValue),
+    ]);
+    if(batch[0]?.meta?.changes>0&&batch[1]?.meta?.changes>0){
+      try { await recordPlatformInvestmentFee(env,investmentFee); } catch (error) { console.error('Could not record automatic top-up platform fee:',error); }
+      row.amount=newAmount;row.last_value=newValue;row.entry_quotes_json=basisJson;row.basis_updated_at=now;row.auto_add_anchor_value=newValue;
+    }
+  }
+  return rows.map(row => ({
+    id: row.id, planId: row.plan_id, months: Number(row.months), amount: Number(row.amount),
+    stopLossPct: Number(row.stop_loss_pct), stopLossAnchorValue: Number(row.stop_loss_anchor_value || 0), riskLevel: row.risk_level || 'legacy', earlyCloseFee: Number(row.early_close_fee || 0), basisUpdatedAt: Number(row.basis_updated_at || row.created_at), entryQuotes: (() => { try { return JSON.parse(row.entry_quotes_json || '{}'); } catch { return {}; } })(), currentValue: Number(row.last_value),
+    autoRedeemEnabled: Number(row.auto_redeem_enabled) === 1, autoRedeemPct: Number(row.auto_redeem_pct || 10), autoAddEnabled: Number(row.auto_add_enabled) === 1, autoAddDrawdownPct: Number(row.auto_add_drawdown_pct || 10), autoAddMode: row.auto_add_mode === 'balance_pct' ? 'balance_pct' : 'fixed', autoAddValue: Number(row.auto_add_value || 10), autoAddAnchorValue: Number(row.auto_add_anchor_value || row.last_value || row.amount), customFee: Number(row.custom_fee || 0),
+    status: row.status, createdAt: Number(row.created_at), closedAt: row.closed_at ? Number(row.closed_at) : null,
+    allocations: (() => { try { return JSON.parse(row.allocations_json || '[]'); } catch { return []; } })(),
+  }));
+}
+
+let adminMarketPlanSyncPromise = null;
+async function adminSyncAllMarketPlans(request, env) {
+  const actor = await adminAccess(request, env, "fullPanel");
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  if (adminMarketPlanSyncPromise) return Response.json({ ok: true, running: true });
+  adminMarketPlanSyncPromise = (async () => {
+    const owners = (await env.DB.prepare("SELECT user_id, COUNT(*) AS plan_count FROM market_positions WHERE status IN ('active','paused') GROUP BY user_id ORDER BY user_id").all()).results || [];
+    let syncedUsers = 0, syncedPlans = 0, failedUsers = 0;
+    for (const owner of owners) {
+      try {
+        await syncMarketPositions(env, owner.user_id);
+        syncedUsers += 1;
+        syncedPlans += Number(owner.plan_count || 0);
+      } catch (error) {
+        failedUsers += 1;
+        console.error("Admin market-plan synchronization failed for user:", owner.user_id, error?.message || error);
+      }
+    }
+    return { ok: true, users: syncedUsers, plans: syncedPlans, failedUsers };
+  })();
+  try { return Response.json(await adminMarketPlanSyncPromise); }
+  finally { adminMarketPlanSyncPromise = null; }
+}
+
+async function readDepositAddresses(env) {
+  const rows = (await env.DB.prepare("SELECT config_key, config_value FROM platform_config WHERE config_key LIKE 'deposit_%'").all()).results || [];
+  const networks = ["BNB", "TRC20", "BTC", "USDC"];
+  const addresses = Object.fromEntries(networks.map(net => [net, ""]));
+  for (const row of rows) {
+    const net = String(row.config_key || "").slice(8);
+    if (!networks.includes(net)) continue;
+    const pool = [...new Set(String(row.config_value || "").split(/[,;]+/).map(address => address.trim()).filter(Boolean))].slice(0, 6);
+    addresses[net] = pool.join(",");
+  }
+  return addresses;
+}
+function chooseDepositAddress(value) {
+  const pool = String(value || "").split(/[,;]+/).map(address => address.trim()).filter(Boolean);
+  return pool.length ? pool[Math.floor(Math.random() * pool.length)] : "";
+}
+async function getDepositAddresses(request, env) {
+  const pools = await readDepositAddresses(env);
+  const addresses = Object.fromEntries(Object.entries(pools).map(([network, value]) => [network, chooseDepositAddress(value)]));
+  return Response.json({ addresses }, { headers: { "Cache-Control": "no-store" } });
+}
+async function adminDepositAddresses(request, env) {
+  if (!await adminAccess(request, env, "fullPanel")) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  return Response.json({ addresses: await readDepositAddresses(env) });
+}
+async function adminWalletBalances(request, env) {
+  if (!await adminAccess(request, env, "fullPanel")) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const addresses = await readDepositAddresses(env);
+  const wallets = [];
+  let tronWalletIndex = 0;
+  for (const network of ["BNB", "TRC20", "BTC"]) {
+    const pool = addressPoolForNetwork(addresses, network);
+    let signerAddress = "";
+    try { signerAddress = await configuredPlatformSignerAddress(network); } catch {}
+    for (const address of pool) {
+      if (network === "TRC20" && tronWalletIndex++ > 0) await new Promise(resolve => setTimeout(resolve, 1000));
+      const item = { network, address, signerConfigured: cryptoSignerConfiguredFor(network), signerAddress: signerAddress || "", transferEnabled: !!signerAddress && sameAddress(address, signerAddress) && String(process.env.CRYPTO_AUTOMATION_ENABLED || "").toLowerCase() === "true", automationEnabled: String(process.env.CRYPTO_AUTOMATION_ENABLED || "").toLowerCase() === "true" };
+      try {
+        if (network === "BNB") {
+          const provider = new ethers.JsonRpcProvider(process.env.BSC_RPC_URL || "https://bsc-dataseed.binance.org/", 56);
+          const tokenAddress = ethers.getAddress(process.env.BSC_USDT_CONTRACT || BSC_USDT_DEFAULT);
+          const token = new ethers.Contract(tokenAddress, ["function balanceOf(address) view returns (uint256)", "function decimals() view returns (uint8)"], provider);
+          const [native, raw, decimals] = await Promise.all([provider.getBalance(address), token.balanceOf(address), token.decimals()]);
+          item.token = "USDT"; item.tokenBalance = ethers.formatUnits(raw, Number(decimals)); item.native = "BNB"; item.nativeBalance = ethers.formatEther(native);
+        } else if (network === "TRC20") {
+          const host = (process.env.TRON_FULL_HOST || "https://api.trongrid.io").replace(/\/$/, "");
+          const headers = {}; if (process.env.TRON_API_KEY) headers["TRON-PRO-API-KEY"] = process.env.TRON_API_KEY;
+          const data = await cryptoJson(host + "/v1/accounts/" + encodeURIComponent(address) + "?only_confirmed=true", { headers });
+          const account = Array.isArray(data.data) ? data.data[0] || {} : {};
+          const contract = process.env.TRON_USDT_CONTRACT || TRON_USDT_DEFAULT;
+          let raw = 0n;
+          for (const entry of account.trc20 || []) {
+            for (const [key, value] of Object.entries(entry || {})) if (sameAddress(key, contract)) { try { raw = BigInt(value || 0); } catch {} }
+          }
+          item.token = "USDT"; item.tokenBalance = ethers.formatUnits(raw, 6); item.native = "TRX"; item.nativeBalance = ethers.formatUnits(BigInt(account.balance || 0), 6);
+        } else {
+          const base = (process.env.BTC_API_BASE || BTC_API_DEFAULT).replace(/\/$/, "");
+          const [data, utxos] = await Promise.all([
+            cryptoJson(base + "/address/" + encodeURIComponent(address)),
+            cryptoJson(base + "/address/" + encodeURIComponent(address) + "/utxo")
+          ]);
+          const chain = data.chain_stats || {}, mempool = data.mempool_stats || {};
+          const confirmedSats = BigInt(chain.funded_txo_sum || 0) - BigInt(chain.spent_txo_sum || 0);
+          const pendingSats = BigInt(mempool.funded_txo_sum || 0) - BigInt(mempool.spent_txo_sum || 0);
+          const spendableSats = (utxos || []).filter(u => u.status?.confirmed === true && Number(u.value) > 0).reduce((sum, u) => sum + BigInt(u.value), 0n);
+          item.token = "BTC"; item.confirmedBalance = ethers.formatUnits(confirmedSats, 8); item.pendingBalance = ethers.formatUnits(pendingSats, 8); item.availableBalance = ethers.formatUnits(spendableSats, 8);
+        }
+      } catch (error) { item.error = String(error?.message || "Blockchain balance unavailable").slice(0, 240); }
+      wallets.push(item);
+    }
+  }
+  return Response.json({ wallets, updatedAt: Date.now(), automationEnabled: String(process.env.CRYPTO_AUTOMATION_ENABLED || "").toLowerCase() === "true" }, { headers: { "Cache-Control": "no-store" } });
+}
+function configuredPlatformSignerAddress(network) {
+  if (network === "BNB") {
+    const key = String(process.env.BSC_USDT_PRIVATE_KEY || "").trim();
+    if (!key) throw new Error("BNB signer is not configured");
+    return new ethers.Wallet(key).address;
+  }
+  if (network === "TRC20") {
+    const key = String(process.env.TRON_USDT_PRIVATE_KEY || "").trim().replace(/^0x/i, "");
+    if (!key) throw new Error("TRON signer is not configured");
+    const host = (process.env.TRON_FULL_HOST || "https://api.trongrid.io").replace(/\/$/, ""), headers = {};
+    if (process.env.TRON_API_KEY) headers["TRON-PRO-API-KEY"] = process.env.TRON_API_KEY;
+    const tron = new TronWeb({ fullHost: host, privateKey: key, headers });
+    const address = tron.address.fromPrivateKey(key);
+    if (!address) throw new Error("TRON signer address is invalid");
+    return address;
+  }
+  if (network === "BTC") {
+    const wif = String(process.env.BTC_PRIVATE_KEY_WIF || "").trim();
+    if (!wif) throw new Error("BTC signer is not configured");
+    const pair = ECPair.fromWIF(wif, bitcoin.networks.bitcoin);
+    const source = bitcoin.payments.p2wpkh({ pubkey: Buffer.from(pair.publicKey), network: bitcoin.networks.bitcoin });
+    if (!source.address) throw new Error("BTC signer address is invalid");
+    return source.address;
+  }
+  throw new Error("Unsupported wallet network");
+}
+
+function platformTransferUnits(value, decimals) {
+  const raw = String(value).trim(), pieces = raw.split(".");
+  if (!raw || pieces.length > 2 || !pieces[0] || [...pieces[0], ...(pieces[1] || "")].some(char => char < "0" || char > "9")) throw new Error("Importo non valido.");
+  const [whole, fraction = ""] = pieces;
+  if (fraction.length > decimals) throw new Error("Troppe cifre decimali per questo asset.");
+  return BigInt(whole) * (10n ** BigInt(decimals)) + BigInt((fraction + "0".repeat(decimals)).slice(0, decimals) || "0");
+}
+
+async function sendAdminBnbTransfer({ asset, from, to, amount }) {
+  const key = String(process.env.BSC_USDT_PRIVATE_KEY || "").trim();
+  const provider = new ethers.JsonRpcProvider(process.env.BSC_RPC_URL || "https://bsc-dataseed.binance.org/", 56);
+  const signer = new ethers.Wallet(key, provider);
+  await assertSignerMatchesPlatformAddress("BNB", signer.address);
+  if (!sameAddress(signer.address, from) || !ethers.isAddress(to)) throw new Error("Wallet sorgente o destinazione BNB non valido.");
+  if (asset === "USDT") {
+    const token = new ethers.Contract(ethers.getAddress(process.env.BSC_USDT_CONTRACT || BSC_USDT_DEFAULT), [...AUTO_TRANSFER_ABI, "function balanceOf(address) view returns (uint256)"], signer);
+    const decimals = Number(await token.decimals()), units = platformTransferUnits(amount, decimals);
+    if (units <= 0n || BigInt(await token.balanceOf(signer.address)) < units) throw new Error("Saldo USDT insufficiente.");
+    return (await token.transfer(ethers.getAddress(to), units)).hash;
+  }
+  if (asset !== "BNB") throw new Error("Asset non supportato su BNB Smart Chain.");
+  const units = ethers.parseEther(String(amount)), balance = await provider.getBalance(signer.address);
+  if (units <= 0n || balance < units) throw new Error("Saldo BNB insufficiente.");
+  return (await signer.sendTransaction({ to: ethers.getAddress(to), value: units })).hash;
+}
+
+async function sendAdminTronTransfer({ asset, from, to, amount }) {
+  const key = String(process.env.TRON_USDT_PRIVATE_KEY || "").trim().replace(/^0x/i, "");
+  const host = (process.env.TRON_FULL_HOST || "https://api.trongrid.io").replace(/\/$/, ""), headers = {};
+  if (process.env.TRON_API_KEY) headers["TRON-PRO-API-KEY"] = process.env.TRON_API_KEY;
+  const tron = new TronWeb({ fullHost: host, privateKey: key, headers }), signerAddress = tron.address.fromPrivateKey(key);
+  await assertSignerMatchesPlatformAddress("TRC20", signerAddress);
+  if (!sameAddress(signerAddress, from) || !TronWeb.isAddress(to)) throw new Error("Wallet sorgente o destinazione TRON non valido.");
+  if (asset === "USDT") {
+    const contract = await tron.contract().at(process.env.TRON_USDT_CONTRACT || TRON_USDT_DEFAULT);
+    const decimals = Number(await contract.decimals().call()), units = platformTransferUnits(amount, decimals);
+    if (units <= 0n || BigInt(await contract.balanceOf(signerAddress).call()) < units) throw new Error("Saldo USDT insufficiente.");
+    const sent = await contract.transfer(to, units.toString()).send({ feeLimit: Number(process.env.TRON_FEE_LIMIT_SUN || 100000000) });
+    const hash = cleanHash(typeof sent === "string" ? sent : sent?.txid || sent?.txID || sent?.transaction?.txID || "");
+    if (!/^[a-fA-F0-9]{64}$/.test(hash)) throw new Error("Il provider TRON non ha restituito il TX hash.");
+    return hash;
+  }
+  if (asset !== "TRX") throw new Error("Asset non supportato su TRON.");
+  const units = platformTransferUnits(amount, 6);
+  if (units <= 0n || units > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("Importo TRX non valido.");
+  const transaction = await tron.transactionBuilder.sendTrx(to, Number(units), signerAddress);
+  const signed = await tron.trx.sign(transaction, key), result = await tron.trx.sendRawTransaction(signed);
+  const hash = cleanHash(result?.txid || result?.txID || signed?.txID || "");
+  if (result?.result !== true || !/^[a-fA-F0-9]{64}$/.test(hash)) throw new Error("Il provider TRON non ha accettato la transazione.");
+  return hash;
+}
+
+const PANCAKE_V2_ROUTER_ABI = [
+  "function getAmountsOut(uint256 amountIn,address[] path) view returns (uint256[] amounts)",
+  "function swapExactTokensForETH(uint256 amountIn,uint256 amountOutMin,address[] path,address to,uint256 deadline) returns (uint256[] amounts)",
+  "function swapExactETHForTokens(uint256 amountOutMin,address[] path,address to,uint256 deadline) payable returns (uint256[] amounts)",
+];
+const SUNSWAP_V2_ROUTER_ABI = [
+  { "type":"function", "name":"getAmountsOut", "stateMutability":"view", "inputs":[{"name":"amountIn","type":"uint256"},{"name":"path","type":"address[]"}], "outputs":[{"name":"amounts","type":"uint256[]"}] },
+  { "type":"function", "name":"swapExactTokensForTRX", "stateMutability":"nonpayable", "inputs":[{"name":"amountIn","type":"uint256"},{"name":"amountOutMin","type":"uint256"},{"name":"path","type":"address[]"},{"name":"to","type":"address"},{"name":"deadline","type":"uint256"}], "outputs":[{"name":"amounts","type":"uint256[]"}] },
+  { "type":"function", "name":"swapExactTRXForTokens", "stateMutability":"payable", "inputs":[{"name":"amountOutMin","type":"uint256"},{"name":"path","type":"address[]"},{"name":"to","type":"address"},{"name":"deadline","type":"uint256"}], "outputs":[{"name":"amounts","type":"uint256[]"}] },
+];
+const PLATFORM_SWAP_SLIPPAGE_BPS = 100;
+function platformSwapMinimumOutput(expected) { return BigInt(expected) * BigInt(10000 - PLATFORM_SWAP_SLIPPAGE_BPS) / 10000n; }
+function platformSwapRawInteger(value) { const raw=String(value ?? ""); if(!/^\d+$/.test(raw)) throw new Error("Valore minimo di output non valido."); return BigInt(raw); }
+
+async function getAdminPlatformSwapQuote(network, fromAsset, amount) {
+  const supported = { BNB: ["USDT", "BNB"], TRC20: ["USDT", "TRX"] };
+  if (!supported[network] || !supported[network].includes(fromAsset)) throw new Error("Rete o asset di origine non supportato.");
+  const toAsset = fromAsset === "USDT" ? (network === "BNB" ? "BNB" : "TRX") : "USDT";
+  let amountIn, expectedUnits, inputDecimals, outputDecimals;
+  if (network === "BNB") {
+    const provider = new ethers.JsonRpcProvider(process.env.BSC_RPC_URL || "https://bsc-dataseed.binance.org/", 56);
+    const usdtAddress = ethers.getAddress(process.env.BSC_USDT_CONTRACT || BSC_USDT_DEFAULT);
+    const token = new ethers.Contract(usdtAddress, ["function decimals() view returns (uint8)"], provider);
+    const usdtDecimals = Number(await token.decimals());
+    inputDecimals = fromAsset === "USDT" ? usdtDecimals : 18;
+    outputDecimals = toAsset === "USDT" ? usdtDecimals : 18;
+    amountIn = platformTransferUnits(amount, inputDecimals);
+    if (amountIn <= 0n) throw new Error("Importo non valido.");
+    const wbnb = ethers.getAddress(BSC_WBNB_DEFAULT), path = fromAsset === "USDT" ? [usdtAddress, wbnb] : [wbnb, usdtAddress];
+    const router = new ethers.Contract(ethers.getAddress(PANCAKE_V2_ROUTER_DEFAULT), PANCAKE_V2_ROUTER_ABI, provider);
+    const amounts = await router.getAmountsOut(amountIn, path);
+    expectedUnits = BigInt(amounts[amounts.length - 1]);
+  } else {
+    const host = (process.env.TRON_FULL_HOST || "https://api.trongrid.io").replace(/\/$/, ""), headers = {};
+    if (process.env.TRON_API_KEY) headers["TRON-PRO-API-KEY"] = process.env.TRON_API_KEY;
+    const tron = new TronWeb({ fullHost: host, headers }), usdtAddress = process.env.TRON_USDT_CONTRACT || TRON_USDT_DEFAULT;
+    const usdt = await tron.contract().at(usdtAddress), inputTokenDecimals = Number(await usdt.decimals().call());
+    inputDecimals = fromAsset === "USDT" ? inputTokenDecimals : 6;
+    outputDecimals = toAsset === "USDT" ? inputTokenDecimals : 6;
+    amountIn = platformTransferUnits(amount, inputDecimals);
+    if (amountIn <= 0n) throw new Error("Importo non valido.");
+    const wtrx = TRON_WTRX_DEFAULT, path = fromAsset === "USDT" ? [usdtAddress, wtrx] : [wtrx, usdtAddress];
+    const router = await tron.contract(SUNSWAP_V2_ROUTER_ABI, SUNSWAP_V2_ROUTER_DEFAULT);
+    const amounts = await router.getAmountsOut(amountIn.toString(), path).call();
+    expectedUnits = BigInt(String(amounts[amounts.length - 1]));
+  }
+  if (expectedUnits <= 0n) throw new Error("La quotazione on-chain non è disponibile per questa coppia.");
+  const minimumUnits = platformSwapMinimumOutput(expectedUnits);
+  if (minimumUnits <= 0n) throw new Error("Importo troppo basso per applicare il limite di slippage.");
+  return { network, fromAsset, toAsset, amount: String(amount), inputDecimals, outputDecimals, expectedOutput: ethers.formatUnits(expectedUnits, outputDecimals), minimumOutput: ethers.formatUnits(minimumUnits, outputDecimals), expectedOutputUnits: expectedUnits.toString(), minimumOutputUnits: minimumUnits.toString(), slippageBps: PLATFORM_SWAP_SLIPPAGE_BPS, quotedAt: Date.now() };
+}
+
+async function approveBscSwapToken(token, owner, spender, amount) {
+  const allowance = BigInt(await token.allowance(owner, spender));
+  if (allowance >= amount) return "";
+  if (allowance > 0n) await (await token.approve(spender, 0n)).wait(1);
+  const approval = await token.approve(spender, amount);
+  await approval.wait(1);
+  return approval.hash;
+}
+
+async function waitForTronSwapApproval(tron, txHash) {
+  for (let attempt=0; attempt<30; attempt++) {
+    const info = await tron.trx.getTransactionInfo(txHash).catch(() => null);
+    if (info?.id) {
+      const result = info.receipt?.result;
+      if (result && result !== "SUCCESS") throw new Error("Approvazione TRON non riuscita on-chain.");
+      return;
+    }
+    await new Promise(resolve => setTimeout(resolve, 1500));
+  }
+  throw new Error("Approvazione TRON inviata ma non confermata; controlla l’explorer prima di riprovare.");
+}
+
+async function sendAdminPlatformSwap({ network, from, fromAsset, amount, minimumOutputUnits }) {
+  const requestedMinOut = platformSwapRawInteger(minimumOutputUnits), quote = await getAdminPlatformSwapQuote(network, fromAsset, amount), safeMinimum = BigInt(quote.minimumOutputUnits), expected = BigInt(quote.expectedOutputUnits);
+  if (requestedMinOut < safeMinimum || requestedMinOut > expected) throw new Error("La quotazione è cambiata oltre la tolleranza. Richiedi una nuova quotazione prima di confermare.");
+  const deadline = Math.floor(Date.now() / 1000) + 300;
+  if (network === "BNB") {
+    const key = String(process.env.BSC_USDT_PRIVATE_KEY || "").trim(), provider = new ethers.JsonRpcProvider(process.env.BSC_RPC_URL || "https://bsc-dataseed.binance.org/", 56), signer = new ethers.Wallet(key, provider), signerAddress = signer.address;
+    await assertSignerMatchesPlatformAddress("BNB", signerAddress);
+    if (!sameAddress(signerAddress, from)) throw new Error("Il wallet sorgente non corrisponde al signer BNB attivo.");
+    const usdtAddress = ethers.getAddress(process.env.BSC_USDT_CONTRACT || BSC_USDT_DEFAULT), routerAddress = ethers.getAddress(PANCAKE_V2_ROUTER_DEFAULT), wbnb = ethers.getAddress(BSC_WBNB_DEFAULT), router = new ethers.Contract(routerAddress, PANCAKE_V2_ROUTER_ABI, signer);
+    const usdtRead = new ethers.Contract(usdtAddress, ["function decimals() view returns (uint8)", "function balanceOf(address) view returns (uint256)", "function allowance(address,address) view returns (uint256)", "function approve(address,uint256) returns (bool)"], signer), decimals = Number(await usdtRead.decimals()), inputDecimals = fromAsset === "USDT" ? decimals : 18, amountIn = platformTransferUnits(amount, inputDecimals), minOut = platformSwapRawInteger(minimumOutputUnits);
+    let approvalTxHash = "", tx;
+    if (fromAsset === "USDT") {
+      if (BigInt(await usdtRead.balanceOf(signerAddress)) < amountIn) throw new Error("Saldo USDT insufficiente.");
+      approvalTxHash = await approveBscSwapToken(usdtRead, signerAddress, routerAddress, amountIn);
+      try { tx = await router.swapExactTokensForETH(amountIn, minOut, [usdtAddress, wbnb], signerAddress, deadline); }
+      catch (error) { if (approvalTxHash) error.approvalTxHash = approvalTxHash; throw error; }
+    } else if (fromAsset === "BNB") {
+      if (fromAsset !== quote.fromAsset) throw new Error("Asset BNB non valido.");
+      tx = await router.swapExactETHForTokens(minOut, [wbnb, usdtAddress], signerAddress, deadline, { value: amountIn });
+    } else throw new Error("Asset non supportato su BNB Smart Chain.");
+    return { txHash: tx.hash, approvalTxHash };
+  }
+  if (network !== "TRC20") throw new Error("Rete swap non supportata.");
+  const key = String(process.env.TRON_USDT_PRIVATE_KEY || "").trim().replace(/^0x/i, ""), host = (process.env.TRON_FULL_HOST || "https://api.trongrid.io").replace(/\/$/, ""), headers = {};
+  if (process.env.TRON_API_KEY) headers["TRON-PRO-API-KEY"] = process.env.TRON_API_KEY;
+  const tron = new TronWeb({ fullHost: host, privateKey: key, headers }), signerAddress = tron.address.fromPrivateKey(key);
+  await assertSignerMatchesPlatformAddress("TRC20", signerAddress);
+  if (!sameAddress(signerAddress, from)) throw new Error("Il wallet sorgente non corrisponde al signer TRON attivo.");
+  const usdtAddress = process.env.TRON_USDT_CONTRACT || TRON_USDT_DEFAULT, routerAddress = SUNSWAP_V2_ROUTER_DEFAULT, wtrx = TRON_WTRX_DEFAULT, usdt = await tron.contract().at(usdtAddress), router = await tron.contract(SUNSWAP_V2_ROUTER_ABI, routerAddress), decimals = Number(await usdt.decimals().call()), inputDecimals = fromAsset === "USDT" ? decimals : 6, amountIn = platformTransferUnits(amount, inputDecimals), feeLimit = Number(process.env.TRON_FEE_LIMIT_SUN || 100000000), minOut = platformSwapRawInteger(minimumOutputUnits);
+  if (fromAsset !== "USDT" && fromAsset !== "TRX") throw new Error("Asset non supportato su TRON.");
+  let approvalTxHash = "", sent;
+  if (fromAsset === "USDT") {
+    if (BigInt(await usdt.balanceOf(signerAddress).call()) < amountIn) throw new Error("Saldo USDT insufficiente.");
+    const allowance = BigInt(await usdt.allowance(signerAddress, routerAddress).call());
+    if (allowance < amountIn) {
+      const approval = await usdt.approve(routerAddress, amountIn.toString()).send({ feeLimit });
+      approvalTxHash = cleanHash(typeof approval === "string" ? approval : approval?.txid || approval?.txID || approval?.transaction?.txID || "");
+      if (!/^[a-fA-F0-9]{64}$/.test(approvalTxHash)) throw new Error("Il provider TRON non ha restituito il TX hash dell’approvazione.");
+      await waitForTronSwapApproval(tron, approvalTxHash);
+    }
+    try { sent = await router.swapExactTokensForTRX(amountIn.toString(), minOut.toString(), [usdtAddress, wtrx], signerAddress, deadline).send({ feeLimit }); }
+    catch (error) { if (approvalTxHash) error.approvalTxHash = approvalTxHash; throw error; }
+  } else {
+    sent = await router.swapExactTRXForTokens(minOut.toString(), [wtrx, usdtAddress], signerAddress, deadline).send({ callValue: amountIn.toString(), feeLimit });
+  }
+  const txHash = cleanHash(typeof sent === "string" ? sent : sent?.txid || sent?.txID || sent?.transaction?.txID || "");
+  if (!/^[a-fA-F0-9]{64}$/.test(txHash)) throw new Error("Il provider TRON non ha restituito il TX hash dello swap.");
+  return { txHash, approvalTxHash };
+}
+
+async function adminPlatformWalletSwapQuote(request, env) {
+  if (!await adminAccess(request, env, "fullPanel")) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  if (String(process.env.CRYPTO_AUTOMATION_ENABLED || "").toLowerCase() !== "true") return Response.json({ error: "L’automazione crypto deve essere abilitata prima di effettuare swap." }, { status: 409 });
+  const body = await request.json().catch(() => ({})), network = String(body.network || ""), fromAsset = String(body.fromAsset || ""), from = String(body.from || "").trim();
+  let signerAddress; try { signerAddress = await configuredPlatformSignerAddress(network); } catch (error) { return Response.json({ error: error.message }, { status: 409 }); }
+  if (!sameAddress(signerAddress, from) || !addressPoolForNetwork(await readDepositAddresses(env), network).some(address => sameAddress(address, from))) return Response.json({ error: "Il wallet sorgente deve essere il wallet signer configurato." }, { status: 409 });
+  try { return Response.json({ ...(await getAdminPlatformSwapQuote(network, fromAsset, String(body.amount || ""))), sourceAddress: signerAddress }, { headers: { "Cache-Control": "no-store" } }); }
+  catch (error) { return Response.json({ error: String(error?.message || "Quotazione DEX non disponibile.").slice(0, 240) }, { status: 502 }); }
+}
+
+async function adminPlatformWalletSwap(request, env) {
+  const actor = await adminAccess(request, env, "fullPanel");
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  if (String(process.env.CRYPTO_AUTOMATION_ENABLED || "").toLowerCase() !== "true") return Response.json({ error: "L’automazione crypto deve essere abilitata prima di effettuare swap." }, { status: 409 });
+  const body = await request.json().catch(() => ({})), network = String(body.network || ""), fromAsset = String(body.fromAsset || ""), from = String(body.from || "").trim(), amount = String(body.amount || "").trim(), requestId = String(body.requestId || "").trim();
+  if (!(Number(amount) > 0) || !Number.isFinite(Number(amount)) || Number(amount) > 1e12 || requestId.length < 12 || requestId.length > 80) return bad("Importo o identificativo operazione non valido.");
+  let minOut; try { minOut = platformSwapRawInteger(body.minimumOutputUnits); } catch (error) { return bad(error.message); }
+  let signerAddress; try { signerAddress = await configuredPlatformSignerAddress(network); } catch (error) { return Response.json({ error: error.message }, { status: 409 }); }
+  if (!sameAddress(from, signerAddress) || !addressPoolForNetwork(await readDepositAddresses(env), network).some(address => sameAddress(address, from))) return Response.json({ error: "Il wallet sorgente deve essere il wallet signer configurato." }, { status: 409 });
+  const lockKey = network + ":" + from.toLowerCase();
+  if (adminWalletTransferLocks.has(lockKey)) return Response.json({ error: "È già in corso un trasferimento o swap da questo wallet." }, { status: 409 });
+  adminWalletTransferLocks.add(lockKey);
+  const key = "admin_wallet_swap:" + requestId, operation = { requestId, adminId: actor.id, network, fromAsset, amount, from, minimumOutputUnits: minOut.toString(), status: "broadcasting", createdAt: Date.now() };
+  try {
+    const quote = await getAdminPlatformSwapQuote(network, fromAsset, amount), currentMin = BigInt(quote.minimumOutputUnits);
+    if (minOut < currentMin || minOut > BigInt(quote.expectedOutputUnits)) return Response.json({ error: "La quotazione è cambiata. Richiedi una nuova quotazione e conferma lo swap." }, { status: 409 });
+    const reserved = await env.DB.prepare("INSERT OR IGNORE INTO platform_config(config_key, config_value) VALUES(?, ?)").bind(key, JSON.stringify(operation)).run();
+    if (!(reserved.meta?.changes > 0)) return Response.json({ error: "Operazione già inviata o elaborata." }, { status: 409 });
+    const result = await sendAdminPlatformSwap({ network, from, fromAsset, amount, minimumOutputUnits: minOut.toString() });
+    operation.status = "broadcast"; operation.txHash = result.txHash; operation.approvalTxHash = result.approvalTxHash || ""; operation.broadcastAt = Date.now();
+    try { await env.DB.prepare("UPDATE platform_config SET config_value = ? WHERE config_key = ?").bind(JSON.stringify(operation), key).run(); } catch (auditError) { console.error("Swap broadcast but audit update failed:", auditError); }
+    return Response.json({ ok: true, ...result, network, fromAsset, toAsset: quote.toAsset, amount, minimumOutput: quote.minimumOutput, status: "broadcast" });
+  } catch (error) {
+    if (operation.status === "broadcasting") {
+      operation.status = "failed_or_unconfirmed"; operation.approvalTxHash = String(error?.approvalTxHash || ""); operation.error = String(error?.message || "Swap failed").slice(0, 240); operation.finishedAt = Date.now();
+      try { await env.DB.prepare("UPDATE platform_config SET config_value = ? WHERE config_key = ?").bind(JSON.stringify(operation), key).run(); } catch (auditError) { console.error("Could not save platform wallet swap state:", auditError); }
+    }
+    const approvalNotice = error?.approvalTxHash ? " · Approval TX " + error.approvalTxHash : "";
+    return Response.json({ error: String(error?.message || "Swap failed").slice(0, 240) + approvalNotice, retryWarning: "Prima di riprovare, verifica tutte le transazioni sull’explorer." }, { status: 502 });
+  } finally { adminWalletTransferLocks.delete(lockKey); }
+}
+
+async function sendAdminBtcTransfer({ from, to, amount }) {
+  const { keyPair, source } = await getBtcSigner();
+  if (!sameAddress(source.address, from)) throw new Error("Il wallet sorgente BTC non corrisponde al signer attivo.");
+  bitcoin.address.toOutputScript(to, bitcoin.networks.bitcoin);
+  const sats = Number(platformTransferUnits(amount, 8));
+  if (!Number.isSafeInteger(sats) || sats < 546) throw new Error("Il trasferimento BTC minimo è 0,00000546 BTC.");
+  const base = (process.env.BTC_API_BASE || BTC_API_DEFAULT).replace(/\/$/, "");
+  const [utxos, feeData] = await Promise.all([cryptoJson(base + "/address/" + encodeURIComponent(source.address) + "/utxo"), cryptoJson(base + "/v1/fees/recommended")]);
+  const feeRate = Math.max(1, Math.ceil(Number(feeData.fastestFee || feeData.halfHourFee || 5)));
+  const available = (utxos || []).filter(item => item.status?.confirmed === true && Number(item.value) > 0).sort((a,b) => Number(b.value)-Number(a.value));
+  const selected = []; let total = 0, fee = 0;
+  for (const item of available) { selected.push(item); total += Number(item.value); fee = Math.ceil((10 + selected.length * 68 + 2 * 31) * feeRate); if (total >= sats + fee || selected.length >= 100) break; }
+  if (total < sats + fee) throw new Error("Saldo BTC confermato insufficiente per importo e commissione miner.");
+  const psbt = new bitcoin.Psbt({ network: bitcoin.networks.bitcoin });
+  for (const item of selected) psbt.addInput({ hash: item.txid, index: Number(item.vout), witnessUtxo: { script: source.output, value: Number(item.value) } });
+  psbt.addOutput({ address: to, value: sats });
+  const change = total - sats - fee; if (change >= 546) psbt.addOutput({ address: source.address, value: change });
+  psbt.signAllInputs(keyPair); psbt.finalizeAllInputs();
+  const response = await fetch(base + "/tx", { method: "POST", headers: { "content-type": "text/plain" }, body: psbt.extractTransaction().toHex(), signal: AbortSignal.timeout(20000) });
+  const hash = (await response.text()).trim();
+  if (!response.ok || !/^[a-fA-F0-9]{64}$/.test(hash)) throw new Error("Il broadcaster BTC non ha accettato la transazione.");
+  return hash;
+}
+
+const adminWalletTransferLocks = new Set();
+async function adminPlatformWalletTransfer(request, env) {
+  const actor = await adminAccess(request, env, "fullPanel");
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  if (String(process.env.CRYPTO_AUTOMATION_ENABLED || "").toLowerCase() !== "true") return Response.json({ error: "L'automazione crypto deve essere abilitata prima di trasferire fondi." }, { status: 409 });
+  const body = await request.json().catch(() => ({}));
+  const network = String(body.network || ""), asset = String(body.asset || ""), from = String(body.from || "").trim(), to = String(body.to || "").trim(), amount = String(body.amount || "").trim(), requestId = String(body.requestId || "").trim();
+  const supported = { BNB: ["USDT", "BNB"], TRC20: ["USDT", "TRX"], BTC: ["BTC"] };
+  if (!supported[network] || !supported[network].includes(asset)) return bad("Rete o asset non supportato.");
+  if (!(Number(amount) > 0) || !Number.isFinite(Number(amount)) || Number(amount) > 1000000000000 || requestId.length < 12 || requestId.length > 80) return bad("Importo o identificativo operazione non valido.");
+  const pool = addressPoolForNetwork(await readDepositAddresses(env), network);
+  if (!pool.some(address => sameAddress(address, from)) || !pool.some(address => sameAddress(address, to)) || sameAddress(from, to)) return bad("Sorgente e destinazione devono essere wallet configurati sulla stessa rete.");
+  let signerAddress; try { signerAddress = await configuredPlatformSignerAddress(network); } catch (error) { return Response.json({ error: error.message }, { status: 409 }); }
+  if (!sameAddress(from, signerAddress)) return Response.json({ error: "Il wallet sorgente non corrisponde al signer attivo." }, { status: 409 });
+  const lockKey = network + ":" + from.toLowerCase();
+  if (adminWalletTransferLocks.has(lockKey)) return Response.json({ error: "È già in corso un trasferimento da questo wallet." }, { status: 409 });
+  const key = "admin_wallet_transfer:" + requestId, operation = { requestId, adminId: actor.id, network, asset, from, to, amount, status: "broadcasting", createdAt: Date.now() };
+  const reserved = await env.DB.prepare("INSERT OR IGNORE INTO platform_config(config_key, config_value) VALUES(?, ?)").bind(key, JSON.stringify(operation)).run();
+  if (!(reserved.meta?.changes > 0)) return Response.json({ error: "Operazione già inviata o elaborata." }, { status: 409 });
+  adminWalletTransferLocks.add(lockKey);
+  try {
+    const txHash = network === "BNB" ? await sendAdminBnbTransfer({ asset, from, to, amount }) : network === "TRC20" ? await sendAdminTronTransfer({ asset, from, to, amount }) : await sendAdminBtcTransfer({ from, to, amount });
+    operation.status = "broadcast"; operation.txHash = txHash; operation.broadcastAt = Date.now();
+    try { await env.DB.prepare("UPDATE platform_config SET config_value = ? WHERE config_key = ?").bind(JSON.stringify(operation), key).run(); } catch (auditError) { console.error("Transfer broadcast but audit update failed:", auditError); }
+    return Response.json({ ok: true, txHash, network, asset, amount, from, to, status: "broadcast" });
+  } catch (error) {
+    operation.status = "failed_or_unconfirmed"; operation.error = String(error?.message || "Transfer failed").slice(0, 240); operation.finishedAt = Date.now();
+    try { await env.DB.prepare("UPDATE platform_config SET config_value = ? WHERE config_key = ?").bind(JSON.stringify(operation), key).run(); } catch (auditError) { console.error("Could not save platform wallet transfer state:", auditError); }
+    return Response.json({ error: operation.error, retryWarning: "Prima di riprovare, verifica la transazione sull'explorer." }, { status: 502 });
+  } finally { adminWalletTransferLocks.delete(lockKey); }
+}
+
+async function saveAdminDepositAddresses(request, env) {
+  const operator = await privilegedAdminActor(request, env);
+  if (!operator) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  const body = await request.json();
+  const allowed = ["BNB", "TRC20", "BTC", "USDC"];
+  const entries = [];
+  for (const net of allowed) {
+    const raw = typeof body.addresses?.[net] === "string" ? body.addresses[net].trim().slice(0, 4096) : "";
+    const pool = [...new Set(raw.split(/[,;]+/).map(address => address.trim()).filter(Boolean))];
+    if (pool.length > 6) return bad("Sono consentiti al massimo 6 indirizzi per rete.");
+    const validAddress = address => net === "BNB" ? /^0x[a-fA-F0-9]{40}$/.test(address)
+      : net === "TRC20" ? /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(address)
+      : net === "BTC" ? /^(bc1[a-z0-9]{11,87}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})$/i.test(address)
+      : /^[A-Za-z0-9:_-]{12,160}$/.test(address);
+    if (pool.some(address => !validAddress(address))) return bad("Indirizzo non valido per " + net + ".");
+    const value = pool.join(",");
+    entries.push(value
+      ? env.DB.prepare("INSERT INTO platform_config(config_key,config_value) VALUES(?,?) ON CONFLICT(config_key) DO UPDATE SET config_value=excluded.config_value").bind("deposit_" + net, value)
+      : env.DB.prepare("DELETE FROM platform_config WHERE config_key = ?").bind("deposit_" + net));
+  }
+  await env.DB.batch(entries);
+  return Response.json({ ok: true, addresses: await readDepositAddresses(env) });
+}
+
+const PLATFORM_INVESTMENT_FEE_RATE = 0.20;
+function splitPlatformInvestmentAmount(grossValue, feeRate = PLATFORM_INVESTMENT_FEE_RATE) {
+  const raw = Number(grossValue);
+  const grossAmount = Number.isFinite(raw) ? Number(raw.toFixed(3)) : raw;
+  const feeAmount = Number.isFinite(grossAmount) ? Number((grossAmount * feeRate).toFixed(3)) : NaN;
+  const investedAmount = Number.isFinite(grossAmount) && Number.isFinite(feeAmount) ? Number((grossAmount - feeAmount).toFixed(3)) : NaN;
+  return { grossAmount, feeAmount, investedAmount };
+}
+async function recordPlatformInvestmentFee(env, feeAmount) {
+  const fee = Number(feeAmount);
+  if (!Number.isFinite(fee) || fee <= 0) return;
+  await env.DB.prepare("INSERT INTO platform_config (config_key, config_value) VALUES ('platform_investment_fee_total', ?) ON CONFLICT(config_key) DO UPDATE SET config_value = CAST(CAST(platform_config.config_value AS REAL) + CAST(excluded.config_value AS REAL) AS TEXT)")
+    .bind(fee.toFixed(3)).run();
+}
+
+async function simpleEarnInvest(request, env) {
+  const user = await authed(request, env);
+  const body = await request.json().catch(() => ({}));
+  const simpleEarnWithholdingPercent = (await readCommissionRates(env)).simpleEarnWithholdingPercent;
+  const { grossAmount, feeAmount: investmentFee, investedAmount: amount } = splitPlatformInvestmentAmount(body.amount, simpleEarnWithholdingPercent / 100);
+  const source = ['deposit', 'earnings', 'released'].includes(body.source) ? body.source : 'deposit';
+  if (!Number.isFinite(grossAmount) || grossAmount < 200 || grossAmount > 1e12) return bad("L'investimento minimo per Simple Earn è 200 USDT.");
+  const wallet = await accrue(env, user.id);
+  if (grossAmount > Number(wallet[source] || 0) + 1e-9) return bad("Saldo disponibile insufficiente.");
+  const dailyRate = amount <= 500 ? 0.0019 : amount <= 1000 ? 0.0024 : amount <= 2500 ? 0.0029 : 0.0036;
+  const now = Date.now();
+  const results = await env.DB.batch([
+    env.DB.prepare("INSERT INTO simple_earn_positions (user_id, principal, source, daily_rate, status, created_at) SELECT ?, ?, ?, ?, 'active', ? WHERE EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + source + " >= ?)").bind(user.id, amount, source, dailyRate, now, user.id, grossAmount),
+    env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?").bind(grossAmount, user.id, grossAmount)
+  ]);
+  if (!(results[0]?.meta?.changes > 0) || !(results[1]?.meta?.changes > 0)) return bad("Saldo insufficiente o account aggiornato. Aggiorna e riprova.");
+  try { await recordPlatformInvestmentFee(env, investmentFee); } catch (error) { console.error('Could not record Simple Earn platform fee:', error); }
+  return Response.json({ ok: true, positionId: results[0]?.meta?.last_row_id || null, principal: amount, grossAmount, investmentFee, dailyRate });
+}
+
+async function simpleEarnRedeem(request, env) {
+  const user = await authed(request, env);
+  const body = await request.json().catch(() => ({}));
+  const id = Number(body.positionId);
+  if (!Number.isInteger(id) || id < 1) return bad("Posizione Simple Earn non valida.");
+  const position = await env.DB.prepare("SELECT * FROM simple_earn_positions WHERE id = ? AND user_id = ? AND status = 'active'").bind(id, user.id).first();
+  if (!position) return Response.json({ error: "La posizione non è più attiva." }, { status: 409 });
+  const now = Date.now(), principal = Number(position.principal);
+  const interest = Number((principal * Number(position.daily_rate) * Math.max(0, now - Number(position.created_at)) / 86400000).toFixed(3));
+  const redeemCondition="EXISTS (SELECT 1 FROM simple_earn_positions WHERE id=? AND user_id=? AND status='redeemed' AND closed_at=?)";
+  const referralStatements=await referralRedemptionCommissionStatements(env,user.id,interest,'simple-earn:'+id+':'+now,now,redeemCondition,[id,user.id,now]);
+  const statusUpdate=env.DB.prepare("UPDATE simple_earn_positions SET status = 'redeemed', interest_paid = ?, closed_at = ? WHERE id = ? AND user_id = ? AND status = 'active'").bind(interest,now,id,user.id);
+  let walletUpdate;
+  if(position.source==='earnings')walletUpdate=env.DB.prepare("UPDATE wallets SET earnings = earnings + ? WHERE user_id = ? AND EXISTS (SELECT 1 FROM simple_earn_positions WHERE id=? AND user_id=? AND status='redeemed' AND closed_at=?)").bind(Number((principal+interest).toFixed(3)),user.id,id,user.id,now);
+  else if(position.source==='released')walletUpdate=env.DB.prepare("UPDATE wallets SET released = released + ?, earnings = earnings + ? WHERE user_id = ? AND EXISTS (SELECT 1 FROM simple_earn_positions WHERE id=? AND user_id=? AND status='redeemed' AND closed_at=?)").bind(principal,interest,user.id,id,user.id,now);
+  else walletUpdate=env.DB.prepare("UPDATE wallets SET deposit = deposit + ?, earnings = earnings + ? WHERE user_id = ? AND EXISTS (SELECT 1 FROM simple_earn_positions WHERE id=? AND user_id=? AND status='redeemed' AND closed_at=?)").bind(principal,interest,user.id,id,user.id,now);
+  const results=await env.DB.batch([statusUpdate,walletUpdate,...referralStatements]);
+  if(!(results[0]?.meta?.changes>0))return Response.json({error:"La posizione è già stata riscattata."},{status:409});
+  return Response.json({ ok: true, principal, interest, total: Number((principal + interest).toFixed(3)) });
+}
+
+async function marketInvest(request, env) {
+  const user = await authed(request, env);
+  const body = await request.json();
+  const investmentWithholdingPercent = (await readCommissionRates(env)).investmentWithholdingPercent;
+  const { grossAmount, feeAmount: investmentFee, investedAmount: amount } = splitPlatformInvestmentAmount(body.amount, investmentWithholdingPercent / 100);
+  const months = Number(body.months);
+  if (body.riskAcknowledged !== true) return bad('È necessario confermare di aver compreso i rischi prima di avviare il piano.');
+  const riskLevel = typeof body.riskLevel === 'string' ? body.riskLevel : 'balanced';
+  const stopLossPct = MARKET_RISK_STOP_LOSS[riskLevel];
+  const defaultAllocation = MARKET_PLAN_ALLOCATIONS[months];
+  if (!defaultAllocation) return bad("Durata del piano non valida.");
+  let allocation = defaultAllocation;
+  if (body.allocations !== undefined) {
+    if (!Array.isArray(body.allocations) || body.allocations.length < 3 || body.allocations.length > MARKET_CUSTOM_ASSETS.size) return bad('Seleziona almeno 3 asset.');
+    const seen = new Set();
+    allocation = [];
+    for (const item of body.allocations) {
+      const key = Array.isArray(item) ? String(item[0] || '') : String(item?.asset || '');
+      const weight = Number(Array.isArray(item) ? item[1] : item?.weight);
+      if (!MARKET_CUSTOM_ASSETS.has(key) || seen.has(key) || !Number.isFinite(weight) || weight <= 0 || weight > 100) return bad('Asset o percentuale non validi.');
+      seen.add(key);
+      allocation.push([key, weight]);
+    }
+    if (Math.abs(allocation.reduce((sum, item) => sum + item[1], 0) - 100) > 0.01) return bad('Le percentuali degli asset devono sommare esattamente 100%.');
+  }
+  if (!Number.isFinite(grossAmount) || grossAmount < 50) return bad("L'importo minimo è 50 USDT.");
+  if (grossAmount < 500 && riskLevel === 'conservative') return bad("Lo stop-loss dell’8% non è disponibile per piani inferiori a 500 USDT.");
+  if (!Number.isFinite(stopLossPct)) return bad("Profilo stop-loss non disponibile.");
+  const source = ['deposit', 'earnings', 'released'].includes(body.source) ? body.source : 'deposit';
+  const wallet = await accrue(env, user.id);
+  if (grossAmount > Number(wallet[source] || 0) + 1e-9) return bad("Saldo disponibile insufficiente.");
+  const electricityMarket = normalizeElectricityMarket(body.electricityMarket);
+  const quotes = await currentMarketQuotes(electricityMarket);
+  const entry = { __electricityMarket: electricityMarket };
+  for (const [key] of allocation) {
+    const price = Number(quotes[key]?.price);
+    if (!Number.isFinite(price) || price <= 0) return bad("Prezzi live temporaneamente non disponibili per completare il piano. Riprova più tardi.");
+    entry[key] = price;
+  }
+  const now = Date.now();
+  const results = await env.DB.batch([
+    env.DB.prepare(
+      "INSERT INTO market_positions (user_id, plan_id, months, amount, stop_loss_pct, risk_level, allocations_json, entry_quotes_json, last_value, status, created_at, basis_updated_at) " +
+      "SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ? WHERE EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + source + " >= ?)"
+    ).bind(user.id, 'plan-' + months + 'm', months, amount, stopLossPct, riskLevel, JSON.stringify(allocation), JSON.stringify(entry), amount, now, now, user.id, grossAmount),
+    env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?").bind(grossAmount, user.id, grossAmount),
+  ]);
+  if (!(results[0]?.meta?.changes > 0) || !(results[1]?.meta?.changes > 0)) return bad("Saldo insufficiente o modifica concorrente dell'account. Aggiorna e riprova.");
+  try { await recordPlatformInvestmentFee(env, investmentFee); } catch (error) { console.error('Could not record market investment platform fee:', error); }
+  await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
+    .bind(user.id, "Market plan started", grossAmount.toFixed(3) + " USDT charged · platform fee " + investmentFee.toFixed(3) + " USDT · " + amount.toFixed(3) + " USDT invested · duration " + months + " months · risk " + riskLevel + " · fixed stop-loss " + stopLossPct + "%.", now).run();
+  return Response.json({ ok: true, positionId: results[0]?.meta?.last_row_id || null, amount, grossAmount, investmentFee });
+}
+
+async function customMarketInvest(request, env) {
+  const user = await authed(request, env);
+  const body = await request.json().catch(() => ({}));
+  if (body.riskAcknowledged !== true) return bad('È necessario confermare di aver compreso i rischi prima di avviare il piano.');
+  const months = Number(body.months);
+  const grossPrincipal = Number(Number(body.amount).toFixed(3));
+  const investmentWithholdingPercent = (await readCommissionRates(env)).investmentWithholdingPercent;
+  const { feeAmount: investmentFee, investedAmount: principal } = splitPlatformInvestmentAmount(grossPrincipal, investmentWithholdingPercent / 100);
+  const stopLossPct = Number(body.stopLossPct);
+  const fee = CUSTOM_PLAN_FEES[months];
+  if (!fee) return bad('Durata del piano personalizzato non valida.');
+  if (!Number.isFinite(grossPrincipal) || grossPrincipal < 1000) return bad('L’investimento minimo per un portafoglio personalizzato è 1.000 USDT.');
+  if (!Number.isFinite(stopLossPct) || stopLossPct < 1 || stopLossPct > 90) return bad('Lo stop loss deve essere tra 1% e 90%.');
+  const source = ['deposit', 'earnings', 'released'].includes(body.source) ? body.source : 'deposit';
+  const rawAllocations = Array.isArray(body.allocations) ? body.allocations : [];
+  if (rawAllocations.length < 1 || rawAllocations.length > MARKET_CUSTOM_ASSETS.size) return bad('Seleziona almeno 1 asset.');
+  const seen = new Set(), allocations = [];
+  for (const item of rawAllocations) {
+    const key = Array.isArray(item) ? String(item[0] || '') : String(item?.asset || '');
+    const weight = Number(Array.isArray(item) ? item[1] : item?.weight);
+    if (!MARKET_CUSTOM_ASSETS.has(key) || seen.has(key) || !Number.isFinite(weight) || weight <= 0 || weight > 100) return bad('Asset o percentuale non validi.');
+    seen.add(key);
+    allocations.push([key, weight]);
+  }
+  const allocationTotal = allocations.reduce((sum, item) => sum + item[1], 0);
+  if (Math.abs(allocationTotal - 100) > 0.01) return bad('Le percentuali degli asset devono sommare esattamente 100%.');
+  const totalCharge = Number((grossPrincipal + fee).toFixed(3));
+  const wallet = await accrue(env, user.id);
+  if (totalCharge > Number(wallet[source] || 0) + 1e-9) return bad('Saldo insufficiente: servono ' + totalCharge.toFixed(3) + ' USDT, inclusa la quota del piano.');
+  const electricityMarket = normalizeElectricityMarket(body.electricityMarket);
+  const quotes = await currentMarketQuotes(electricityMarket), entry = { __electricityMarket: electricityMarket };
+  for (const [key] of allocations) {
+    const price = Number(quotes[key]?.price);
+    if (!Number.isFinite(price) || price <= 0) return bad('Prezzi di riferimento non disponibili per tutti gli asset selezionati. Riprova più tardi.');
+    entry[key] = price;
+  }
+  const now = Date.now();
+  const results = await env.DB.batch([
+    env.DB.prepare(
+      "INSERT INTO market_positions (user_id, plan_id, months, amount, stop_loss_pct, risk_level, allocations_json, entry_quotes_json, last_value, status, created_at, basis_updated_at, custom_fee, stop_loss_anchor_value) " +
+      "SELECT ?, ?, ?, ?, ?, 'custom', ?, ?, ?, 'active', ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM wallets WHERE user_id = ? AND " + source + " >= ?)"
+    ).bind(user.id, 'custom-' + months + 'm', months, principal, stopLossPct, JSON.stringify(allocations), JSON.stringify(entry), principal, now, now, fee, principal, user.id, totalCharge),
+    env.DB.prepare("UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?").bind(totalCharge, user.id, totalCharge),
+  ]);
+  if (!(results[0]?.meta?.changes > 0) || !(results[1]?.meta?.changes > 0)) return bad('Saldo insufficiente o modifica concorrente dell’account. Aggiorna e riprova.');
+  try { await recordPlatformInvestmentFee(env, investmentFee); } catch (error) { console.error('Could not record custom investment platform fee:', error); }
+  await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
+    .bind(user.id, 'Custom market portfolio started', grossPrincipal.toFixed(3) + ' USDT principal charged · platform fee ' + investmentFee.toFixed(3) + ' USDT · ' + principal.toFixed(3) + ' USDT invested · plan fee ' + fee.toFixed(3) + ' USDT · duration ' + months + ' months · stop loss ' + stopLossPct + '%.', now).run();
+  return Response.json({ ok: true, positionId: results[0]?.meta?.last_row_id || null, amount: principal, grossAmount: grossPrincipal, investmentFee, fee, totalCharged: totalCharge });
+}
+
+async function addMarketFunds(request, env) {
+  const user = await authed(request, env);
+  const body = await request.json();
+  const id = Number(body.positionId), amount = Number(Number(body.amount).toFixed(3));
+  const { feeAmount: investmentFee, investedAmount } = splitPlatformInvestmentAmount(amount);
+  const source = ['deposit', 'earnings', 'released'].includes(body.source) ? body.source : 'deposit';
+  if (!Number.isInteger(id) || id < 1 || !Number.isFinite(amount) || amount < 1) return bad("Importo o piano non valido.");
+  const initialPosition = await env.DB.prepare("SELECT * FROM market_positions WHERE id = ? AND user_id = ? AND status IN ('active','paused')").bind(id, user.id).first();
+  if (!initialPosition) return bad("Piano attivo o sospeso non trovato.");
+  if (initialPosition.status === 'active') await syncMarketPositions(env, user.id);
+  await accrue(env, user.id);
+  const quotes = await currentMarketQuotes(positionElectricityMarket(initialPosition));
+  const tx = await db.transaction('write');
+  const reject = async message => { await tx.rollback(); return bad(message); };
+  try {
+    const positionResult = await tx.execute({
+      sql: "SELECT * FROM market_positions WHERE id = ? AND user_id = ? AND status IN ('active','paused')",
+      args: [id, user.id]
+    });
+    const position = positionResult.rows[0];
+    if (!position) return await reject("Piano attivo o sospeso non trovato.");
+    if (Date.now() >= calendarMaturity(Number(position.created_at), Number(position.months))) return await reject("Il piano è scaduto e non accetta fondi aggiuntivi.");
+    const walletResult = await tx.execute({ sql: "SELECT " + source + " AS available FROM wallets WHERE user_id = ?", args: [user.id] });
+    const available = Number(walletResult.rows[0]?.available || 0);
+    if (amount > available + 1e-9) return await reject("Saldo disponibile insufficiente.");
+    let basis = {};
+    try { basis = JSON.parse(position.entry_quotes_json || '{}'); } catch {}
+    let allocation = [];
+    try { allocation = JSON.parse(position.allocations_json || '[]'); } catch {}
+    const updatedBasis = { ...basis };
+    for (const [key] of allocation) {
+      const current = Number(quotes[key]?.price);
+      if (!(current > 0)) return await reject("Prezzi live temporaneamente non disponibili.");
+      const old = Number(basis[key]) || current;
+      updatedBasis[key] = (Number(position.amount) + investedAmount) / (Number(position.amount) / old + investedAmount / current);
+    }
+    if (!allocation.length) return await reject("Valore di mercato non disponibile.");
+    const currentValue = marketPositionValue(position, quotes);
+    if (!Number.isFinite(currentValue) || currentValue <= 0) return await reject("Valore di mercato non disponibile.");
+    const now = Date.now(), newAmount = Number((Number(position.amount) + investedAmount).toFixed(3)), newValue = Number((currentValue + investedAmount).toFixed(3));
+    const updated = await tx.execute({
+      sql: "UPDATE market_positions SET amount = ?, last_value = ?, entry_quotes_json = ?, basis_updated_at = ?, auto_add_anchor_value = ?, status = 'active', closed_at = NULL WHERE id = ? AND user_id = ? AND status IN ('active','paused')",
+      args: [newAmount, newValue, JSON.stringify(updatedBasis), now, newValue, id, user.id]
+    });
+    if (updated.rowsAffected !== 1) return await reject("Piano non aggiornabile. Aggiorna e riprova.");
+    const debited = await tx.execute({
+      sql: "UPDATE wallets SET " + source + " = " + source + " - ? WHERE user_id = ? AND " + source + " >= ?",
+      args: [amount, user.id, amount]
+    });
+    if (debited.rowsAffected !== 1) return await reject("Saldo disponibile insufficiente.");
+    const notification = await tx.execute({
+      sql: "INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)",
+      args: [user.id, 'Additional funds added', amount.toFixed(3) + ' USDT charged · platform fee ' + investmentFee.toFixed(3) + ' USDT · ' + investedAmount.toFixed(3) + ' USDT added to market portfolio #' + id + '.', now]
+    });
+    await tx.execute({
+      sql: "INSERT INTO platform_config (config_key, config_value) VALUES ('platform_investment_fee_total', ?) ON CONFLICT(config_key) DO UPDATE SET config_value = CAST(CAST(platform_config.config_value AS REAL) + CAST(excluded.config_value AS REAL) AS TEXT)",
+      args: [investmentFee.toFixed(3)]
+    });
+    await tx.commit();
+    if (notification.lastInsertRowid != null) publishNotification(user.id, notification.lastInsertRowid);
+    return Response.json({ ok: true, grossAmount: amount, investmentFee, amount: investedAmount });
+  } catch (error) {
+    try { await tx.rollback(); } catch {}
+    throw error;
+  }
+}
+async function redeemMarketGains(request, env) {
+  const user = await authed(request, env);
+  const body = await request.json().catch(() => ({}));
+  const id = Number(body.positionId);
+  if (!Number.isInteger(id) || id < 1) return bad('Piano non valido.');
+  await syncMarketPositions(env, user.id);
+  const position = await env.DB.prepare("SELECT * FROM market_positions WHERE id = ? AND user_id = ? AND status IN ('active','paused')").bind(id, user.id).first();
+  if (!position) return Response.json({ error: 'Il piano non è più attivo o riscattabile.' }, { status: 409 });
+  const quotes = await currentMarketQuotes(positionElectricityMarket(position));
+  const value = marketPositionValue(position, quotes);
+  const gain = Number((value - Number(position.amount)).toFixed(3));
+  if (!(gain >= 0.001)) return bad('Non ci sono guadagni sopra il capitale investito da riscattare.');
+  let allocation = [];
+  try { allocation = JSON.parse(position.allocations_json || '[]'); } catch {}
+  const nextBasis = { __electricityMarket: positionElectricityMarket(position) };
+  for (const [key] of allocation) {
+    const price = Number(quotes[key]?.price);
+    if (!(price > 0)) return Response.json({ error: 'Prezzi di riferimento non disponibili; riprova tra poco.' }, { status: 503 });
+    nextBasis[key] = price;
+  }
+  const basisJson = JSON.stringify(nextBasis);
+  const transactionId = makeToken();
+  const oldStatus = position.status;
+  const now = Date.now();
+  const referralStatements=await referralRedemptionCommissionStatements(env,user.id,gain,'market-manual:'+id+':'+transactionId,now,"EXISTS (SELECT 1 FROM market_position_redemptions WHERE user_id=? AND event_id=?)",[user.id,transactionId]);
+  const batch = await env.DB.batch([
+    env.DB.prepare("UPDATE market_positions SET last_value = ?, entry_quotes_json = ?, last_redemption_id = ?, basis_updated_at = ?, auto_add_anchor_value = ? WHERE id = ? AND user_id = ? AND status = ? AND last_value = ? AND entry_quotes_json = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ?)")
+      .bind(Number(position.amount), basisJson, transactionId, now, Number(position.amount), id, user.id, oldStatus, Number(position.last_value), position.entry_quotes_json, user.id),
+    env.DB.prepare("INSERT INTO market_position_redemptions (position_id, user_id, event_id, amount, reference_value, created_at, segment_start_at, basis_quotes_json) SELECT ?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = ? AND last_redemption_id = ?)")
+      .bind(id, user.id, transactionId, gain, value, now, Number(position.basis_updated_at || position.created_at), position.entry_quotes_json || '{}', id, user.id, oldStatus, transactionId),
+    env.DB.prepare("UPDATE wallets SET earnings = earnings + ? WHERE user_id = ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = ? AND last_value = ? AND last_redemption_id = ?)")
+      .bind(gain, user.id, id, user.id, oldStatus, Number(position.amount), transactionId),
+    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = ? AND last_redemption_id = ?)")
+      .bind(user.id, 'Plan gains redeemed', gain.toFixed(3) + ' USDT moved to your internal redeemable balance. The invested principal remains in the plan.', now, id, user.id, oldStatus, transactionId),
+    ...referralStatements,
+  ]);
+  if (!(batch[0]?.meta?.changes > 0)) return Response.json({ error: 'Il piano è cambiato. Aggiorna e riprova.' }, { status: 409 });
+  return Response.json({ ok: true, redeemed: gain, referenceValue: Number(position.amount) });
+}
+
+async function closeMarketPositionEarly(request, env) {
+  const user = await authed(request, env);
+  const body = await request.json().catch(() => ({}));
+  const id = Number(body.positionId);
+  if (!Number.isInteger(id) || id < 1) return bad('Piano non valido.');
+  await syncMarketPositions(env, user.id);
+  const position = await env.DB.prepare("SELECT * FROM market_positions WHERE id = ? AND user_id = ? AND status IN ('active','paused')").bind(id, user.id).first();
+  if (!position) return Response.json({ error: 'Il piano è già chiuso, maturato o non disponibile.' }, { status: 409 });
+  const quotes = await currentMarketQuotes(positionElectricityMarket(position));
+  const value = Number(marketPositionValue(position, quotes).toFixed(3));
+  if (!(value > 0)) return bad('Il valore di riferimento non è disponibile per la chiusura.');
+  const closeRates = await readCommissionRates(env);
+  const planHasEarned = (await marketPositionHasEarned(env, user.id, position.id)) || value > Number(position.amount) + 0.0005;
+  const amountThreshold = Number(closeRates.noEarningsEarlyCloseThreshold) || 0;
+  const investedAmount = Number(position.amount);
+  const matchingRange = (closeRates.noEarningsEarlyCloseRanges || []).find(range => investedAmount >= range.from && investedAmount <= range.to);
+  const earlyClosePercent = planHasEarned ? closeRates.earlyClosePercent : matchingRange ? matchingRange.percent : amountThreshold > 0 ? (investedAmount < amountThreshold ? closeRates.noEarningsEarlyCloseBelowPercent : closeRates.noEarningsEarlyCloseAtOrAbovePercent) : closeRates.noEarningsEarlyClosePercent;
+  const fee = Number((value * earlyClosePercent / 100).toFixed(3));
+  const net = Number((value - fee).toFixed(3));
+  const now = Date.now();
+  const transactionId = makeToken();
+  const commissionableProfit=Number(Math.max(0,net-Number(position.amount)).toFixed(3));
+  const referralStatements=await referralRedemptionCommissionStatements(env,user.id,commissionableProfit,'market-early-close:'+id+':'+transactionId,now,"EXISTS (SELECT 1 FROM market_positions WHERE id=? AND user_id=? AND status='early_closed' AND last_redemption_id=?)",[id,user.id,transactionId]);
+  const batch = await env.DB.batch([
+    env.DB.prepare("UPDATE market_positions SET status = 'early_closed', closed_at = ?, last_value = ?, early_close_fee = ?, last_redemption_id = ? WHERE id = ? AND user_id = ? AND status = ? AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ?)")
+      .bind(now, value, fee, transactionId, id, user.id, position.status, user.id),
+    env.DB.prepare("UPDATE wallets SET released = MAX(0, released - ?), earnings = earnings + ? WHERE user_id = ? AND EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'early_closed' AND last_redemption_id = ?)")
+      .bind(value, net, user.id, id, user.id, transactionId),
+    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) SELECT ?, 'transaction', ?, ?, ? WHERE EXISTS (SELECT 1 FROM market_positions WHERE id = ? AND user_id = ? AND status = 'early_closed' AND last_redemption_id = ?)")
+      .bind(user.id, 'Plan closed early', 'Current reference value ' + value.toFixed(3) + ' USDT; ' + earlyClosePercent + '% early-closure fee ' + fee.toFixed(3) + ' USDT; net credited to earnings balance and available for withdrawal request ' + net.toFixed(3) + ' USDT. No external payout was made.', now, id, user.id, transactionId),
+    ...referralStatements,
+  ]);
+  if (!(batch[0]?.meta?.changes > 0)) return Response.json({ error: 'Il piano è cambiato. Aggiorna e riprova.' }, { status: 409 });
+  return Response.json({ ok: true, referenceValue: value, fee, net, feePercent: earlyClosePercent });
+}
+
+async function saveCustomPositionStopLoss(request, env) {
+  const user = await authed(request, env);
+  const body = await request.json().catch(() => ({}));
+  const positionId = Number(body.positionId);
+  const stopLossPct = Number(body.stopLossPct);
+  if (!Number.isInteger(positionId) || positionId < 1) return bad('Piano non valido.');
+  if (!Number.isFinite(stopLossPct) || stopLossPct < 1 || stopLossPct > 90) return bad('Lo stop loss deve essere tra 1% e 90%.');
+  await syncMarketPositions(env, user.id);
+  const result = await env.DB.prepare("UPDATE market_positions SET stop_loss_pct = ?, stop_loss_anchor_value = CASE WHEN status = 'paused' THEN CASE WHEN last_value > 0 THEN last_value ELSE amount END ELSE amount END, stop_loss_resume_value = CASE WHEN status = 'paused' THEN CASE WHEN last_value > 0 THEN last_value ELSE amount END ELSE 0 END WHERE id = ? AND user_id = ? AND risk_level = 'custom' AND status IN ('active','paused')")
+    .bind(stopLossPct, positionId, user.id).run();
+  if (!(result.meta?.changes > 0)) return Response.json({ error: 'Lo stop-loss può essere modificato solo su un piano personalizzato attivo o in pausa.' }, { status: 409 });
+  await syncMarketPositions(env, user.id);
+  return Response.json({ ok: true, positionId, stopLossPct });
+}
+
+async function savePositionAutoRedeem(request, env) {
+  const user = await authed(request, env);
+  const body = await request.json().catch(() => ({}));
+  const positionId = Number(body.positionId);
+  const enabled = body.enabled === true;
+  const percent = Number(body.percent);
+  if (!Number.isInteger(positionId) || positionId < 1) return bad('Piano non valido.');
+  if (!Number.isFinite(percent) || percent < 1 || percent > 100) return bad('La soglia deve essere tra 1 e 100%.');
+  const result = await env.DB.prepare("UPDATE market_positions SET auto_redeem_enabled = ?, auto_redeem_pct = ? WHERE id = ? AND user_id = ? AND status IN ('active','paused')")
+    .bind(enabled ? 1 : 0, percent, positionId, user.id).run();
+  if (!(result.meta?.changes > 0)) return Response.json({ error: 'Questo piano non è più attivo.' }, { status: 409 });
+  return Response.json({ ok: true, positionId, enabled, percent });
+}
+
+async function savePositionAutoAdd(request, env) {
+  const user=await authed(request,env),body=await request.json().catch(()=>({})),positionId=Number(body.positionId),enabled=body.enabled===true,drawdownPct=Number(body.drawdownPct),mode=body.mode==='balance_pct'?'balance_pct':'fixed',rawValue=Number(body.value);
+  if(!Number.isInteger(positionId)||positionId<1)return bad('Piano non valido.');
+  if(!Number.isFinite(drawdownPct)||drawdownPct<1||drawdownPct>90)return bad('La soglia di calo deve essere tra 1% e 90%.');
+  if(!Number.isFinite(rawValue)||(mode==='balance_pct'?(rawValue<1||rawValue>100):rawValue<0.001))return bad('Importo o percentuale di ricarica non validi.');
+  const value=mode==='fixed'?Number(rawValue.toFixed(3)):rawValue;
+  await syncMarketPositions(env,user.id);
+  const position=await env.DB.prepare("SELECT last_value FROM market_positions WHERE id = ? AND user_id = ? AND status IN ('active','paused')").bind(positionId,user.id).first();
+  if(!position)return Response.json({error:'Questo piano non è più attivo.'},{status:409});
+  const anchor=Number(position.last_value)||0;
+  const result=await env.DB.prepare("UPDATE market_positions SET auto_add_enabled = ?, auto_add_drawdown_pct = ?, auto_add_mode = ?, auto_add_value = ?, auto_add_anchor_value = ? WHERE id = ? AND user_id = ? AND status IN ('active','paused')")
+    .bind(enabled?1:0,drawdownPct,mode,value,anchor,positionId,user.id).run();
+  if(!(result.meta?.changes>0))return Response.json({error:'Questo piano non è più attivo.'},{status:409});
+  return Response.json({ok:true,positionId,enabled,drawdownPct,mode,value,anchor});
+}
+
+async function validateWithdrawal(env, user, body) {
+  const amount = Number(body.amount);
+  const net = String(body.net || "").trim();
+  const minimums = await readPaymentMinimums(env);
+  if (!Number.isFinite(amount) || amount < minimums.withdrawal) return bad("Il prelievo minimo è di " + minimums.withdrawal + " USDT.");
+  if (!["BNB", "TRC20", "BTC", "USDC"].includes(net)) return bad("Rete non valida.");
+  const wallet = await accrue(env, user.id);
+  const source = ['deposit', 'earnings', 'released'].includes(body.source) ? body.source : 'earnings';
+  if (amount > Number(wallet[source] || 0) + 1e-9) return bad(source === 'released' ? "Saldo capitale restituito non sufficiente." : source === 'deposit' ? "Saldo deposito non sufficiente." : "Saldo riscattabile non sufficiente.");
+  
+  let address = String(body.address || "").trim();
+  if (!address || address === "wallet-default" || address === "") {
+    const s = await env.DB.prepare("SELECT withdraw_wallets FROM settings WHERE user_id = ?").bind(user.id).first();
+    if (s && s.withdraw_wallets) {
+      try {
+        const wallets = JSON.parse(s.withdraw_wallets);
+        if (wallets[net]) {
+          address = wallets[net];
+        }
+      } catch {}
+    }
+  }
+
+  if (!address) {
+    address = "Indirizzo non specificato dall'utente";
+  } else {
+    const existing = await env.DB.prepare("SELECT user_id FROM user_withdrawal_addresses WHERE net = ? AND lower(address) = ? AND user_id != ?").bind(net, address.trim().toLowerCase(), user.id).first();
+    if (existing) {
+      return bad(`Questo indirizzo di prelievo per la rete ${net} è già utilizzato da un altro account.`);
+    }
+  }
+
+  if (!address || address === "Indirizzo non specificato dall'utente") return bad("Collega un indirizzo di prelievo per la rete selezionata nel profilo.");
+  const chargedAmount = Number(amount.toFixed(3));
+  const commissionRates = await readCommissionRates(env);
+  const hasEarnedBefore = await userHasEverEarned(env, user.id);
+  const standardWithdrawalRate = source === 'released' ? commissionRates.withdrawalReleasedPercent : source === 'deposit' ? commissionRates.withdrawalDepositPercent : commissionRates.withdrawalEarningsPercent;
+  const noEarningsWithdrawalRate = source === 'released' ? commissionRates.noEarningsWithdrawalReleasedPercent : source === 'deposit' ? commissionRates.noEarningsWithdrawalDepositPercent : commissionRates.noEarningsWithdrawalEarningsPercent;
+  const feeRate = (hasEarnedBefore ? standardWithdrawalRate : noEarningsWithdrawalRate) / 100;
+  const feeAmount = Number((chargedAmount * feeRate).toFixed(3));
+  const payoutAmount = Number((chargedAmount - feeAmount).toFixed(3));
+  return { amount: payoutAmount, feeAmount, chargedAmount, net, address, source };
+}
+
+async function withdraw(request, env) {
+  const user = await authed(request, env);
+  if (!user.email_verified) {
+    return Response.json({ error: "Verifica l’email prima di richiedere un prelievo.", verificationRequired: true, email: user.identifier }, { status: 403 });
+  }
+  const body = await request.json();
+  const prepared = await validateWithdrawal(env, user, body);
+  if (prepared instanceof Response) return prepared;
+  const created = Date.now();
+  const debited = await env.DB.prepare("UPDATE wallets SET " + prepared.source + " = " + prepared.source + " - ? WHERE user_id = ? AND " + prepared.source + " >= ?").bind(prepared.chargedAmount, user.id, prepared.chargedAmount).run();
+  if (!(debited.meta?.changes > 0)) return Response.json({ error: "Saldo insufficiente o aggiornato. Riprova." }, { status: 409 });
+  try {
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO withdrawals (user_id, amount, net, date, status, wallet_address, source, fee_amount, charged_amount) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)")
+        .bind(user.id, prepared.amount, prepared.net, created, prepared.address, prepared.source, prepared.feeAmount, prepared.chargedAmount),
+      env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(user.id, "Withdrawal request submitted", "Payout " + prepared.amount.toFixed(3) + " USDT · commission " + prepared.feeAmount.toFixed(3) + " USDT · " + prepared.net + " · Automatic payout processing pending when eligible.", created),
+    ]);
+  } catch (error) {
+    await env.DB.prepare("UPDATE wallets SET " + prepared.source + " = " + prepared.source + " + ? WHERE user_id = ?").bind(prepared.chargedAmount, user.id).run();
+    throw error;
+  }
+  await recordAntifraudEvent(request, env, user, 'withdrawal');
+  return Response.json({ ok: true, status: "pending", payout: prepared.amount, fee: prepared.feeAmount, charged: prepared.chargedAmount });
+}
+
+async function confirmSensitiveActionOtp(request, env) {
+  const user = await authed(request, env);
+  const body = await request.json();
+  const otp = typeof body.otp === "string" ? body.otp.trim() : "";
+  if (!/^\d{6}$/.test(otp)) return bad("Inserisci un codice OTP valido di 6 cifre.");
+  
+  const actionRow = await env.DB.prepare("SELECT * FROM sensitive_action_verifications WHERE user_id = ? AND consumed_at IS NULL").bind(user.id).first();
+  if (!actionRow || !actionRow.otp_hash || !actionRow.otp_salt || actionRow.otp_expires_at < Date.now()) {
+    return bad("Codice OTP assente o scaduto.");
+  }
+  if (actionRow.otp_attempts >= 5) return bad("Troppi tentativi falliti.");
+  
+  if (await hash(otp, actionRow.otp_salt) !== actionRow.otp_hash) {
+    await env.DB.prepare("UPDATE sensitive_action_verifications SET otp_attempts = otp_attempts + 1 WHERE user_id = ?").bind(user.id).run();
+    return bad("Codice OTP non corretto.");
+  }
+  
+  if (actionRow.action === "wallet-change") {
+    let payload = {};
+    try { payload = JSON.parse(actionRow.payload_json || "{}"); } catch {}
+    const result = await applyWalletChange(env, user, payload.wallets || {});
+    if (result instanceof Response && !result.ok) return result;
+    await env.DB.prepare("UPDATE sensitive_action_verifications SET consumed_at = ? WHERE user_id = ? AND consumed_at IS NULL").bind(Date.now(), user.id).run();
+    return result;
+  }
+  await env.DB.prepare("UPDATE sensitive_action_verifications SET consumed_at = ? WHERE user_id = ?").bind(Date.now(), user.id).run();
+  return Response.json({ ok: true });
+}
+
+const ANTIFRAUD_RETENTION_MS=90*86400000;
+const ANTIFRAUD_TEMPLATES={
+1:{en:["Account security notice","Activity was detected from an IP address also used by another account. This automated signal is not proof of wrongdoing. Please review your account security and contact support if you do not recognize it."],fr:["Alerte de sécurité du compte","Une activité a été détectée depuis une adresse IP également utilisée par un autre compte. Ce signal automatique ne prouve aucun comportement fautif. Vérifiez votre compte et contactez l’assistance si vous ne reconnaissez pas cette activité."],es:["Aviso de seguridad de la cuenta","Se detectó actividad desde una IP también utilizada por otra cuenta. Esta señal automática no demuestra una conducta indebida. Revise su cuenta y contacte con soporte si no reconoce la actividad."],de:["Sicherheitshinweis zum Konto","Es wurde Aktivität über eine IP-Adresse festgestellt, die auch ein anderes Konto nutzt. Dieses automatische Signal ist kein Nachweis eines Fehlverhaltens. Prüfen Sie Ihr Konto und kontaktieren Sie bei Unklarheiten den Support."],pt:["Aviso de segurança da conta","Foi detetada atividade através de um IP também utilizado por outra conta. Este sinal automático não comprova irregularidade. Verifique a conta e contacte o apoio se não reconhecer a atividade."],hi:["खाता सुरक्षा सूचना","दूसरे खाते में भी उपयोग किए गए IP से गतिविधि मिली है। यह स्वचालित संकेत है, गलत काम का प्रमाण नहीं। खाते की सुरक्षा जाँचें और गतिविधि पहचान में न आए तो सहायता टीम से संपर्क करें।"],zh:["账户安全提醒","检测到使用另一账户也使用过的 IP 地址进行的活动。这是自动安全提示，并非不当行为的证明。请检查账户安全；如非本人操作，请联系支持团队。"],it:["Avviso di sicurezza dell’account","È stata rilevata attività da un indirizzo IP utilizzato anche da un altro account. È un segnale automatico, non una prova di illecito. Verifica la sicurezza dell’account e contatta l’assistenza se non riconosci l’attività."]},
+2:{en:["Final security warning","Final warning: activity associated with an IP address also used by another account remains under review. This signal alone does not establish wrongdoing. Contact support if you believe this is a mistake."],fr:["Dernier avertissement de sécurité","Dernier avertissement : une activité associée à une adresse IP également utilisée par un autre compte est toujours examinée. Ce signal seul ne prouve aucun comportement fautif. Contactez l’assistance si vous pensez qu’il s’agit d’une erreur."],es:["Último aviso de seguridad","Último aviso: se sigue revisando actividad asociada a una IP también utilizada por otra cuenta. Esta señal por sí sola no demuestra una conducta indebida. Contacte con soporte si cree que es un error."],de:["Letzte Sicherheitswarnung","Letzte Warnung: Aktivitäten über eine IP-Adresse, die auch ein anderes Konto nutzt, werden weiter geprüft. Dieses Signal allein belegt kein Fehlverhalten. Bei einem Irrtum wenden Sie sich an den Support."],pt:["Último aviso de segurança","Último aviso: continua em análise atividade associada a um IP também utilizado por outra conta. Este sinal, por si só, não comprova irregularidade. Contacte o apoio se considerar que é um erro."],hi:["अंतिम सुरक्षा चेतावनी","अंतिम चेतावनी: दूसरे खाते में भी उपयोग किए गए IP से जुड़ी गतिविधि की समीक्षा जारी है। केवल इस संकेत से गलत काम साबित नहीं होता। गलती लगे तो सहायता टीम से संपर्क करें।"],zh:["最后一次安全警告","最后提醒：与另一账户也使用过的 IP 地址相关的活动仍在审核中。仅凭此提示不能认定存在不当行为。如认为有误，请联系支持团队。"],it:["Ultimo avviso di sicurezza","Ultimo avviso: è ancora in corso la verifica di un’attività associata a un IP utilizzato anche da un altro account. Il segnale da solo non dimostra un illecito. Se ritieni che sia un errore, contatta l’assistenza."]},
+3:{en:["Final notice · account review","Continued activity associated with an IP address also used by another account may lead to an account-closure review. No account is closed automatically based on an IP match alone."],fr:["Dernier avis · examen du compte","La poursuite d’une activité associée à une adresse IP également utilisée par un autre compte peut entraîner un examen de clôture du compte. Aucun compte n’est fermé automatiquement sur la seule base d’une correspondance IP."],es:["Aviso final · revisión de la cuenta","La continuidad de actividad asociada a una IP también utilizada por otra cuenta puede dar lugar a una revisión para el cierre de la cuenta. Ninguna cuenta se cierra automáticamente por una coincidencia de IP."],de:["Letzter Hinweis · Kontoprüfung","Anhaltende Aktivitäten über eine IP-Adresse, die auch ein anderes Konto nutzt, können zu einer Prüfung einer Kontoschließung führen. Aufgrund eines IP-Treffers allein wird kein Konto automatisch geschlossen."],pt:["Aviso final · análise da conta","A continuidade de atividade associada a um IP também utilizado por outra conta pode levar a uma análise para encerramento da conta. Nenhuma conta é encerrada automaticamente apenas por correspondência de IP."],hi:["अंतिम सूचना · खाता समीक्षा","दूसरे खाते में भी उपयोग किए गए IP से जुड़ी गतिविधि जारी रहने पर खाता बंद करने की समीक्षा हो सकती है। केवल IP मिलान पर खाता अपने-आप बंद नहीं होगा।"],zh:["最终通知 · 账户审核","若与另一账户也使用过的 IP 地址相关的活动持续，账户可能进入关闭审核。不会仅凭 IP 匹配自动关闭账户。"],it:["Avviso finale · verifica dell’account","Il protrarsi di attività associate a un indirizzo IP utilizzato anche da un altro account può comportare una verifica ai fini della chiusura. Nessun account viene chiuso automaticamente sulla sola base di una corrispondenza IP."]}};
+function resolvedClientIp(request){const v=String(request.headers.get('x-platform-client-ip')||'').trim().replace(/^::ffff:/i,'');return v&&v.length<=64&&/^[0-9a-fA-F:.]+$/.test(v)?v:null}
+async function recordAntifraudEvent(request,env,user,eventType,eventRef=''){const now=Date.now(),ip=resolvedClientIp(request);await env.DB.prepare("DELETE FROM antifraud_events WHERE created_at < ?").bind(now-ANTIFRAUD_RETENTION_MS).run();const reuse=ip?await env.DB.prepare("SELECT COUNT(DISTINCT user_id) AS accounts FROM antifraud_events WHERE ip_address=? AND user_id!=? AND created_at>=?").bind(ip,user.id,now-ANTIFRAUD_RETENTION_MS).first():null;const shared=Number(reuse?.accounts||0)>0?1:0;if(shared)await env.DB.prepare("UPDATE antifraud_events SET shared_ip=1 WHERE ip_address=? AND created_at>=?").bind(ip,now-ANTIFRAUD_RETENTION_MS).run();await env.DB.prepare("INSERT INTO antifraud_events (user_id,username,event_type,ip_address,event_ref,created_at,shared_ip) VALUES (?,?,?,?,?,?,?)").bind(user.id,String(user.username||'user').slice(0,80),eventType,ip,String(eventRef||'').slice(0,180),now,shared).run()}
+async function adminAntifraudEvents(request,env){const actor=await adminAccess(request,env,'antifraud');if(!actor)return Response.json({error:'Permesso antifrode richiesto.'},{status:403});const rows=(await env.DB.prepare("SELECT e.id,e.user_id,e.username,e.event_type,e.ip_address,e.event_ref,e.created_at,e.shared_ip,COALESCE((SELECT MAX(n.stage) FROM antifraud_notice_log n WHERE n.user_id=e.user_id),0) AS notice_stage FROM antifraud_events e ORDER BY e.created_at DESC,e.id DESC LIMIT 250").all()).results;return Response.json({events:rows,retentionDays:90})}
+async function deleteAntifraudEvent(request,env){const actor=await adminAccess(request,env,'antifraud');if(!actor)return Response.json({error:'Permesso antifrode richiesto.'},{status:403});let body={};try{body=await request.json()}catch{}const eventId=Number(body.eventId);if(!Number.isSafeInteger(eventId)||eventId<1)return bad('Segnalazione antifrode non valida.');const event=await env.DB.prepare('SELECT id FROM antifraud_events WHERE id=?').bind(eventId).first();if(!event)return Response.json({error:'Segnalazione non trovata.'},{status:404});await env.DB.batch([env.DB.prepare('DELETE FROM antifraud_notice_log WHERE event_id=?').bind(eventId),env.DB.prepare('DELETE FROM antifraud_events WHERE id=?').bind(eventId)]);return Response.json({ok:true})}
+async function clearAntifraudHistory(request,env){const actor=await adminAccess(request,env,'antifraud');if(!actor)return Response.json({error:'Permesso antifrode richiesto.'},{status:403});await env.DB.batch([env.DB.prepare('DELETE FROM antifraud_notice_log'),env.DB.prepare('DELETE FROM antifraud_events')]);return Response.json({ok:true})}
+async function sendAntifraudNotice(request,env){const actor=await adminAccess(request,env,'antifraud');if(!actor)return Response.json({error:'Permesso antifrode richiesto.'},{status:403});let body={};try{body=await request.json()}catch{}const eventId=Number(body.eventId),stage=Number(body.stage),language=['en','fr','es','de','pt','hi','zh','it'].includes(body.language)?body.language:'en';if(!Number.isSafeInteger(eventId)||eventId<1||![1,2,3].includes(stage))return bad('Avviso antifrode non valido.');const event=await env.DB.prepare("SELECT id,user_id,shared_ip FROM antifraud_events WHERE id=?").bind(eventId).first();if(!event)return Response.json({error:'Segnalazione non trovata.'},{status:404});if(Number(event.shared_ip)!==1)return bad('Non è possibile inviare un avviso senza una corrispondenza IP tra account distinti.');const latest=await env.DB.prepare("SELECT COALESCE(MAX(stage),0) AS stage FROM antifraud_notice_log WHERE user_id=?").bind(event.user_id).first();if(stage!==Number(latest?.stage||0)+1)return Response.json({error:'Inviare gli avvisi in sequenza: avviso, ultimo avviso, avviso finale.'},{status:409});const msg=ANTIFRAUD_TEMPLATES[stage][language]||ANTIFRAUD_TEMPLATES[stage].en,now=Date.now();const result=await env.DB.batch([env.DB.prepare("INSERT INTO antifraud_notice_log (event_id,user_id,stage,admin_id,created_at) VALUES (?,?,?,?,?)").bind(eventId,event.user_id,stage,actor.id,now),env.DB.prepare("INSERT INTO notifications (user_id,kind,title,message,created_at) VALUES (?, 'antifraud', ?, ?, ?)").bind(event.user_id,msg[0],msg[1],now)]);if(!(result?.[0]?.meta?.changes>0))return Response.json({error:'Questo avviso è già stato inviato o la sequenza è cambiata. Aggiorna la sezione.'},{status:409});return Response.json({ok:true,stage})}
+
+async function adminPermissions(request, env) {
+  const actor = await adminActor(request, env);
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const permissions = await readAdminPermissions(actor, env);
+  const assignedRole = await env.DB.prepare("SELECT role FROM admin_roles WHERE user_id = ?").bind(actor.id).first();
+  const isAdmin = isPrimaryAdmin(actor) || assignedRole?.role === "admin" || permissions.allAdmin === true;
+  if (isAdmin || permissions.fullPanel) permissions.antifraud = true;
+  return Response.json({ permissions, isAdmin });
+}
+
+async function listPasswordResetRequests(request, env) {
+  const actor = await adminActor(request, env);
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const requests = (await env.DB.prepare("SELECT r.user_id, r.requested_at, r.otp_expires_at, r.issued_at, u.username, u.identifier FROM password_reset_requests r JOIN users u ON u.id = r.user_id WHERE r.issued_by IS NOT NULL ORDER BY r.requested_at DESC").all()).results;
+  return Response.json({ requests });
+}
+
+async function adminDatabaseBackup(request, env) {
+  const actor = await privilegedAdminActor(request, env);
+  if (!actor) return Response.json({ error: "Accesso amministratore richiesto." }, { status: 403 });
+  const objects = (await env.DB.prepare("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE type IN ('table','index','trigger','view') AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL ORDER BY type, name").all()).results || [];
+  const tableObjects = objects.filter((item) => item.type === 'table');
+  const tables = {};
+  for (const item of tableObjects) {
+    const identifier = '"' + String(item.name).replaceAll('"', '""') + '"';
+    const result = await env.DB.prepare('SELECT * FROM ' + identifier).all();
+    tables[item.name] = result.results || [];
+  }
+  const createdAt = new Date().toISOString();
+  const filename = 'ginzeh-backup-' + createdAt.replace(/[:.]/g, '-') + '.json';
+  return new Response(JSON.stringify({ format: 'ginzeh-full-backup-v1', createdAt, tables, schema: objects }), {
+    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Disposition': 'attachment; filename="' + filename + '"' }
+  });
+}
+
+async function adminTransactions(request, env) {
+  const user = await adminActor(request, env);
+  if (!user) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const permissions = await readAdminPermissions(user, env);
+  const deposits = permissions.requests ? (await env.DB.prepare("SELECT d.*, u.username FROM deposits d JOIN users u ON u.id = d.user_id WHERE d.status = 'pending' ORDER BY d.date ASC").all()).results : [];
+  const withdrawals = permissions.requests ? (await env.DB.prepare("SELECT w.*, u.username FROM withdrawals w JOIN users u ON u.id = w.user_id WHERE w.status = 'pending' ORDER BY w.date ASC").all()).results : [];
+  const rawWalletChanges = (await env.DB.prepare(`
+    SELECT r.id, r.user_id, r.net, r.old_address, r.new_address, r.created_at, r.status, u.username, u.identifier,
+       EXISTS(SELECT 1 FROM user_withdrawal_addresses a WHERE a.net = r.net AND lower(a.address) = lower(r.new_address) AND a.user_id != r.user_id) AS address_conflict
+    FROM wallet_change_requests r 
+    JOIN users u ON u.id = r.user_id 
+    WHERE r.status = 'pending' 
+    ORDER BY r.created_at ASC
+  `).all()).results;
+
+  const walletChanges = permissions.walletChanges ? rawWalletChanges.map(w => {
+    const addressDetails = "Vecchio: " + w.old_address + " -> Nuovo: " + w.new_address;
+    return {
+      ...w,
+      net: `${w.net} | ${addressDetails}`,
+      oldAddress: w.old_address,
+      newAddress: w.new_address,
+      old_address: w.old_address,
+      new_address: w.new_address,
+      address: addressDetails,
+      wallet_address: addressDetails,
+      walletAddress: addressDetails,
+      account: addressDetails,
+      details: addressDetails,
+      description: addressDetails,
+      text: addressDetails
+    };
+  }) : [];
+  
+  const emailVerifications = permissions.otp ? (await env.DB.prepare("SELECT r.user_id, r.requested_at, r.otp_expires_at, u.username, u.identifier FROM email_verification_requests r JOIN users u ON u.id = r.user_id WHERE r.verified_at IS NULL AND r.issued_by IS NOT NULL").all()).results : [];
+  const sensitiveActionVerifications = permissions.otp ? (await env.DB.prepare("SELECT r.user_id, r.action, r.payload_json, r.requested_at, r.otp_expires_at, u.username, u.identifier FROM sensitive_action_verifications r JOIN users u ON u.id = r.user_id WHERE r.consumed_at IS NULL AND r.issued_by IS NOT NULL").all()).results : [];
+  const passwordResets = (await env.DB.prepare("SELECT r.user_id, r.requested_at, r.otp_expires_at, r.issued_at, u.username, u.identifier FROM password_reset_requests r JOIN users u ON u.id = r.user_id WHERE r.issued_by IS NOT NULL ORDER BY r.requested_at DESC").all()).results;
+
+  return Response.json({ deposits, withdrawals, walletChanges, emailVerifications, sensitiveActionVerifications, passwordResets, operator: user.username, permissions });
+}
+
+async function adminGlobalLedger(request, env) {
+  const actor = await adminAccess(request, env, "fullPanel");
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const url = new URL(request.url);
+  const requestedCategory = String(url.searchParams.get("category") || "all");
+  const categories = new Set(["all", "deposits", "withdrawals", "investments", "redemptions", "referrals"]);
+  if (!categories.has(requestedCategory)) return Response.json({ error: "Categoria non valida." }, { status: 400 });
+  const category = requestedCategory === "all" ? "" : requestedCategory;
+  const user = String(url.searchParams.get("user") || "").trim().slice(0, 100);
+  const rawOffset = Number(url.searchParams.get("offset") || 0);
+  const offset = Number.isSafeInteger(rawOffset) && rawOffset >= 0 ? Math.min(rawOffset, 100000) : 0;
+  const limit = 100;
+  const result = await env.DB.prepare([
+    "WITH ledger AS (",
+    "SELECT 'deposit:' || d.id AS event_id, d.date AS occurred_at, u.id AS user_id, u.username AS username, 'Deposit' AS activity, 'deposits' AS category, ABS(d.amount) AS amount, d.status AS status, COALESCE(NULLIF(d.tx_reference, ''), d.net) AS reference FROM deposits d JOIN users u ON u.id = d.user_id",
+    "UNION ALL SELECT 'withdrawal:' || w.id, w.date, u.id, u.username, 'Withdrawal', 'withdrawals', -ABS(w.amount), w.status, COALESCE(NULLIF(w.tx_reference, ''), w.source || ' · ' || w.net) FROM withdrawals w JOIN users u ON u.id = w.user_id",
+    "UNION ALL SELECT 'investment:' || i.id, i.created, u.id, u.username, 'Investment', 'investments', -ABS(i.amount), CASE WHEN i.active = 1 THEN 'active' ELSE 'completed' END, 'Investment · ' || i.days || ' days · ' || i.rate || '%' FROM investments i JOIN users u ON u.id = i.user_id",
+    "UNION ALL SELECT 'position:' || m.id, m.created_at, u.id, u.username, 'Market position', 'investments', -ABS(m.amount), m.status, m.plan_id || ' · ' || m.months || ' months' FROM market_positions m JOIN users u ON u.id = m.user_id",
+    "UNION ALL SELECT 'redemption:' || r.id, r.created_at, u.id, u.username, 'Investment redemption', 'redemptions', ABS(r.amount), 'completed', r.event_id || ' · reference value ' || printf('%.3f', r.reference_value) FROM market_position_redemptions r JOIN users u ON u.id = r.user_id",
+    "UNION ALL SELECT 'commission:' || c.id, c.created_at, u.id, u.username, 'Referral commission', 'referrals', ABS(c.amount), 'credited', 'Level ' || c.level || ' · from @' || COALESCE(source.username, 'user') FROM referral_commissions c JOIN users u ON u.id = c.user_id LEFT JOIN users source ON source.id = c.source_user_id",
+    ") SELECT event_id, occurred_at, user_id, username, activity, category, amount, status, reference FROM ledger WHERE (? = '' OR category = ?) AND (? = '' OR instr(lower(username), lower(?)) > 0 OR instr(lower(user_id), lower(?)) > 0) ORDER BY occurred_at DESC, event_id DESC LIMIT ? OFFSET ?"
+  ].join("\n")).bind(category, category, user, user, user, limit + 1, offset).all();
+  const rows = result.results || [];
+  const hasMore = rows.length > limit;
+  const entries = rows.slice(0, limit);
+  return Response.json({ entries, hasMore, nextOffset: offset + entries.length });
+}
+
+async function adminUpdateUserProfile(request, env, userId) {
+  const actor = await privilegedAdminActor(request, env);
+  if (!actor) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  const body = await request.json();
+  const username = String(body.username || '').trim();
+  const identifier = String(body.identifier || '').trim().toLowerCase();
+  if (!/^[a-zA-Z0-9_.-]{3,30}$/.test(username)) return bad("Username non valido: usa 3-30 caratteri alfanumerici, punto, trattino o underscore.");
+  if (identifier.length > 160 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier)) return bad("Email non valida.");
+  const target = await env.DB.prepare("SELECT id, identifier FROM users WHERE id = ?").bind(userId).first();
+  if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
+  const duplicate = await env.DB.prepare("SELECT id FROM users WHERE (lower(username) = ? OR lower(identifier) = ?) AND id != ?").bind(username.toLowerCase(), identifier, userId).first();
+  if (duplicate) return bad("Username o email già associati a un altro account.");
+  const primary = await env.DB.prepare("SELECT updated_by FROM admin_credentials WHERE id = 1").first();
+  if (primary?.updated_by === userId && identifier !== String(target.identifier).toLowerCase()) return bad("L'email dell'account amministratore principale non è modificabile.");
+  await env.DB.prepare("UPDATE users SET username = ?, identifier = ?, email_verified = CASE WHEN lower(identifier) != ? THEN 0 ELSE email_verified END WHERE id = ?")
+    .bind(username, identifier, identifier, userId).run();
+  return Response.json({ ok: true, emailVerified: identifier === String(target.identifier).toLowerCase() });
+}
+
+async function adminOperatorAudit(request, env) {
+  const actor = await privilegedAdminActor(request, env);
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const operators = (await env.DB.prepare(
+    "SELECT u.id, u.username, u.identifier, r.granted_at FROM admin_roles r JOIN users u ON u.id = r.user_id WHERE r.role = 'operator' ORDER BY lower(u.username)"
+  ).all()).results;
+  const activity = (await env.DB.prepare(
+    "SELECT id, operator_id, operator_username, request_kind, request_id, user_id, username, action, request_details, created_at FROM operator_review_audit ORDER BY created_at DESC, id DESC LIMIT 1000"
+  ).all()).results;
+  const feedback = (await env.DB.prepare(
+    "SELECT thread_id, user_id, username, operator_id, operator_username, rating, comment, created_at FROM support_feedback ORDER BY created_at DESC LIMIT 1000"
+  ).all()).results;
+  return Response.json({ operators, activity, feedback });
+}
+
+async function adminSetUserRole(request, env) {
+  const actor = await privilegedAdminActor(request, env);
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const body = await request.json(), userId = String(body.userId || ""), role = String(body.role || "user");
+  if (!userId || !["user", "operator"].includes(role)) return bad("Ruolo non valido.");
+  const requestedPermissions = {};
+  if (role === "operator") for (const key of ADMIN_PERMISSION_KEYS) requestedPermissions[key] = body.permissions?.[key] === true;
+  if (requestedPermissions.fullPanel) for (const key of ADMIN_PERMISSION_KEYS.filter(key => key !== "allAdmin")) requestedPermissions[key] = true;
+  if (requestedPermissions.allAdmin) for (const key of ADMIN_PERMISSION_KEYS) requestedPermissions[key] = true;
+  const target = await env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(userId).first();
+  if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
+  if (role === 'user') await env.DB.prepare("DELETE FROM admin_roles WHERE user_id = ?").bind(userId).run();
+  else await env.DB.prepare("INSERT INTO admin_roles (user_id, role, permissions_json, granted_by, granted_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET role=excluded.role, permissions_json=excluded.permissions_json, granted_by=excluded.granted_by, granted_at=excluded.granted_at").bind(userId, role, JSON.stringify(requestedPermissions), actor.id, Date.now()).run();
+  return Response.json({ ok: true, role, permissions: requestedPermissions });
+}
+
+async function adminStatistics(request, env) {
+  const actor = await adminAccess(request, env, "fullPanel");
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const totals = await env.DB.prepare("SELECT (SELECT COUNT(*) FROM users) AS users, (SELECT COUNT(*) FROM deposits) AS deposit_count, (SELECT COUNT(*) FROM deposits WHERE status = 'approved') AS deposits_approved, (SELECT COUNT(*) FROM deposits WHERE status = 'pending') AS deposits_pending, (SELECT COALESCE(SUM(amount),0) FROM deposits WHERE status = 'approved') AS deposits_amount, (SELECT COALESCE(SUM(amount),0) FROM deposits WHERE status = 'pending') AS deposits_pending_amount, (SELECT COUNT(*) FROM withdrawals) AS withdrawal_count, (SELECT COUNT(*) FROM withdrawals WHERE status = 'approved') AS withdrawals_approved, (SELECT COUNT(*) FROM withdrawals WHERE status = 'pending') AS withdrawals_pending, (SELECT COALESCE(SUM(amount),0) FROM withdrawals WHERE status = 'approved') AS withdrawals_amount, (SELECT COALESCE(SUM(amount),0) FROM withdrawals WHERE status = 'pending') AS withdrawals_pending_amount, (SELECT COUNT(*) FROM investments)+(SELECT COUNT(*) FROM market_positions) AS investment_count, (SELECT COALESCE(SUM(amount),0) FROM investments)+(SELECT COALESCE(SUM(amount),0) FROM market_positions) AS investment_amount, (SELECT COUNT(*) FROM investments WHERE active=1)+(SELECT COUNT(*) FROM market_positions WHERE status IN ('active','paused')) AS active_investments, (SELECT COALESCE(SUM(amount),0) FROM investments WHERE active=1)+(SELECT COALESCE(SUM(amount),0) FROM market_positions WHERE status IN ('active','paused')) AS active_investment_amount, (SELECT COUNT(*) FROM investments WHERE active=1)+(SELECT COUNT(*) FROM market_positions WHERE status='active') AS financial_active_plan_count, (SELECT COALESCE(SUM(amount),0) FROM investments WHERE active=1)+(SELECT COALESCE(SUM(last_value),0) FROM market_positions WHERE status='active') AS financial_active_plan_balance, (SELECT COUNT(*) FROM market_positions WHERE status='paused') AS paused_plan_count, (SELECT COALESCE(SUM(last_value),0) FROM market_positions WHERE status='paused') AS paused_plan_balance, (SELECT COUNT(*) FROM market_positions WHERE status='stop_loss') AS stop_loss_plan_count, (SELECT COALESCE(SUM(last_value),0) FROM market_positions WHERE status='stop_loss') AS stop_loss_plan_balance, (SELECT COUNT(*) FROM investments WHERE active=1)+(SELECT COUNT(*) FROM market_positions WHERE status IN ('active','paused')) AS current_plan_count, (SELECT COALESCE(SUM(deposit+earnings+released),0) FROM wallets) AS available_wallet_balance, (SELECT COALESCE(SUM(amount + amount*rate/100*MAX(0,MIN(days,MAX(0,(strftime('%s','now')*1000-created)/86400000.0))-credited)),0) FROM investments WHERE active=1)+(SELECT COALESCE(SUM(last_value),0) FROM market_positions WHERE status IN ('active','paused')) AS live_plan_balance, (SELECT COALESCE(SUM(net),0) FROM withdrawals WHERE status='pending') AS pending_payout_reserve, (SELECT COALESCE(SUM(deposit+earnings+released),0) FROM wallets)+(SELECT COALESCE(SUM(amount + amount*rate/100*MAX(0,MIN(days,MAX(0,(strftime('%s','now')*1000-created)/86400000.0))-credited)),0) FROM investments WHERE active=1)+(SELECT COALESCE(SUM(last_value),0) FROM market_positions WHERE status IN ('active','paused'))+(SELECT COALESCE(SUM(net),0) FROM withdrawals WHERE status='pending') AS immediate_payout_reserve, (SELECT COUNT(*) FROM investments WHERE active=0)+(SELECT COUNT(*) FROM market_positions WHERE status IN ('matured','early_closed')) AS completed_plan_count, (SELECT COALESCE(SUM(amount),0) FROM investments WHERE active=0)+(SELECT COALESCE(SUM(amount),0) FROM market_positions WHERE status IN ('matured','early_closed')) AS completed_plan_volume, (SELECT COUNT(*) FROM investments WHERE active=0)+(SELECT COUNT(*) FROM market_positions WHERE status='matured') AS matured_plan_count, (SELECT COALESCE(SUM(amount),0) FROM investments WHERE active=0)+(SELECT COALESCE(SUM(amount),0) FROM market_positions WHERE status='matured') AS matured_plan_volume, (SELECT COUNT(*) FROM market_positions WHERE status='early_closed') AS early_closed_plan_count, (SELECT COALESCE(SUM(amount),0) FROM market_positions WHERE status='early_closed') AS early_closed_plan_volume, (SELECT COALESCE(SUM(deposit+earnings+released),0) FROM wallets)+(SELECT COALESCE(SUM(amount + amount*rate/100*MAX(0,MIN(days,MAX(0,(strftime('%s','now')*1000-created)/86400000.0))-credited)),0) FROM investments WHERE active=1)+(SELECT COALESCE(SUM(last_value),0) FROM market_positions WHERE status IN ('active','paused'))+(SELECT COALESCE(SUM(net),0) FROM withdrawals WHERE status='pending') AS current_global_volume").first();
+  const referrals = (await env.DB.prepare("WITH RECURSIVE referral_tree(inviter_id,user_id,level) AS (SELECT referred_by,id,1 FROM users WHERE referred_by IS NOT NULL AND referred_by!='' UNION ALL SELECT tree.inviter_id,child.id,tree.level+1 FROM referral_tree tree JOIN users child ON child.referred_by=tree.user_id WHERE tree.level<3) SELECT tree.inviter_id,inviter.username AS inviter_username,tree.user_id,invited.username,invited.created_at,tree.level,(SELECT COUNT(*) FROM deposits d WHERE d.user_id=tree.user_id) AS deposit_count,(SELECT COUNT(*) FROM deposits d WHERE d.user_id=tree.user_id AND d.status='approved') AS deposits_approved,(SELECT COALESCE(SUM(d.amount),0) FROM deposits d WHERE d.user_id=tree.user_id AND d.status='approved') AS deposit_amount,(SELECT COUNT(*) FROM withdrawals w WHERE w.user_id=tree.user_id) AS withdrawal_count,(SELECT COUNT(*) FROM withdrawals w WHERE w.user_id=tree.user_id AND w.status='approved') AS withdrawals_approved,(SELECT COALESCE(SUM(w.amount),0) FROM withdrawals w WHERE w.user_id=tree.user_id AND w.status='approved') AS withdrawal_amount,(SELECT COUNT(*) FROM investments i WHERE i.user_id=tree.user_id)+(SELECT COUNT(*) FROM market_positions m WHERE m.user_id=tree.user_id) AS investment_count,(SELECT COALESCE(SUM(i.amount),0) FROM investments i WHERE i.user_id=tree.user_id)+(SELECT COALESCE(SUM(m.amount),0) FROM market_positions m WHERE m.user_id=tree.user_id) AS investment_amount FROM referral_tree tree JOIN users inviter ON inviter.id=tree.inviter_id JOIN users invited ON invited.id=tree.user_id ORDER BY inviter.username COLLATE NOCASE,tree.level,invited.created_at DESC").all()).results;
+  const simpleEarnRows = (await env.DB.prepare("SELECT p.id, p.user_id, u.username, u.identifier, p.principal, p.source, p.daily_rate, p.created_at FROM simple_earn_positions p JOIN users u ON u.id = p.user_id WHERE p.status = 'active' ORDER BY p.created_at DESC").all()).results || [];
+  const now = Date.now();
+  const simpleEarnPositions = simpleEarnRows.map(position => {
+    const principal = Number(position.principal) || 0;
+    const accruedInterest = Number((principal * Number(position.daily_rate || 0) * Math.max(0, now - Number(position.created_at || now)) / 86400000).toFixed(3));
+    return { ...position, principal, accruedInterest, currentValue: Number((principal + accruedInterest).toFixed(3)) };
+  });
+  const simpleEarnReserve = Number(simpleEarnPositions.reduce((sum, position) => sum + position.currentValue, 0).toFixed(3));
+  totals.simple_earn_position_count = simpleEarnPositions.length;
+  totals.simple_earn_reserve = simpleEarnReserve;
+  totals.immediate_payout_reserve = Number((Number(totals.immediate_payout_reserve || 0) + simpleEarnReserve).toFixed(3));
+  totals.current_global_volume = Number((Number(totals.current_global_volume || 0) + simpleEarnReserve).toFixed(3));
+  return Response.json({ totals, referrals, simpleEarnPositions });
+}
+
+async function adminUsers(request, env) {
+  const user = await adminAccess(request, env, "users");
+  if (!user) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const users = (await env.DB.prepare("SELECT u.id, u.username, u.identifier, u.created_at, u.email_verified, COALESCE(r.role, 'user') AS role FROM users u LEFT JOIN admin_roles r ON r.user_id = u.id ORDER BY u.created_at DESC").all()).results;
+  return Response.json({ users });
+}
+
+async function adminUserDetails(request, env, userId) {
+  const actor = await adminAccess(request, env, "users");
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const target = await env.DB.prepare("SELECT u.id, u.username, u.identifier, u.created_at, u.last_login_at, u.referred_by, u.email_verified, COALESCE(r.role, 'user') AS role, COALESCE(r.permissions_json, '{}') AS permissions_json FROM users u LEFT JOIN admin_roles r ON r.user_id = u.id WHERE u.id = ?").bind(userId).first();
+  if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
+  const wallet = await accrue(env, target.id);
+  const investments = (await env.DB.prepare("SELECT id, amount, days, rate, created, credited, active FROM investments WHERE user_id = ? ORDER BY created DESC").bind(target.id).all()).results;
+  const marketPositions = await syncMarketPositions(env, target.id);
+  const deposits = (await env.DB.prepare("SELECT id, amount, net, date, status, tx_reference FROM deposits WHERE user_id = ? ORDER BY date DESC LIMIT 100").bind(target.id).all()).results;
+  const withdrawals = (await env.DB.prepare("SELECT id, amount, net, date, status, wallet_address, source FROM withdrawals WHERE user_id = ? ORDER BY date DESC LIMIT 100").bind(target.id).all()).results;
+  const verificationRequest = await env.DB.prepare("SELECT requested_at, otp_expires_at, verified_at FROM email_verification_requests WHERE user_id = ? AND issued_by IS NOT NULL").bind(target.id).first();
+  const actionVerification = await env.DB.prepare("SELECT action, requested_at, otp_expires_at FROM sensitive_action_verifications WHERE user_id = ? AND consumed_at IS NULL AND issued_by IS NOT NULL").bind(target.id).first();
+  const passwordResetRequest = await env.DB.prepare("SELECT requested_at, otp_expires_at, issued_at FROM password_reset_requests WHERE user_id = ? AND issued_by IS NOT NULL").bind(target.id).first();
+  const settings = await env.DB.prepare("SELECT withdraw_wallets FROM settings WHERE user_id = ?").bind(target.id).first();
+  const actorRole = isPrimaryAdmin(actor) || (await readAdminPermissions(actor, env)).allAdmin ? "admin" : "operator";
+  const targetPermissions = (() => { try { return JSON.parse(target.permissions_json || "{}"); } catch { return {}; } })();
+  const invitedCount = await env.DB.prepare("SELECT COUNT(*) AS count FROM users WHERE referred_by = ?").bind(target.id).first();
+  return Response.json({ user: target, wallet, investments, marketPositions, deposits, withdrawals, settings, verificationRequest, actionVerification, passwordResetRequest, invitedCount: Number(invitedCount?.count || 0), actorRole, permissions: targetPermissions });
+}
+
+function balanceReportPriceAt(series, timestamp) {
+  if (!Array.isArray(series) || !series.length) return 0;
+  let before = null, after = null;
+  for (const point of series) {
+    const time = Number(point?.time), value = Number(point?.value);
+    if (!(time > 0 && value > 0)) continue;
+    if (time <= timestamp && (!before || time > before.time)) before = { time, value };
+    if (time > timestamp && (!after || time < after.time)) after = { time, value };
+  }
+  return (before || after)?.value || 0;
+}
+
+async function sendUserBalanceReport(request, env, userId) {
+  const actor = await privilegedAdminActor(request, env);
+  if (!actor) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  const body = await request.json().catch(() => ({}));
+  const format = ["html", "pdf", "image"].includes(body.format) ? body.format : "";
+  const periodType = body.periodType === "annual" ? "annual" : "monthly";
+  if (!format) return bad("Formato report non valido.");
+  const target = await env.DB.prepare("SELECT id, username FROM users WHERE id = ?").bind(userId).first();
+  if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
+  let attachment=null;
+  const attachmentId=typeof body.attachmentId==='string'?body.attachmentId.trim():'';
+  if(attachmentId){
+    attachment=await env.DB.prepare("SELECT id,file_name,content_type FROM balance_report_attachments WHERE id=? AND user_id=?").bind(attachmentId,actor.id).first();
+    if(!attachment)return Response.json({error:"File allegato non trovato o non autorizzato."},{status:404});
+  }
+  const wallet = await accrue(env, target.id);
+  const [marketPositions, investments, deposits, withdrawals, rawMarketPositions] = await Promise.all([
+    syncMarketPositions(env, target.id),
+    env.DB.prepare("SELECT amount, days, rate, created, credited, active FROM investments WHERE user_id = ? ORDER BY created DESC LIMIT 50").bind(target.id).all(),
+    env.DB.prepare("SELECT amount, net, date, status FROM deposits WHERE user_id = ? ORDER BY date DESC LIMIT 50").bind(target.id).all(),
+    env.DB.prepare("SELECT amount, net, date, status, source FROM withdrawals WHERE user_id = ? ORDER BY date DESC LIMIT 50").bind(target.id).all(),
+    env.DB.prepare("SELECT id, months, amount, allocations_json, entry_quotes_json, last_value, status, created_at, closed_at FROM market_positions WHERE user_id = ? ORDER BY created_at DESC LIMIT 200").bind(target.id).all()
+  ]);
+  const createdAt = Date.now(), reportId = crypto.randomUUID();
+  const periodStart = periodType === "annual"
+    ? Date.UTC(new Date(createdAt).getUTCFullYear(), 0, 1)
+    : Date.UTC(new Date(createdAt).getUTCFullYear(), new Date(createdAt).getUTCMonth(), 1);
+  const periodMarketData = new Map();
+  const positionRows = rawMarketPositions.results || [];
+  const periodMarkets = [...new Set(positionRows.map(positionElectricityMarket))];
+  await Promise.all(periodMarkets.map(async market => {
+    let history = cachedHistory && cachedHistoryMarket === market && Date.now() - historyAt < 300000 ? cachedHistory : null;
+    if (!history) {
+      try { history = await loadAssetHistory(market); } catch { history = { histories: {} }; }
+      if (history?.histories) { cachedHistory = history; cachedHistoryMarket = market; historyAt = Date.now(); }
+    }
+    let quotes = {};
+    try { quotes = await currentMarketQuotes(market); } catch {}
+    periodMarketData.set(market, { histories: history?.histories || {}, quotes });
+  }));
+  const assetPerformance = new Map();
+  for (const position of positionRows) {
+    const openedAt = Number(position.created_at || 0), closedAt = Number(position.closed_at || 0) || 0;
+    if (!openedAt || openedAt > createdAt || (closedAt && closedAt < periodStart)) continue;
+    let allocations = [], basis = {};
+    try { allocations = JSON.parse(position.allocations_json || "[]"); } catch {}
+    try { basis = JSON.parse(position.entry_quotes_json || "{}"); } catch {}
+    if (!Array.isArray(allocations)) continue;
+    const data = periodMarketData.get(positionElectricityMarket(position)) || { histories: {}, quotes: {} };
+    const heldAtOpen = openedAt <= periodStart && (!closedAt || closedAt >= periodStart);
+    const valuationAt = closedAt && closedAt < createdAt ? closedAt : createdAt;
+    for (const [key, rawWeight] of allocations) {
+      const weight = Number(rawWeight), baseQuote = Number(basis[key]);
+      if (!(weight > 0)) continue;
+      const series = data.histories?.[key] || [];
+      const startAt = Math.max(periodStart, openedAt);
+      const startQuote = balanceReportPriceAt(series, startAt) || baseQuote || Number(data.quotes?.[key]?.price) || 0;
+      const endQuote = valuationAt >= createdAt - 60000 && !closedAt
+        ? Number(data.quotes?.[key]?.price) || balanceReportPriceAt(series, createdAt) || baseQuote
+        : balanceReportPriceAt(series, valuationAt) || Number(data.quotes?.[key]?.price) || baseQuote;
+      if (!(startQuote > 0 && endQuote > 0)) continue;
+      const capital = Number(position.amount || 0) * weight / 100;
+      const referenceBasis = baseQuote > 0 ? baseQuote : startQuote;
+      const openingValue = heldAtOpen ? capital * (startQuote / referenceBasis) : 0;
+      const closingValue = capital * (endQuote / referenceBasis);
+      const gainBase = heldAtOpen ? startQuote : referenceBasis;
+      const gain = capital * (endQuote / gainBase - 1);
+      const item = assetPerformance.get(key) || { key, weightCapital: 0, openingValue: 0, closingValue: 0, gain: 0, capitalBase: 0 };
+      item.weightCapital += capital;
+      item.openingValue += openingValue;
+      item.closingValue += closingValue;
+      item.gain += gain;
+      item.capitalBase += capital;
+      assetPerformance.set(key, item);
+    }
+  }
+  const performanceAssets = [...assetPerformance.values()].map(item => ({
+    ...item,
+    openingValue: Number(item.openingValue.toFixed(3)),
+    closingValue: Number(item.closingValue.toFixed(3)),
+    gain: Number(item.gain.toFixed(3)),
+    returnPct: item.capitalBase > 0 ? Number((item.gain / item.capitalBase * 100).toFixed(3)) : 0
+  })).sort((a, b) => Math.abs(b.gain) - Math.abs(a.gain));
+  const periodGain = performanceAssets.reduce((sum, item) => sum + item.gain, 0);
+  const periodCapital = performanceAssets.reduce((sum, item) => sum + item.capitalBase, 0);
+  for (const item of performanceAssets) item.allocationPct = periodCapital > 0 ? Number((item.capitalBase / periodCapital * 100).toFixed(2)) : 0;
+  const periodPerformance = {
+    type: periodType, startAt: periodStart, endAt: createdAt,
+    openingValue: Number(performanceAssets.reduce((sum, item) => sum + item.openingValue, 0).toFixed(3)),
+    closingValue: Number(performanceAssets.reduce((sum, item) => sum + item.closingValue, 0).toFixed(3)),
+    gain: Number(periodGain.toFixed(3)),
+    returnPct: periodCapital > 0 ? Number((periodGain / periodCapital * 100).toFixed(3)) : 0,
+    assets: performanceAssets
+  };
+  const report = {
+    username: target.username, generatedAt: createdAt, currency: "USDT",
+    period: { type: periodType, startAt: periodStart, endAt: createdAt },
+    performance: periodPerformance,
+    balances: { deposit: Number(wallet.deposit || 0), released: Number(wallet.released || 0), earnings: Number(wallet.earnings || 0), totalAvailable: Number(wallet.deposit || 0) + Number(wallet.released || 0) + Number(wallet.earnings || 0) },
+    marketPositions: (marketPositions || []).slice(0, 50).map(row => ({ months: Number(row.months), amount: Number(row.amount), currentValue: Number(row.current_value ?? row.currentValue ?? 0), status: String(row.status || ""), stopLossPct: Number(row.stop_loss_pct ?? row.stopLossPct ?? 0), createdAt: Number(row.created_at ?? row.createdAt ?? 0) })),
+    investments: (investments.results || []).map(row => ({ amount: Number(row.amount), days: Number(row.days), rate: Number(row.rate), created: Number(row.created), credited: Number(row.credited), active: !!row.active })),
+    deposits: (deposits.results || []).map(row => ({ amount: Number(row.amount), network: String(row.net || ""), date: Number(row.date), status: String(row.status || "") })),
+    withdrawals: (withdrawals.results || []).map(row => ({ amount: Number(row.amount), network: String(row.net || ""), date: Number(row.date), status: String(row.status || ""), source: String(row.source || "") }))
+  };
+  if(attachment)report.attachment={id:attachment.id,fileName:attachment.file_name,contentType:attachment.content_type};
+  const statements=[
+    env.DB.prepare("INSERT INTO balance_reports (id, user_id, admin_id, format, report_json, created_at) VALUES (?, ?, ?, ?, ?, ?)").bind(reportId, target.id, actor.id, format, JSON.stringify(report), createdAt),
+    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'balance_report', ?, ?, ?)").bind(target.id, "Balance report available", "balance-report:" + reportId, createdAt)
+  ];
+  if(attachment)statements.push(env.DB.prepare("INSERT INTO balance_report_attachment_grants (report_id,user_id,attachment_id) VALUES (?,?,?)").bind(reportId,target.id,attachment.id));
+  await env.DB.batch(statements);
+  return Response.json({ ok: true, reportId });
+}
+
+
+async function saveBalanceReportAttachment(request, env) {
+  const actor=await privilegedAdminActor(request,env);
+  if(!actor)return Response.json({error:"Permessi admin richiesti."},{status:403});
+  const bytes=new Uint8Array(await request.arrayBuffer());
+  if(!bytes.length||bytes.byteLength>8*1024*1024)return bad("File vuoto o superiore a 8 MB.");
+  let fileName=String(request.headers.get('x-report-file-name')||'').slice(0,600);
+  try{fileName=decodeURIComponent(fileName)}catch{}
+  fileName=path.basename(fileName).replace(/[\u0000-\u001f\u007f]/g,'').trim().slice(0,160);
+  const ext=fileName.split('.').pop().toLowerCase();
+  const types={jpg:'image/jpeg',jpeg:'image/jpeg',png:'image/png',gif:'image/gif',webp:'image/webp',pdf:'application/pdf',html:'text/html',htm:'text/html',txt:'text/plain',csv:'text/csv',rtf:'application/rtf',doc:'application/msword',docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',xls:'application/vnd.ms-excel',xlsx:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',ppt:'application/vnd.ms-powerpoint',pptx:'application/vnd.openxmlformats-officedocument.presentationml.presentation',zip:'application/zip'};
+  const contentType=types[ext];
+  if(!contentType||String(request.headers.get('x-report-content-type')||'').toLowerCase()!==contentType)return bad("Tipo di file non supportato.");
+  const id=crypto.randomUUID(),createdAt=Date.now();
+  await env.DB.prepare("INSERT INTO balance_report_attachments (id,user_id,file_name,content_type,file_data,created_at) VALUES (?,?,?,?,?,?)").bind(id,actor.id,fileName,contentType,bytes,createdAt).run();
+  return Response.json({ok:true,attachmentId:id,fileName,contentType});
+}
+
+async function getUserBalanceReportAttachment(request,env,reportId){
+  const user=await authed(request,env);
+  const row=await env.DB.prepare("SELECT a.file_name,a.content_type,a.file_data FROM balance_report_attachment_grants g JOIN balance_report_attachments a ON a.id=g.attachment_id WHERE g.report_id=? AND g.user_id=?").bind(reportId,user.id).first();
+  if(!row)return Response.json({error:"Allegato non trovato."},{status:404});
+  return Response.json({fileName:row.file_name,contentType:row.content_type,data:Buffer.from(row.file_data).toString('base64')},{headers:{"Cache-Control":"no-store"}});
+}
+
+async function getUserBalanceReport(request, env, reportId) {
+  const user = await authed(request, env);
+  const row = await env.DB.prepare("SELECT format, report_json FROM balance_reports WHERE id = ? AND user_id = ?").bind(reportId, user.id).first();
+  if (!row) return Response.json({ error: "Report non trovato." }, { status: 404 });
+  let report;
+  try { report = JSON.parse(row.report_json); } catch { return Response.json({ error: "Report non disponibile." }, { status: 500 }); }
+  return Response.json({ format: row.format, report }, { headers: { "Cache-Control": "no-store" } });
+}
+
+async function adminUpdateUserBalance(request, env, userId) {
+  const actor = await privilegedAdminActor(request, env);
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const body = await request.json();
+  const deposit = Number(body.deposit), earnings = Number(body.earnings), released = Number(body.released || 0);
+  if (![deposit, earnings, released].every(n => Number.isFinite(n) && n >= 0 && n <= 1e12)) return bad("Saldo non valido.");
+  const previous = await env.DB.prepare("SELECT deposit, earnings, released FROM wallets WHERE user_id = ?").bind(userId).first();
+  const increased = deposit > Number(previous?.deposit || 0) || earnings > Number(previous?.earnings || 0) || released > Number(previous?.released || 0);
+  const now = Date.now();
+  const statements = [
+    env.DB.prepare("INSERT INTO wallets (user_id, deposit, earnings, released) VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET deposit=excluded.deposit, earnings=excluded.earnings, released=excluded.released").bind(userId, deposit, earnings, released)
+  ];
+  if (increased) statements.push(
+    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)").bind(userId, "System credit", "Your available balance has been updated by the administrator.", now)
+  );
+  await env.DB.batch(statements);
+  return Response.json({ ok: true });
+}
+
+async function adminDeleteUser(request, env, userId) {
+  const actor = await privilegedAdminActor(request, env);
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  
+  const target = await env.DB.prepare("SELECT id, identifier FROM users WHERE id = ?").bind(userId).first();
+  if (!target) return Response.json({ error: "Utente non trovato." }, { status: 404 });
+  if (target.identifier.toLowerCase() === "supercloud3.invest@yahoo.com".toLowerCase()) {
+    return bad("Non è possibile eliminare l'account amministratore principale.");
+  }
+
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM admin_sessions WHERE user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM admin_roles WHERE user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM market_positions WHERE user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM email_verification_requests WHERE user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM password_reset_requests WHERE user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM sensitive_action_verifications WHERE user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM notifications WHERE user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM balance_reports WHERE user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM balance_report_attachment_grants WHERE user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM balance_report_attachment_grants WHERE attachment_id IN (SELECT id FROM balance_report_attachments WHERE user_id = ?)").bind(userId),
+    env.DB.prepare("DELETE FROM balance_report_attachments WHERE user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM wallets WHERE user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM investments WHERE user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM referral_commissions WHERE user_id = ? OR source_user_id = ?").bind(userId, userId),
+    env.DB.prepare("DELETE FROM referral_profit_settlements WHERE user_id = ? OR source_user_id = ?").bind(userId, userId),
+    env.DB.prepare("DELETE FROM referral_first_deposits WHERE source_user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM deposits WHERE user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM withdrawals WHERE user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM settings WHERE user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM user_withdrawal_addresses WHERE user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM wallet_change_requests WHERE user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM users WHERE id = ?").bind(userId)
+  ]);
+
+  return Response.json({ ok: true, message: "Utente e tutti i dati associati eliminati con successo." });
+}
+
+async function readAutomaticWithdrawalDecisions(env) {
+  return false;
+}
+async function readAutomaticApprovalDelayHours(env) {
+  const row = await env.DB.prepare("SELECT config_value FROM platform_config WHERE config_key = 'payment_auto_approval_delay_hours'").first();
+  const value = Number(row?.config_value);
+  return AUTO_APPROVAL_DELAYS_HOURS.includes(value) ? value : 0;
+}
+const NO_EARNINGS_RATE_FALLBACKS = Object.freeze({ noEarningsWithdrawalDepositPercent: 'withdrawalDepositPercent', noEarningsWithdrawalEarningsPercent: 'withdrawalEarningsPercent', noEarningsWithdrawalReleasedPercent: 'withdrawalReleasedPercent', noEarningsEarlyClosePercent: 'earlyClosePercent', noEarningsEarlyCloseBelowPercent: 'noEarningsEarlyClosePercent', noEarningsEarlyCloseAtOrAbovePercent: 'noEarningsEarlyClosePercent' });
+function commissionRateMaximum(field) { if (field === 'noEarningsEarlyCloseThreshold') return 1000000000000; return field.toLowerCase().includes('earlyclose') || field === 'investmentWithholdingPercent' || field === 'simpleEarnWithholdingPercent' ? 100 : 50; }
+async function userHasEverEarned(env, userId) {
+  const row = await env.DB.prepare("SELECT CASE WHEN " +
+    "COALESCE((SELECT total_earned FROM wallets WHERE user_id = ?), 0) > 0.0005 OR " +
+    "COALESCE((SELECT earnings FROM wallets WHERE user_id = ?), 0) > 0.0005 OR " +
+    "EXISTS (SELECT 1 FROM market_position_redemptions WHERE user_id = ? AND amount > 0.0005) OR " +
+    "EXISTS (SELECT 1 FROM simple_earn_positions WHERE user_id = ? AND interest_paid > 0.0005) OR " +
+    "EXISTS (SELECT 1 FROM market_positions WHERE user_id = ? AND ((status = 'matured' AND last_value > amount + 0.0005) OR (status = 'early_closed' AND last_value - early_close_fee > amount + 0.0005))) OR " +
+    "EXISTS (SELECT 1 FROM investments WHERE user_id = ? AND (credited > 0.0005 OR (active = 1 AND amount * rate / 100 * MIN(days, MAX(0, (? - created) / 86400000.0)) > 0.0005))) " +
+    "THEN 1 ELSE 0 END AS has_earned").bind(userId, userId, userId, userId, userId, userId, Date.now()).first();
+  return Number(row?.has_earned) === 1;
+}
+async function marketPositionHasEarned(env, userId, positionId) {
+  const row = await env.DB.prepare("SELECT CASE WHEN EXISTS (SELECT 1 FROM market_position_redemptions WHERE user_id = ? AND position_id = ? AND amount > 0.0005) OR EXISTS (SELECT 1 FROM market_positions WHERE user_id = ? AND id = ? AND status IN ('active','paused') AND last_value > amount + 0.0005) THEN 1 ELSE 0 END AS has_earned").bind(userId, positionId, userId, positionId).first();
+  return Number(row?.has_earned) === 1;
+}
+async function readCommissionRates(env) {
+  const keys = Object.values(COMMISSION_CONFIG_KEYS);
+  const result = await env.DB.prepare("SELECT config_key, config_value FROM platform_config WHERE config_key IN (" + keys.map(() => "?").join(",") + ")").bind(...keys).all();
+  const stored = new Map((result.results || []).map(row => [row.config_key, Number(row.config_value)]));
+  const rates = {};
+  for (const [field, key] of Object.entries(COMMISSION_CONFIG_KEYS)) {
+    const value = stored.get(key), fallbackField = NO_EARNINGS_RATE_FALLBACKS[field];
+    const fallback = fallbackField ? rates[fallbackField] : DEFAULT_COMMISSION_RATES[field];
+    const maxValue = commissionRateMaximum(field);
+    rates[field] = Number.isFinite(value) && value >= 0 && value <= maxValue ? value : fallback;
+  }
+  const rangeRow = await env.DB.prepare("SELECT config_value FROM platform_config WHERE config_key = ?").bind(COMMISSION_CLOSE_RANGES_KEY).first();
+  try {
+    const ranges = JSON.parse(rangeRow?.config_value || '[]');
+    rates.noEarningsEarlyCloseRanges = Array.isArray(ranges) ? ranges.filter(range => Number.isFinite(Number(range.from)) && Number.isFinite(Number(range.to)) && Number.isFinite(Number(range.percent)) && Number(range.from) >= 0 && Number(range.to) >= Number(range.from) && Number(range.percent) >= 0 && Number(range.percent) <= 100).map(range => ({ from: Number(range.from), to: Number(range.to), percent: Number(range.percent) })).sort((a, b) => a.from - b.from) : [];
+  } catch { rates.noEarningsEarlyCloseRanges = []; }
+  return rates;
+}
+const PAYMENT_MINIMUM_DEFAULTS = Object.freeze({ deposit: 50, withdrawal: 50 });
+async function readPaymentMinimums(env) {
+  const rows = await env.DB.prepare("SELECT config_key, config_value FROM platform_config WHERE config_key IN (?, ?)").bind("minimum_deposit_amount", "minimum_withdrawal_amount").all();
+  const values = new Map((rows.results || []).map(row => [row.config_key, Number(row.config_value)]));
+  return {
+    deposit: Number.isFinite(values.get("minimum_deposit_amount")) && values.get("minimum_deposit_amount") >= 0 ? values.get("minimum_deposit_amount") : PAYMENT_MINIMUM_DEFAULTS.deposit,
+    withdrawal: Number.isFinite(values.get("minimum_withdrawal_amount")) && values.get("minimum_withdrawal_amount") >= 0 ? values.get("minimum_withdrawal_amount") : PAYMENT_MINIMUM_DEFAULTS.withdrawal
+  };
+}
+async function getPaymentMinimums(env) {
+  return Response.json(await readPaymentMinimums(env), { headers: { "Cache-Control": "no-store" } });
+}
+async function getAdminPaymentMinimums(request, env) {
+  if (!(await privilegedAdminActor(request, env))) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  return Response.json(await readPaymentMinimums(env));
+}
+async function saveAdminPaymentMinimums(request, env) {
+  if (!(await privilegedAdminActor(request, env))) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  const body = await request.json().catch(() => ({}));
+  const fields = [["deposit", "minimum_deposit_amount"], ["withdrawal", "minimum_withdrawal_amount"]];
+  const provided = fields.filter(([field]) => Object.prototype.hasOwnProperty.call(body, field));
+  if (!provided.length) return bad("Nessun minimo valido ricevuto.");
+  for (const [field] of provided) {
+    const value = Number(body[field]);
+    if (!Number.isFinite(value) || value < 0 || value > 1000000000 || Math.abs(Math.round(value * 100) - value * 100) > 1e-8) return bad("I minimi devono essere numeri non negativi con massimo due decimali.");
+  }
+  await env.DB.batch(provided.map(([field, key]) => env.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES(?, ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind(key, String(Number(body[field])))));
+  return Response.json({ ok: true, ...(await readPaymentMinimums(env)) });
+}
+async function getAdminPaymentSettings(request, env) {
+  const actor = await adminActor(request, env);
+  if (!actor || !(await readAdminPermissions(actor, env)).requests) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  return Response.json({ automaticWithdrawalDecisions: await readAutomaticWithdrawalDecisions(env), automaticApprovalDelayHours: await readAutomaticApprovalDelayHours(env) });
+}
+async function saveAdminPaymentSettings(request, env) {
+  const actor = await privilegedAdminActor(request, env);
+  if (!actor) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  const body = await request.json().catch(() => ({}));
+  const hasAutomatic = Object.prototype.hasOwnProperty.call(body, "automaticWithdrawalDecisions");
+  const hasDelay = Object.prototype.hasOwnProperty.call(body, "automaticApprovalDelayHours");
+  if (!hasAutomatic && !hasDelay) return bad("Impostazioni automatiche non valide.");
+  if (hasAutomatic && typeof body.automaticWithdrawalDecisions !== "boolean") return bad("Impostazione automatica non valida.");
+  if (hasDelay && !AUTO_APPROVAL_DELAYS_HOURS.includes(Number(body.automaticApprovalDelayHours))) return bad("Scegliere un tempo di approvazione consentito.");
+  const writes = [];
+  if (hasAutomatic) writes.push(env.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES('payment_auto_withdrawals', ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind(body.automaticWithdrawalDecisions ? "1" : "0"));
+  if (hasDelay) writes.push(env.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES('payment_auto_approval_delay_hours', ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind(String(Number(body.automaticApprovalDelayHours))));
+  await env.DB.batch(writes);
+  if (hasAutomatic && !body.automaticWithdrawalDecisions) await env.DB.prepare("DELETE FROM platform_config WHERE config_key LIKE 'payment_auto_queue:%'").run();
+  const settings = { ok: true, automaticWithdrawalDecisions: await readAutomaticWithdrawalDecisions(env), automaticApprovalDelayHours: await readAutomaticApprovalDelayHours(env) };
+  if (hasDelay && settings.automaticWithdrawalDecisions) void processScheduledAutomaticApprovals(env).catch(error => console.error("Scheduled approval worker failed:", error));
+  return Response.json(settings);
+}
+async function getAdminCommissionSettings(request, env) {
+  if (!(await privilegedAdminActor(request, env))) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  return Response.json(await readCommissionRates(env));
+}
+async function saveAdminCommissionSettings(request, env) {
+  if (!(await privilegedAdminActor(request, env))) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  const body = await request.json().catch(() => ({}));
+  const current = await readCommissionRates(env);
+  const next = { ...current };
+  for (const field of Object.keys(COMMISSION_CONFIG_KEYS)) {
+    if (!Object.prototype.hasOwnProperty.call(body, field)) continue;
+    const value = Number(body[field]);
+    const maxValue = commissionRateMaximum(field);
+    const precision = field === "noEarningsEarlyCloseThreshold" ? 1000 : 100;
+    if (!Number.isFinite(value) || value < 0 || value > maxValue || Math.abs(Math.round(value * precision) - value * precision) > 1e-8) return bad(field === "noEarningsEarlyCloseThreshold" ? "La soglia deve essere un importo valido con massimo tre decimali." : "Le percentuali devono essere comprese nei limiti consentiti, con massimo due decimali.");
+    next[field] = value;
+  }
+  let closeRanges = current.noEarningsEarlyCloseRanges || [];
+  if (Object.prototype.hasOwnProperty.call(body, 'noEarningsEarlyCloseRanges')) {
+    if (!Array.isArray(body.noEarningsEarlyCloseRanges) || body.noEarningsEarlyCloseRanges.length > 50) return bad("Inserire al massimo 50 fasce.");
+    closeRanges = body.noEarningsEarlyCloseRanges.map(range => ({ from: Number(range?.from), to: Number(range?.to), percent: Number(range?.percent) })).sort((a, b) => a.from - b.from);
+    for (let i = 0; i < closeRanges.length; i++) {
+      const range = closeRanges[i], validAmount = value => Number.isFinite(value) && value >= 0 && value <= 1000000000000 && Math.abs(Math.round(value * 1000) - value * 1000) < 1e-8;
+      if (!validAmount(range.from) || !validAmount(range.to) || range.to < range.from || !Number.isFinite(range.percent) || range.percent < 0 || range.percent > 100 || Math.abs(Math.round(range.percent * 100) - range.percent * 100) > 1e-8) return bad("Fascia non valida: importi con massimo tre decimali e commissione tra 0 e 100%.");
+      if (i && range.from <= closeRanges[i - 1].to) return bad("Le fasce di importo non possono sovrapporsi.");
+    }
+  }
+  const hasRates = Object.keys(COMMISSION_CONFIG_KEYS).some(field => Object.prototype.hasOwnProperty.call(body, field));
+  const hasRanges = Object.prototype.hasOwnProperty.call(body, 'noEarningsEarlyCloseRanges');
+  if (!hasRates && !hasRanges) return bad("Nessuna commissione valida ricevuta.");
+  const writes = Object.entries(COMMISSION_CONFIG_KEYS).map(([field, key]) => env.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES(?, ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind(key, String(next[field])));
+  if (hasRanges) writes.push(env.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES(?, ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind(COMMISSION_CLOSE_RANGES_KEY, JSON.stringify(closeRanges)));
+  await env.DB.batch(writes);
+  return Response.json({ ok: true, ...next, noEarningsEarlyCloseRanges: closeRanges });
+}
+async function queueAutomaticApproval(env, kind, id) {
+  const table = kind === "deposit" ? "deposits" : kind === "withdrawal" ? "withdrawals" : null;
+  const transferStatus = kind === "deposit" ? "received" : kind === "withdrawal" ? "sent" : null;
+  if (!table) return false;
+  const record = await env.DB.prepare("SELECT user_id FROM " + table + " WHERE id = ? AND status = 'pending' AND transfer_status = ?").bind(id, transferStatus).first();
+  if (!record) return false;
+  const configKey = "payment_auto_queue:" + kind + ":" + id;
+  const value = JSON.stringify({ userId: record.user_id, confirmedAt: Date.now() });
+  await env.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES(?, ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind(configKey, value).run();
+  return true;
+}
+async function processScheduledAutomaticApprovals(env) {
+  if (!automaticApprovalSchemaReady || scheduledApprovalTask) return scheduledApprovalTask;
+  scheduledApprovalTask = (async () => {
+    if (!(await readAutomaticWithdrawalDecisions(env))) return;
+    const delay = await readAutomaticApprovalDelayHours(env);
+    const cutoff = Date.now() - delay * 60 * 60 * 1000;
+    const queue = await env.DB.prepare("SELECT config_key, config_value FROM platform_config WHERE config_key LIKE 'payment_auto_queue:%' ORDER BY config_key LIMIT 100").all();
+    for (const row of queue.results || []) {
+      const match = String(row.config_key).match(/^payment_auto_queue:(deposit|withdrawal):([1-9][0-9]*)$/);
+      let saved;
+      try { saved = JSON.parse(row.config_value); } catch {}
+      if (!match || !Number.isFinite(Number(saved?.confirmedAt))) {
+        await env.DB.prepare("DELETE FROM platform_config WHERE config_key = ?").bind(row.config_key).run();
+        continue;
+      }
+      if (Number(saved.confirmedAt) > cutoff) continue;
+      const kind = match[1], id = Number(match[2]);
+      const internalRequest = new Request("http://localhost/api/admin/review", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind, id, action: "approve" }) });
+      const response = await reviewTransaction(internalRequest, env, true);
+      if (response.ok || response.status < 500) {
+        if (!response.ok) console.warn("Scheduled approval no longer applicable:", kind, id, response.status);
+        await env.DB.prepare("DELETE FROM platform_config WHERE config_key = ?").bind(row.config_key).run();
+      } else {
+        console.error("Scheduled approval will be retried:", kind, id, response.status);
+      }
+    }
+  })().finally(() => { scheduledApprovalTask = null; });
+  return scheduledApprovalTask;
+}
+async function runAutomaticRequestDecision(request, env, kind, id, action, txReference = "") {
+  const headers = new Headers(request.headers);
+  headers.delete("content-length");
+  headers.set("content-type", "application/json");
+  const internalRequest = new Request(request.url, { method: "POST", headers, body: JSON.stringify({ kind, id, action, txReference }) });
+  return await reviewTransaction(internalRequest, env);
+}
+async function markDepositReceived(request, env) {
+  const actor = await privilegedAdminActor(request, env);
+  if (!actor) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  const body = await request.json().catch(() => ({}));
+  const id = Number(body.id);
+  if (!Number.isInteger(id) || id < 1) return bad("Richiesta di deposito non valida.");
+  const result = await env.DB.prepare("UPDATE deposits SET transfer_status = 'received' WHERE id = ? AND status = 'pending' AND transfer_status != 'received'").bind(id).run();
+  if (!result.meta?.changes) return bad("Il deposito non è più in attesa o è già stato contrassegnato come ricevuto.");
+  if (await readAutomaticWithdrawalDecisions(env)) {
+    const delay = await readAutomaticApprovalDelayHours(env);
+    if (delay === 0) {
+      const finalized = await runAutomaticRequestDecision(request, env, "deposit", id, "approve");
+      if (!finalized.ok) return finalized;
+      return Response.json({ ok: true, transferStatus: "received", automaticDecision: "approved", automaticApprovalScheduled: false });
+    }
+    await queueAutomaticApproval(env, "deposit", id);
+    return Response.json({ ok: true, transferStatus: "received", automaticDecision: null, automaticApprovalScheduled: true, approvalDelayHours: delay });
+  }
+  return Response.json({ ok: true, transferStatus: "received", automaticDecision: null, automaticApprovalScheduled: false });
+}
+async function markDepositFailed(request, env) {
+  const actor = await privilegedAdminActor(request, env);
+  if (!actor) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  const body = await request.json().catch(() => ({}));
+  const id = Number(body.id);
+  if (!Number.isInteger(id) || id < 1) return bad("Richiesta di deposito non valida.");
+  const result = await env.DB.prepare("UPDATE deposits SET transfer_status = 'failed' WHERE id = ? AND status = 'pending' AND transfer_status != 'received' AND transfer_status != 'failed'").bind(id).run();
+  if (!result.meta?.changes) return bad("Il deposito non è più in attesa o risulta già ricevuto/contrassegnato.");
+  if (await readAutomaticWithdrawalDecisions(env)) {
+    const finalized = await runAutomaticRequestDecision(request, env, "deposit", id, "reject");
+    if (!finalized.ok) return finalized;
+    return Response.json({ ok: true, transferStatus: "failed", automaticDecision: "rejected" });
+  }
+  return Response.json({ ok: true, transferStatus: "failed", automaticDecision: null });
+}
+async function markWithdrawalSent(request, env) {
+  const actor = await privilegedAdminActor(request, env);
+  if (!actor) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  const body = await request.json();
+  const id = Number(body.id);
+  const txReference = String(body.txReference || "").trim();
+  if (!Number.isInteger(id) || id < 1) return bad("Richiesta di prelievo non valida.");
+  if (!/^(?:0x)?[a-fA-F0-9]{64}$/.test(txReference)) return bad("Inserisci un hash di transazione valido dopo aver inviato il pagamento.");
+  const result = await env.DB.prepare("UPDATE withdrawals SET tx_reference = ?, transfer_status = 'sent' WHERE id = ? AND status = 'pending'").bind(txReference, id).run();
+  if (!result.meta?.changes) return bad("Il prelievo non è più in attesa.");
+  if (await readAutomaticWithdrawalDecisions(env)) {
+    const delay = await readAutomaticApprovalDelayHours(env);
+    if (delay === 0) {
+      const finalized = await runAutomaticRequestDecision(request, env, "withdrawal", id, "approve", txReference);
+      if (!finalized.ok) return finalized;
+      return Response.json({ ok: true, transferStatus: "sent", automaticDecision: "approved", automaticApprovalScheduled: false });
+    }
+    await queueAutomaticApproval(env, "withdrawal", id);
+    return Response.json({ ok: true, transferStatus: "sent", txReference, automaticDecision: null, automaticApprovalScheduled: true, approvalDelayHours: delay });
+  }
+  return Response.json({ ok: true, transferStatus: "sent", txReference, automaticDecision: null, automaticApprovalScheduled: false });
+}
+async function markWithdrawalFailed(request, env) {
+  const actor = await privilegedAdminActor(request, env);
+  if (!actor) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  const body = await request.json().catch(() => ({}));
+  const id = Number(body.id);
+  if (!Number.isInteger(id) || id < 1) return bad("Richiesta di prelievo non valida.");
+  const result = await env.DB.prepare("UPDATE withdrawals SET transfer_status = 'failed' WHERE id = ? AND status = 'pending' AND transfer_status != 'sent' AND tx_reference = ''").bind(id).run();
+  if (!result.meta?.changes) return bad("Il prelievo non è più in attesa o risulta già inviato.");
+  if (await readAutomaticWithdrawalDecisions(env)) {
+    const finalized = await runAutomaticRequestDecision(request, env, "withdrawal", id, "reject");
+    if (!finalized.ok) return finalized;
+    return Response.json({ ok: true, transferStatus: "failed", automaticDecision: "rejected" });
+  }
+  return Response.json({ ok: true, transferStatus: "failed", automaticDecision: null });
+}
+
+async function reviewTransaction(request, env, internalAutomatic = false) {
+  const operator = internalAutomatic ? null : await adminActor(request, env);
+  if (!internalAutomatic && !operator) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const body = await request.json();
+  const kind = body.kind;
+  const requiredPermission = kind === "wallet_change" ? "walletChanges" : "requests";
+  if (!internalAutomatic && !(await readAdminPermissions(operator, env))[requiredPermission]) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const id = Number(body.id);
+  let action = body.action;
+  
+  let userId = null;
+  let amount = 0;
+  let net = "";
+  let transactionReference = "";
+
+  if (kind === "deposit") {
+    const dep = await env.DB.prepare("SELECT * FROM deposits WHERE id = ?").bind(id).first();
+    if (!dep) return bad("Deposito non trovato.");
+    if (dep.status !== "pending") return bad("Questa richiesta è già stata esaminata.");
+    userId = dep.user_id;
+    amount = dep.amount;
+    net = dep.net;
+
+    if (action === "approve") {
+      if (dep.transfer_status !== "received") return bad("Conferma prima la ricezione del trasferimento nel Payment desk.");
+      let packageTier = null, packageTarget = null;
+      if (dep.purpose === "promoter-package") {
+        packageTier = PROMOTER_PACKAGE_TIERS[dep.package_id] || null;
+        packageTarget = await env.DB.prepare("SELECT account_type, promoter_package, promoter_invite_limit, promoter_invites_used, promoter_started_at, promoter_expires_at FROM users WHERE id = ?").bind(userId).first();
+        const validAmount = packageTier && (Number(dep.amount) === packageTier.price || Number(dep.amount) === PREVIOUS_PROMOTER_PACKAGE_PRICES[dep.package_id]);
+        if (!validAmount || packageTarget?.account_type !== "promoter") return bad("Il pacchetto non è valido per questo account.");
+        const packageChangeError = promoterPackageChangeError(packageTarget, packageTier, Date.now(), true);
+        if (packageChangeError) return bad(packageChangeError);
+      }
+      const approved = await env.DB.prepare("UPDATE deposits SET status = 'approved' WHERE id = ? AND status = 'pending'").bind(id).run();
+      if (!approved.meta?.changes) return bad("Questa richiesta è già stata esaminata.");
+      if (packageTier) {
+        const now = Date.now(), expires = now + 365 * 24 * 60 * 60 * 1000;
+        const hadActivePackage = Number(packageTarget?.promoter_expires_at || 0) > now && !!packageTarget?.promoter_package;
+        const hadPackage = !!packageTarget?.promoter_package;
+        const startedAt = hadPackage && Number(packageTarget.promoter_started_at || 0) > 0 ? Number(packageTarget.promoter_started_at) : now;
+        const inviteUsage = hadPackage ? Number(packageTarget.promoter_invites_used || 0) : 0;
+        await env.DB.prepare("UPDATE users SET promoter_package = ?, promoter_invite_limit = ?, promoter_started_at = ?, promoter_invites_used = ?, promoter_expires_at = ? WHERE id = ? AND account_type = 'promoter'").bind(dep.package_id, packageTier.limit, startedAt, inviteUsage, expires, userId).run();
+        if (!hadActivePackage) await seedPromoterReferralBaselines(env, userId, now);
+        const label = String(packageTier.limit) + "-invitation";
+        await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)").bind(userId, "Promoter package activated", "Your " + label + " package is active for one year.", now).run();
+      } else {
+        await env.DB.prepare("UPDATE wallets SET deposit = deposit + ?, total_deposited = total_deposited + ? WHERE user_id = ?").bind(amount, amount, userId).run();
+
+      const existingFirst = await env.DB.prepare("SELECT 1 FROM referral_first_deposits WHERE source_user_id = ?").bind(userId).first();
+      if (!existingFirst) {
+        const now = Date.now();
+        await env.DB.prepare("INSERT OR IGNORE INTO referral_first_deposits (source_user_id, deposit_id, created_at) VALUES (?, ?, ?)").bind(userId, id, now).run();
+
+        const referredUser = await env.DB.prepare("SELECT referred_by FROM users WHERE id = ?").bind(userId).first();
+        let currentReferrerId = referredUser ? referredUser.referred_by : null;
+        const eventId = String(id);
+
+        for (let level = 0; level < REFERRAL_PCTS.length; level++) {
+          if (!currentReferrerId) break;
+          const uplineUser = await env.DB.prepare("SELECT id, account_type, promoter_package, promoter_expires_at FROM users WHERE id = ?").bind(currentReferrerId).first();
+          if (!uplineUser) break;
+
+          const pct = REFERRAL_PCTS[level];
+          const commAmount = Number((amount * pct).toFixed(3));
+          const canReceiveReferralCommission = uplineUser.account_type === "promoter" && !!uplineUser.promoter_package && Number(uplineUser.promoter_expires_at || 0) > now;
+          if (commAmount > 0 && canReceiveReferralCommission) {
+            await env.DB.prepare(
+              "INSERT INTO wallets (user_id, deposit, earnings, total_deposited, total_earned, total_withdrawn) VALUES (?, 0, ?, 0, ?, 0) " +
+              "ON CONFLICT(user_id) DO UPDATE SET earnings = earnings + ?, total_earned = total_earned + ?"
+            ).bind(uplineUser.id, commAmount, commAmount, commAmount, commAmount).run();
+
+            await env.DB.prepare(
+              "INSERT OR IGNORE INTO referral_commissions (user_id, source_user_id, event_id, level, amount, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+            ).bind(uplineUser.id, userId, eventId, level + 1, commAmount, now).run();
+
+            await env.DB.prepare(
+              "INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)"
+            ).bind(uplineUser.id, "Referral commission", `Credited ${commAmount.toFixed(3)} USDT referral commission (Level ${level + 1}) on user's first deposit.`, now).run();
+          }
+
+          const nextParent = await env.DB.prepare("SELECT referred_by FROM users WHERE id = ?").bind(currentReferrerId).first();
+          currentReferrerId = nextParent ? nextParent.referred_by : null;
+        }
+      }
+      }
+    } else {
+      const rejected = await env.DB.prepare("UPDATE deposits SET status = 'rejected' WHERE id = ? AND status = 'pending'").bind(id).run();
+      if (!rejected.meta?.changes) return bad("Questa richiesta è già stata esaminata.");
+    }
+  } else if (kind === "withdrawal") {
+    const wit = await env.DB.prepare("SELECT * FROM withdrawals WHERE id = ?").bind(id).first();
+    if (!wit) return bad("Prelievo non trovato.");
+    if (wit.status !== 'pending') return bad("Questa richiesta è già stata esaminata.");
+    userId = wit.user_id;
+    amount = wit.amount;
+    net = wit.net;
+
+    if (action === "approve") {
+      if (wit.transfer_status !== "sent") return bad("Conferma prima il trasferimento inviato nel Payment desk.");
+      const txReference = String(wit.tx_reference || '').trim();
+      const submittedReference = String(body.txReference || '').trim();
+      if (!/^(?:0x)?[a-fA-F0-9]{64}$/.test(txReference)) return bad("L’amministratore deve prima registrare l’hash del pagamento.");
+      if (submittedReference.toLowerCase() !== txReference.toLowerCase()) return bad("L’hash verificato non corrisponde a quello registrato dall’amministratore.");
+      transactionReference = txReference;
+      const reviewed = await env.DB.prepare("UPDATE withdrawals SET status = 'approved' WHERE id = ? AND status = 'pending' AND tx_reference = ?").bind(id, txReference).run();
+      if (!reviewed.meta?.changes) return bad("Il prelievo non è più in attesa o l’hash è cambiato.");
+      await env.DB.prepare("UPDATE wallets SET total_withdrawn = total_withdrawn + ? WHERE user_id = ?").bind(amount, userId).run();
+    } else {
+      if (wit.transfer_status === "sent") return bad("Un trasferimento confermato come inviato non può essere rifiutato o rimborsato.");
+      const rejected = await env.DB.prepare("UPDATE withdrawals SET status = 'rejected' WHERE id = ? AND status = 'pending'").bind(id).run();
+      if (!rejected.meta?.changes) return bad("Questa richiesta è già stata esaminata.");
+      const refundSource = wit.source === 'released' ? 'released' : wit.source === 'deposit' ? 'deposit' : 'earnings';
+      const refundAmount = Number(wit.charged_amount) > 0 ? Number(wit.charged_amount) : amount;
+      await env.DB.prepare("UPDATE wallets SET " + refundSource + " = " + refundSource + " + ? WHERE user_id = ?").bind(refundAmount, userId).run();
+    }
+  } else if (kind === "wallet_change") {
+    const reqChange = await env.DB.prepare("SELECT * FROM wallet_change_requests WHERE id = ?").bind(id).first();
+    if (!reqChange) return bad("Richiesta di modifica non trovata.");
+    userId = reqChange.user_id;
+    net = reqChange.net;
+    const newAddress = reqChange.new_address;
+
+    if (action === "approve") {
+      const existingGlobal = await env.DB.prepare("SELECT user_id FROM user_withdrawal_addresses WHERE net = ? AND lower(address) = ? AND user_id != ?").bind(net, newAddress.trim().toLowerCase(), userId).first();
+      if (existingGlobal) {
+        action = "reject";
+        await env.DB.batch([
+          env.DB.prepare("DELETE FROM wallet_change_requests WHERE id = ?").bind(id),
+          env.DB.prepare("DELETE FROM sensitive_action_verifications WHERE user_id = ? AND action = 'wallet-change' AND consumed_at IS NULL").bind(userId)
+        ]);
+      } else {
+        await env.DB.prepare("UPDATE wallet_change_requests SET status = 'approved' WHERE id = ?").bind(id).run();
+
+        const s = await env.DB.prepare("SELECT withdraw_wallets FROM settings WHERE user_id = ?").bind(userId).first();
+        let wallets = {};
+        try { wallets = JSON.parse(s.withdraw_wallets || "{}"); } catch {}
+        wallets[net] = newAddress;
+
+        await env.DB.batch([
+          env.DB.prepare("INSERT INTO settings (user_id, withdraw_wallets, notifications) VALUES (?, ?, 1) ON CONFLICT(user_id) DO UPDATE SET withdraw_wallets = excluded.withdraw_wallets")
+            .bind(userId, JSON.stringify(wallets)),
+          env.DB.prepare("INSERT INTO user_withdrawal_addresses (user_id, net, address, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, net, address) DO NOTHING")
+            .bind(userId, net, newAddress, Date.now()),
+          env.DB.prepare("DELETE FROM wallet_change_requests WHERE id = ?").bind(id),
+          env.DB.prepare("DELETE FROM sensitive_action_verifications WHERE user_id = ? AND action = 'wallet-change' AND consumed_at IS NULL").bind(userId)
+        ]);
+      }
+    } else {
+      await env.DB.batch([
+        env.DB.prepare("DELETE FROM wallet_change_requests WHERE id = ?").bind(id),
+        env.DB.prepare("DELETE FROM sensitive_action_verifications WHERE user_id = ? AND action = 'wallet-change' AND consumed_at IS NULL").bind(userId)
+      ]);
+    }
+  } else {
+    return bad("Tipo di transazione non valido.");
+  }
+
+  const actorRole = operator ? await env.DB.prepare("SELECT role FROM admin_roles WHERE user_id = ?").bind(operator.id).first() : null;
+  if (actorRole?.role === "operator" && (action === "approve" || action === "reject")) {
+    const reviewedUser = await env.DB.prepare("SELECT username FROM users WHERE id = ?").bind(userId).first();
+    const requestDetails = JSON.stringify({
+      amount: Number(amount) || 0,
+      network: String(net || ""),
+      transactionReference: kind === "withdrawal" && action === "approve" ? transactionReference : ""
+    });
+    await env.DB.prepare("INSERT INTO operator_review_audit (operator_id, operator_username, request_kind, request_id, user_id, username, action, request_details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .bind(operator.id, String(operator.username || "Operator"), kind, id, String(userId || ""), String(reviewedUser?.username || "user"), action, requestDetails, Date.now()).run();
+  }
+
+  if (userId) {
+    const now = Date.now();
+    const statusLabel = action === "approve" ? "approved" : "rejected";
+    const transactionLabel = kind === "deposit" ? "Deposit" : kind === "withdrawal" ? "Withdrawal" : "Wallet change request";
+    let message = "";
+    if (kind === "deposit") {
+      message = `${amount.toFixed(3)} USDT · ${net} · Request ${statusLabel}${action === "approve" ? ". Amount successfully credited to wallet." : ". Amount was not credited."}`;
+    } else if (kind === "withdrawal") {
+      message = `${amount.toFixed(3)} USDT · ${net} · Request ${statusLabel}${action === "reject" ? ". Amount refunded to wallet successfully." : ". Operation completed. TX: " + transactionReference}`;
+    } else {
+      message = action === "approve"
+        ? `Network ${net} · Address change request successfully approved.`
+        : `Network ${net} · Address change request rejected: the new address is already used by another account.`;
+    }
+    
+    await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
+      .bind(userId, `${transactionLabel} ${statusLabel}`, message, now).run();
+  }
+
+  if (internalAutomatic && kind === "withdrawal" && action === "approve") {
+    try {
+      const admins = (await env.DB.prepare("SELECT user_id FROM admin_roles WHERE role IN ('admin', 'operator')").all()).results || [];
+      for (const admin of admins) {
+        await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
+          .bind(admin.user_id, "Automatic withdrawal completed", "Withdrawal #" + id + " · " + amount.toFixed(3) + " USDT · " + net + " · TX: " + transactionReference, Date.now()).run();
+      }
+    } catch (error) { console.error("Automatic withdrawal admin notification failed:", error?.message || error); }
+  }
+  return Response.json({ ok: true });
+}
+
+async function setAdminCredential(request, env) {
+  return Response.json({ ok: true });
+}
+
+const TOTP_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+function base32Encode(bytes) {
+  let bits = 0, value = 0, result = '';
+  for (const byte of bytes) { value = (value << 8) | byte; bits += 8; while (bits >= 5) { result += TOTP_ALPHABET[(value >>> (bits - 5)) & 31]; bits -= 5; } }
+  if (bits) result += TOTP_ALPHABET[(value << (5 - bits)) & 31];
+  return result;
+}
+function base32Decode(text) {
+  let bits = 0, value = 0; const output = [];
+  for (const char of String(text).replace(/=+$/,'').toUpperCase()) {
+    const digit = TOTP_ALPHABET.indexOf(char); if (digit < 0) throw new Error('Invalid authenticator secret');
+    value = (value << 5) | digit; bits += 5;
+    if (bits >= 8) { bits -= 8; output.push((value >>> bits) & 255); }
+  }
+  return new Uint8Array(output);
+}
+async function totpCode(secret, timeOffset = 0) {
+  const counter = BigInt(Math.floor(Date.now() / 30000) + timeOffset);
+  const message = new Uint8Array(8); let n = counter;
+  for (let i = 7; i >= 0; i--) { message[i] = Number(n & 255n); n >>= 8n; }
+  const key = await crypto.subtle.importKey('raw', base32Decode(secret), { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
+  const digest = new Uint8Array(await crypto.subtle.sign('HMAC', key, message));
+  const offset = digest[digest.length - 1] & 15;
+  const number = (digest[offset] & 127) * 0x1000000 + digest[offset + 1] * 0x10000 + digest[offset + 2] * 0x100 + digest[offset + 3];
+  return String(number % 1000000).padStart(6, '0');
+}
+async function validTotp(secret, code) {
+  if (!/^\d{6}$/.test(code)) return false;
+  for (const offset of [-1, 0, 1]) if (await totpCode(secret, offset) === code) return true;
+  return false;
+}
+async function beginAdminAuthenticator(env, userId) {
+  let record = await env.DB.prepare("SELECT secret, enabled FROM admin_authenticator WHERE user_id = ?").bind(userId).first();
+  if (!record) {
+    const bytes = new Uint8Array(20); crypto.getRandomValues(bytes);
+    const secret = base32Encode(bytes);
+    await env.DB.prepare("INSERT INTO admin_authenticator (user_id, secret, enabled, updated_at) VALUES (?, ?, 0, ?)").bind(userId, secret, Date.now()).run();
+    record = { secret, enabled: 0 };
+  }
+  const challenge = makeToken();
+  await env.DB.prepare("INSERT INTO admin_mfa_challenges (challenge, user_id, expires_at, attempts) VALUES (?, ?, ?, 0)").bind(challenge, userId, Date.now() + 5 * 60 * 1000).run();
+  const user = await env.DB.prepare("SELECT identifier FROM users WHERE id = ?").bind(userId).first();
+  const setup = Number(record.enabled) !== 1;
+  const label = encodeURIComponent('You Invest:' + (user?.identifier || 'admin'));
+  const issuer = encodeURIComponent('You Invest');
+  const otpauthUri = 'otpauth://totp/' + label + '?secret=' + record.secret + '&issuer=' + issuer + '&algorithm=SHA1&digits=6&period=30';
+  return Response.json({ ok: true, mode: 'operator', mfaRequired: true, challenge, setup, secret: setup ? record.secret : '', account: user?.identifier || 'Administrator account', otpauthUri: setup ? otpauthUri : '' });
+}
+async function verifyAdminAuthenticator(request, env) {
+  const body = await request.json();
+  const challenge = String(body.challenge || '').trim();
+  const code = String(body.code || '').trim();
+  const row = await env.DB.prepare("SELECT c.user_id, c.expires_at, c.attempts, a.secret FROM admin_mfa_challenges c JOIN admin_authenticator a ON a.user_id = c.user_id WHERE c.challenge = ?").bind(challenge).first();
+  if (!row || Number(row.expires_at) <= Date.now() || Number(row.attempts) >= 5) return Response.json({ error: 'Accesso scaduto. Accedi di nuovo.' }, { status: 401 });
+  if (!await validTotp(row.secret, code)) {
+    const attempts = Number(row.attempts) + 1;
+    if (attempts >= 5) await env.DB.prepare("DELETE FROM admin_mfa_challenges WHERE challenge = ?").bind(challenge).run();
+    else await env.DB.prepare("UPDATE admin_mfa_challenges SET attempts = ? WHERE challenge = ?").bind(attempts, challenge).run();
+    return Response.json({ error: attempts >= 5 ? 'Troppi tentativi. Accedi di nuovo.' : 'Codice non valido.' }, { status: 401 });
+  }
+  const now = Date.now();
+  await env.DB.batch([
+    env.DB.prepare("UPDATE admin_authenticator SET enabled = 1, updated_at = ? WHERE user_id = ?").bind(now, row.user_id),
+    env.DB.prepare("DELETE FROM admin_mfa_challenges WHERE user_id = ?").bind(row.user_id)
+  ]);
+  const token = makeToken();
+  await env.DB.prepare("INSERT INTO admin_sessions (token, user_id, expires_at) VALUES (?, ?, ?)").bind(token, row.user_id, now + 30 * DAY).run();
+  return Response.json({ ok: true, mode: 'operator', token });
+}
+
+async function tryOperatorLogin(env, email, password) {
+  const credential = await env.DB.prepare("SELECT email, salt, password_hash, iterations FROM admin_credentials WHERE id = 1").first();
+  if (email !== PRIMARY_ADMIN_EMAIL.toLowerCase() || credential?.email?.toLowerCase() !== PRIMARY_ADMIN_EMAIL.toLowerCase()) return null;
+  const suppliedHash = await hashAdminSecret(password, credential.salt, credential.iterations || 20000);
+  if (suppliedHash !== credential.password_hash) return null;
+  return beginAdminAuthenticator(env, PRIMARY_ADMIN_ID);
+}
+
+async function adminLogout(request, env) {
+  const token = (request.headers.get("x-admin-token") || "").trim();
+  if (token) await env.DB.prepare("DELETE FROM admin_sessions WHERE token = ?").bind(token).run();
+  return Response.json({ ok: true });
+}
+
+async function saveWallet(request, env) {
+  const user = await authed(request, env);
+  const body = await request.json();
+  return await createWalletChangeOtpRequest(env, user, body.wallets || {}, body.language);
+}
+
+async function resendWalletChangeOtp(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const user = await authed(request, env);
+  const pending = await env.DB.prepare("SELECT action, otp_expires_at, issued_at FROM sensitive_action_verifications WHERE user_id = ? AND consumed_at IS NULL").bind(user.id).first();
+  if (!pending || pending.action !== "wallet-change") return bad("Non è presente una richiesta di modifica wallet da verificare.");
+  const now = Date.now();
+  if (pending.otp_expires_at && now < Number(pending.otp_expires_at)) return Response.json({ error: "Il codice è ancora valido. Controlla la tua email." }, { status: 429 });
+  if (pending.issued_at && now - Number(pending.issued_at) < 15 * 60 * 1000) return Response.json({ error: "Attendi la scadenza prima di richiedere un nuovo codice." }, { status: 429 });
+  const otp = generateEmailOtp();
+  const salt = genSalt();
+  const otpHash = await hash(otp, salt);
+  const expiresAt = now + 15 * 60 * 1000;
+  await env.DB.prepare("UPDATE sensitive_action_verifications SET otp_hash = ?, otp_salt = ?, otp_expires_at = ?, otp_attempts = 0, issued_at = ?, issued_by = NULL WHERE user_id = ? AND action = 'wallet-change' AND consumed_at IS NULL").bind(otpHash, salt, expiresAt, now, user.id).run();
+  try { const mailCopy = await sendOtpEmail(user.identifier, otp, "wallet-change", body.language); await recordOtpRequestHistory(env, user, "wallet-change", now, expiresAt, "sent"); await recordOtpMailCopy(env, user, "wallet-change", now, mailCopy); }
+  catch (error) {
+    await recordOtpRequestHistory(env, user, "wallet-change", now, expiresAt, "failed");
+    await env.DB.prepare("UPDATE sensitive_action_verifications SET otp_hash = NULL, otp_salt = NULL, otp_expires_at = NULL WHERE user_id = ? AND action = 'wallet-change' AND consumed_at IS NULL").bind(user.id).run();
+    throw error;
+  }
+  return Response.json({ ok: true, expiresAt });
+}
+
+async function requestWalletChange(request, env) {
+  const user = await authed(request, env);
+  const body = await request.json();
+  const wallets = { ...(body.wallets || {}) };
+  if (body.net && body.newAddress) wallets[body.net] = body.newAddress;
+  return await createWalletChangeOtpRequest(env, user, wallets, body.language);
+}
+
+async function createWalletChangeOtpRequest(env, user, wallets, language) {
+  const allowedNetworks = ["BNB", "TRC20", "BTC", "USDC"];
+  const requestedWallets = {};
+  if (!wallets || typeof wallets !== "object" || Array.isArray(wallets)) return bad("Indirizzi wallet non validi.");
+  for (const [net, addr] of Object.entries(wallets)) {
+    const value = String(addr || "").trim();
+    if (!allowedNetworks.includes(net) || !value || value.length > 256) continue;
+    requestedWallets[net] = value;
+  }
+  if (!Object.keys(requestedWallets).length) return bad("Nessuna modifica o nuovo indirizzo valido specificato.");
+  if (!normalizeEmail(user.identifier)) return bad("È necessario un indirizzo email valido per ricevere il codice OTP.");
+  const existingAddrs = await env.DB.prepare("SELECT COUNT(*) as cnt FROM user_withdrawal_addresses WHERE user_id = ?").bind(user.id).first();
+  if ((!existingAddrs || existingAddrs.cnt === 0) && !user.email_verified) return Response.json({ error: "Verifica l’email prima di salvare l’indirizzo di prelievo per la prima volta.", verificationRequired: true, email: user.identifier }, { status: 403 });
+  const currentSettings = await env.DB.prepare("SELECT withdraw_wallets FROM settings WHERE user_id = ?").bind(user.id).first();
+  let currentWallets = {};
+  try { currentWallets = JSON.parse(currentSettings?.withdraw_wallets || "{}"); } catch {}
+  const changes = Object.entries(requestedWallets).filter(([net, address]) => String(currentWallets[net] || "").toLowerCase() !== address.toLowerCase()).map(([net, newAddress]) => ({ net, oldAddress: currentWallets[net] || "", newAddress }));
+  if (!changes.length) return bad("Nessuna modifica wallet da applicare.");
+  const openWalletRequest = await env.DB.prepare("SELECT id FROM wallet_change_requests WHERE user_id = ? AND status = 'pending' LIMIT 1").bind(user.id).first();
+  if (openWalletRequest) return Response.json({ error: "È già presente una richiesta di modifica wallet. Completa quella in corso prima di inviarne un'altra." }, { status: 409 });
+  const pending = await env.DB.prepare("SELECT action FROM sensitive_action_verifications WHERE user_id = ? AND consumed_at IS NULL").bind(user.id).first();
+  if (pending) return Response.json({ error: "È già presente una richiesta wallet in corso. Completa quella in corso prima di inviarne un'altra." }, { status: 409 });
+  const now = Date.now();
+  const otp = generateEmailOtp();
+  const salt = genSalt();
+  const otpHash = await hash(otp, salt);
+  const expiresAt = now + 15 * 60 * 1000;
+  const created = await env.DB.prepare("INSERT INTO sensitive_action_verifications (user_id, action, payload_json, requested_at, otp_hash, otp_salt, otp_expires_at, otp_attempts, issued_at, issued_by, consumed_at) SELECT ?, 'wallet-change', ?, ?, ?, ?, ?, 0, ?, NULL, NULL WHERE NOT EXISTS (SELECT 1 FROM sensitive_action_verifications WHERE user_id = ? AND consumed_at IS NULL) AND NOT EXISTS (SELECT 1 FROM wallet_change_requests WHERE user_id = ? AND status = 'pending') ON CONFLICT(user_id) DO UPDATE SET action = excluded.action, payload_json = excluded.payload_json, requested_at = excluded.requested_at, otp_hash = excluded.otp_hash, otp_salt = excluded.otp_salt, otp_expires_at = excluded.otp_expires_at, otp_attempts = 0, issued_at = excluded.issued_at, issued_by = NULL, consumed_at = NULL").bind(user.id, JSON.stringify({ wallets: requestedWallets, changes }), now, otpHash, salt, expiresAt, now, user.id, user.id).run();
+  if (!(created.meta?.changes > 0)) return Response.json({ error: "È già presente una richiesta wallet in corso. Completa quella in corso prima di inviarne un'altra." }, { status: 409 });
+  try { const mailCopy = await sendOtpEmail(user.identifier, otp, "wallet-change", language); await recordOtpRequestHistory(env, user, "wallet-change", now, expiresAt, "sent"); await recordOtpMailCopy(env, user, "wallet-change", now, mailCopy); }
+  catch (error) {
+    await recordOtpRequestHistory(env, user, "wallet-change", now, expiresAt, "failed");
+    await env.DB.prepare("DELETE FROM sensitive_action_verifications WHERE user_id = ? AND action = 'wallet-change' AND consumed_at IS NULL").bind(user.id).run();
+    throw error;
+  }
+  await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)").bind(user.id, "Wallet change verification", "Wallet change requested. A six-digit verification code was sent to your email.", now).run();
+  return Response.json({ ok: true, otpRequired: true, message: "Il codice OTP per la modifica del wallet è stato inviato alla tua email.", expiresAt });
+}
+
+async function queueWalletAddressConflict(env, user, net, oldAddress, newAddress) {
+  const now = Date.now();
+  await env.DB.prepare("INSERT INTO wallet_change_requests (user_id, net, old_address, new_address, created_at, status) SELECT ?, ?, ?, ?, ?, 'pending' WHERE NOT EXISTS (SELECT 1 FROM wallet_change_requests WHERE user_id = ? AND net = ? AND lower(new_address) = lower(?) AND status = 'pending')")
+    .bind(user.id, net, oldAddress || "", newAddress, now, user.id, net, newAddress).run();
+}
+
+async function applyWalletChange(env, user, inputWallets) {
+  const currentSettings = await env.DB.prepare("SELECT withdraw_wallets FROM settings WHERE user_id = ?").bind(user.id).first();
+  let currentWallets = {};
+  try { currentWallets = JSON.parse(currentSettings?.withdraw_wallets || "{}"); } catch {}
+  const allowedNetworks = ["BNB", "TRC20", "BTC", "USDC"];
+  const finalWallets = { ...currentWallets };
+  const now = Date.now();
+  const batchStatements = [];
+  for (const [net, addr] of Object.entries(inputWallets || {})) {
+    const trimmedAddr = String(addr || "").trim();
+    if (!trimmedAddr || trimmedAddr.length > 256 || !allowedNetworks.includes(net)) continue;
+    const oldAddr = currentWallets[net] || "";
+    if (!oldAddr) {
+      const existingGlobal = await env.DB.prepare("SELECT user_id FROM user_withdrawal_addresses WHERE net = ? AND lower(address) = ? AND user_id != ?").bind(net, trimmedAddr.toLowerCase(), user.id).first();
+      if (existingGlobal) { await queueWalletAddressConflict(env, user, net, oldAddr, trimmedAddr); return bad("Questo indirizzo per la rete " + net + " è già registrato su un altro account."); }
+      finalWallets[net] = trimmedAddr;
+      batchStatements.push(env.DB.prepare("INSERT INTO user_withdrawal_addresses (user_id, net, address, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, net, address) DO NOTHING").bind(user.id, net, trimmedAddr, now));
+    } else if (oldAddr.toLowerCase() !== trimmedAddr.toLowerCase()) {
+      const existingGlobal = await env.DB.prepare("SELECT user_id FROM user_withdrawal_addresses WHERE net = ? AND lower(address) = ? AND user_id != ?").bind(net, trimmedAddr.toLowerCase(), user.id).first();
+      if (existingGlobal) { await queueWalletAddressConflict(env, user, net, oldAddr, trimmedAddr); return bad("Il nuovo indirizzo per la rete " + net + " è già registrato su un altro account."); }
+      finalWallets[net] = trimmedAddr;
+      batchStatements.push(env.DB.prepare("INSERT INTO user_withdrawal_addresses (user_id, net, address, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, net, address) DO NOTHING").bind(user.id, net, trimmedAddr, now));
+      batchStatements.push(env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)").bind(user.id, "Wallet address updated", "Your wallet address for " + net + " was updated after OTP verification.", now));
+    }
+  }
+  if (batchStatements.length === 0) return bad("Nessuna modifica o nuovo indirizzo valido specificato.");
+  batchStatements.unshift(env.DB.prepare("INSERT INTO settings (user_id, withdraw_wallets, notifications) VALUES (?, ?, 1) ON CONFLICT(user_id) DO UPDATE SET withdraw_wallets = excluded.withdraw_wallets").bind(user.id, JSON.stringify(finalWallets)));
+  await env.DB.batch(batchStatements);
+  return Response.json({ ok: true, message: "Wallet aggiornato dopo verifica OTP.", acc: { withdraw_wallets: finalWallets, notifications: true } });
+}
+
+async function updateSettings(request, env) {
+  const user = await authed(request, env);
+  const body = await request.json();
+  const notif = typeof body.notifications === "boolean" ? body.notifications : true;
+  await env.DB.prepare("INSERT INTO settings (user_id, withdraw_wallets, notifications) VALUES (?, '{}', ?) ON CONFLICT(user_id) DO UPDATE SET notifications = excluded.notifications")
+    .bind(user.id, notif ? 1 : 0).run();
+  return Response.json({ ok: true, acc: { notifications: notif } });
+}
+
+async function changePassword(request, env) {
+  const user = await authed(request, env);
+  const body = await request.json();
+  const current = body.current || "";
+  const next = body.next || "";
+  if (next.length < 6) return bad("La nuova password deve avere almeno 6 caratteri.");
+  const ph = await hash(current, user.salt);
+  if (ph !== user.password_hash) return bad("Password attuale non corretta.");
+  const s = genSalt();
+  const hash2 = await hash(next, s);
+  await env.DB.batch([
+    env.DB.prepare("UPDATE users SET password_hash = ?, salt = ? WHERE id = ?").bind(hash2, s, user.id),
+    env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'account', ?, ?, ?)")
+      .bind(user.id, "Password updated", "Your account password has been successfully modified.", Date.now()),
+  ]);
+  return Response.json({ ok: true });
+}
+
+app.get('/api/notifications/stream', async (req, res) => {
+  try {
+    const authRequest = new Request(`http://${req.get('host') || 'localhost'}${req.originalUrl}`, { headers: new Headers(req.headers) });
+    const user = await sessionUser(authRequest, env);
+    if (!user) return res.status(401).json({ error: 'Non autenticato.' });
+    res.status(200);
+    res.set({ 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+    res.flushHeaders();
+    const userId = String(user.id);
+    let clients = notificationStreams.get(userId);
+    if (!clients) notificationStreams.set(userId, clients = new Set());
+    clients.add(res);
+    res.write('event: ready\ndata: {}\n\n');
+    const heartbeat = setInterval(() => { if (!res.writableEnded) res.write(': keep-alive\n\n'); }, 20000);
+    res.on('close', () => {
+      clearInterval(heartbeat);
+      clients.delete(res);
+      if (!clients.size) notificationStreams.delete(userId);
+    });
+  } catch (error) {
+    console.error('Notification stream error:', error);
+    if (!res.headersSent) res.status(500).json({ error: 'Impossibile aprire il canale notifiche.' });
+    else res.end();
+  }
+});
+
+app.get('/api/asset-prices/stream', (req, res) => {
+  res.status(200);
+  res.set({ 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+  res.flushHeaders();
+  assetPriceStreams.add(res);
+  res.write(['event: ready', 'data: {}', '', ''].join(String.fromCharCode(10)));
+  if (!assetPriceStreamTimer) assetPriceStreamTimer = setInterval(() => { void publishAssetPriceUpdate(); }, 3000);
+  const heartbeat = setInterval(() => { if (!res.writableEnded) res.write(':' + ' keep-alive' + String.fromCharCode(10) + String.fromCharCode(10)); }, 20000);
+  res.on('close', () => {
+    clearInterval(heartbeat);
+    assetPriceStreams.delete(res);
+    if (!assetPriceStreams.size && assetPriceStreamTimer) {
+      clearInterval(assetPriceStreamTimer);
+      assetPriceStreamTimer = null;
+    }
+  });
+  void publishAssetPriceUpdate();
+});
+
+app.post('/api/admin/balance-report-attachments', express.raw({ type: 'application/octet-stream', limit: '8mb' }), async (req, res) => {
+  try {
+    const fullUrl = req.protocol + '://' + req.get('host') + req.originalUrl;
+    const headers = new Headers(req.headers); headers.delete('x-platform-client-ip');
+    if (req.ip) headers.set('x-platform-client-ip', String(req.ip));
+    if (!headers.has('content-type')) headers.set('content-type', 'application/octet-stream');
+    const webRequest = new Request(fullUrl, { method: 'POST', headers, body: req.body || new Uint8Array() });
+    const response = await workerHandler.fetch(webRequest, env);
+    const bodyText = await response.text();
+    res.status(response.status);
+    response.headers.forEach((val, key) => res.setHeader(key, val));
+    res.send(bodyText);
+  } catch (err) {
+    console.error('Balance report attachment upload failed:', err);
+    res.status(500).json({ error: 'File upload failed.' });
+  }
+});
+
+app.all('/api/*', async (req, res) => {
+  try {
+    if (req.method === 'POST' && req.path === '/api/logout') {
+      const sessionToken = String(req.get('x-session-token') || req.body?.sessionToken || '').trim();
+      const adminToken = String(req.get('x-admin-token') || req.body?.adminToken || '').trim();
+      if (sessionToken) await env.DB.prepare("DELETE FROM sessions WHERE token = ?").bind(sessionToken).run();
+      if (adminToken) await env.DB.prepare("DELETE FROM admin_sessions WHERE token = ?").bind(adminToken).run();
+      return res.json({ ok: true });
+    }
+
+    const fullUrl = `${req.protocol}://${req.get('host')}${req.originalUrl}`;
+    const forwardedHeaders = new Headers(req.headers); forwardedHeaders.delete('x-platform-client-ip');
+    if (req.ip) forwardedHeaders.set('x-platform-client-ip', String(req.ip));
+    const webRequest = new Request(fullUrl, {
+      method: req.method,
+      headers: forwardedHeaders,
+      body: ['GET', 'HEAD'].includes(req.method) ? undefined : JSON.stringify(req.body)
+    });
+
+    const response = await workerHandler.fetch(webRequest, env);
+    const bodyText = await response.text();
+    
+    res.status(response.status);
+    response.headers.forEach((val, key) => res.setHeader(key, val));
+    res.send(bodyText);
+  } catch (err) {
+    const databaseCode = err?.code || err?.cause?.code || err?.cause?.proto?.code;
+    if (databaseCode === 'BLOCKED') {
+      console.error('Turso database reads are blocked by the current database plan:', err);
+      return res.status(503).json({ error: "Il database Turso sta bloccando le letture SQL. Riattiva le letture o aggiorna il piano Turso; il login resterà indisponibile finché il database non le consente." });
+    }
+    console.error('API Error:', err);
+    res.status(500).json({ error: 'Errore interno del server.' });
+  }
+});
+
+const automaticApprovalTimer = setInterval(() => {
+  if (automaticApprovalSchemaReady) processScheduledAutomaticApprovals(env).catch(error => console.error("Scheduled approval worker failed:", error));
+}, 30000);
+if (typeof automaticApprovalTimer.unref === "function") automaticApprovalTimer.unref();
+
+app.listen(PORT, () => {
+  console.log(`Server avviato correttamente sulla porta ${PORT}`);
+});
+
+const PRIMARY_ADMIN_EMAIL = String(process.env.ADMIN_EMAIL || "").trim().toLowerCase();
+const PRIMARY_ADMIN_ID = "__primary_admin__";
+const PRIMARY_ADMIN_PASSWORD = String(process.env.ADMIN_PASSWORD || "");
+if (!PRIMARY_ADMIN_EMAIL || !PRIMARY_ADMIN_PASSWORD) {
+  console.warn("Admin authentication is disabled until ADMIN_EMAIL and ADMIN_PASSWORD are configured in Render.");
+}
+
+async function getCryptoAutomationSetting(request, envArg) {
+  const actor = await privilegedAdminActor(request, envArg);
+  if (!actor) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  const masterEnabled = String(process.env.CRYPTO_AUTOMATION_ENABLED || "").toLowerCase() === "true";
+  const row = await envArg.DB.prepare("SELECT config_value FROM platform_config WHERE config_key = ?").bind("crypto_automation_enabled").first();
+  return Response.json({ ok: true, masterEnabled, enabled: masterEnabled && row?.config_value === "true" });
+}
+async function saveCryptoAutomationSetting(request, envArg) {
+  const actor = await privilegedAdminActor(request, envArg);
+  if (!actor) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  const body = await request.json().catch(() => ({}));
+  if (typeof body.enabled !== "boolean") return bad("Stato automazione non valido.");
+  const masterEnabled = String(process.env.CRYPTO_AUTOMATION_ENABLED || "").toLowerCase() === "true";
+  if (body.enabled && !masterEnabled) return Response.json({ error: "Abilita prima CRYPTO_AUTOMATION_ENABLED nei Secrets di Render." }, { status: 409 });
+  await envArg.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES(?, ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind("crypto_automation_enabled", body.enabled ? "true" : "false").run();
+  return Response.json({ ok: true, masterEnabled, enabled: body.enabled && masterEnabled });
+}
+
+
+// On-chain USDT/BTC automation. Keep CRYPTO_AUTOMATION_ENABLED=false until
+// Render secrets, signer addresses, token contracts, and testnet checks are complete.
+async function cryptoAutomationEnabled() {
+  if (String(process.env.CRYPTO_AUTOMATION_ENABLED || "").toLowerCase() !== "true") return false;
+  try {
+    const row = await env.DB.prepare("SELECT config_value FROM platform_config WHERE config_key = ?").bind("crypto_automation_enabled").first();
+    return row?.config_value === "true";
+  } catch (error) { console.error("Crypto automation setting lookup failed; defaulting OFF:", error?.message || error); return false; }
+}
+
+const CRYPTO_PAYOUT_LIMIT_DEFAULTS = Object.freeze({ minimum: 0, maximum: 1000000000 });
+async function readCryptoPayoutLimits(envArg) {
+  const rows = await envArg.DB.prepare("SELECT config_key, config_value FROM platform_config WHERE config_key IN (?, ?)").bind("crypto_payout_minimum", "crypto_payout_maximum").all();
+  const values = new Map((rows.results || []).map(row => [row.config_key, Number(row.config_value)]));
+  const minimum = values.get("crypto_payout_minimum"), maximum = values.get("crypto_payout_maximum");
+  return {
+    minimum: Number.isFinite(minimum) && minimum >= 0 ? minimum : CRYPTO_PAYOUT_LIMIT_DEFAULTS.minimum,
+    maximum: Number.isFinite(maximum) && maximum > 0 ? maximum : CRYPTO_PAYOUT_LIMIT_DEFAULTS.maximum
+  };
+}
+async function getCryptoPayoutLimits(request, envArg) {
+  if (!(await privilegedAdminActor(request, envArg))) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  return Response.json({ ok: true, ...(await readCryptoPayoutLimits(envArg)) });
+}
+async function saveCryptoPayoutLimits(request, envArg) {
+  if (!(await privilegedAdminActor(request, envArg))) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  const body = await request.json().catch(() => ({}));
+  const minimum = Number(body.minimum), maximum = Number(body.maximum);
+  const validMoney = value => Number.isFinite(value) && value >= 0 && value <= 1000000000 && Math.abs(Math.round(value * 100) - value * 100) < 1e-8;
+  if (!validMoney(minimum) || !validMoney(maximum) || maximum <= 0 || minimum > maximum) return bad("Inserisci limiti di payout validi: importi non negativi, massimo due decimali e minimo non superiore al massimo.");
+  await envArg.DB.batch([
+    envArg.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES(?, ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind("crypto_payout_minimum", String(minimum)),
+    envArg.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES(?, ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind("crypto_payout_maximum", String(maximum))
+  ]);
+  return Response.json({ ok: true, minimum, maximum });
+}
+const BSC_USDT_DEFAULT = "0x55d398326f99059fF775485246999027B3197955";
+const BSC_WBNB_DEFAULT = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c";
+const PANCAKE_V2_ROUTER_DEFAULT = "0x10ED43C718714eb63d5aA57B78B54704E256024E";
+const TRON_USDT_DEFAULT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
+const TRON_WTRX_DEFAULT = "TNUC9Qb1rRpS5CbWLmNMxXBjyFoydXjWFR";
+const SUNSWAP_V2_ROUTER_DEFAULT = "TKzxdSv2FZKQrEqkKVgp5DcwEXBEKMg2Ax";
+const BTC_API_DEFAULT = "https://mempool.space/api";
+const AUTO_TRANSFER_ABI = ["function decimals() view returns (uint8)", "function transfer(address to, uint256 amount) returns (bool)"];
+const AUTO_TRANSFER_LOG_IFACE = new ethers.Interface(["event Transfer(address indexed from, address indexed to, uint256 value)"]);
+let autoDepositSweepRunning = false;
+
+async function cryptoJson(url, options = {}) {
+  const response = await fetch(url, { ...options, signal: options.signal || AbortSignal.timeout(12000) });
+  const body = await response.text();
+  if (!response.ok) throw new Error("Blockchain provider returned HTTP " + response.status);
+  try { return body ? JSON.parse(body) : {}; } catch { throw new Error("Blockchain provider returned invalid JSON"); }
+}
+function cleanHash(value) { return String(value || "").trim().replace(/^0x/i, ""); }
+function addressPoolForNetwork(addresses, net) {
+  return String(addresses?.[net] || "").split(/[,;]+/).map(value => value.trim()).filter(Boolean);
+}
+function sameAddress(a, b) { const left = String(a || "").trim(), right = String(b || "").trim(); if (left.startsWith("T") && right.startsWith("T")) return left === right; return left.toLowerCase() === right.toLowerCase(); }
+function amountTolerance(expected, net) { return net === "BTC" ? Math.max(1.5, Math.abs(expected) * 0.02) : 0.01; }
+async function getBtcUsdPrice() {
+  const data = await cryptoJson((process.env.BTC_API_BASE || BTC_API_DEFAULT).replace(/\/$/, "") + "/v1/prices");
+  const price = Number(data.USD);
+  if (!Number.isFinite(price) || price <= 0) throw new Error("BTC/USD reference price unavailable");
+  return price;
+}
+async function inspectBscUsdtDeposit(row) {
+  const hash = String(row.tx_reference || "").trim();
+  if (!/^(?:0x)?[a-fA-F0-9]{64}$/.test(hash)) return { state: "invalid" };
+  const provider = new ethers.JsonRpcProvider(process.env.BSC_RPC_URL || "https://bsc-dataseed.binance.org/", 56);
+  const receipt = await provider.getTransactionReceipt(hash.startsWith("0x") ? hash : "0x" + hash);
+  if (!receipt) return { state: "pending" };
+  if (Number(receipt.status) !== 1) return { state: "invalid" };
+  const head = await provider.getBlockNumber();
+  const required = Math.max(1, Number(process.env.BSC_MIN_CONFIRMATIONS || 12));
+  if (head - Number(receipt.blockNumber) + 1 < required) return { state: "pending" };
+  const tokenAddress = ethers.getAddress(process.env.BSC_USDT_CONTRACT || BSC_USDT_DEFAULT);
+  let tokenUnits = 0n;
+  for (const log of receipt.logs || []) {
+    if (!sameAddress(log.address, tokenAddress)) continue;
+    try {
+      const parsed = AUTO_TRANSFER_LOG_IFACE.parseLog({ topics: log.topics, data: log.data });
+      if (parsed?.name === "Transfer" && sameAddress(parsed.args.to, row.deposit_address)) tokenUnits += parsed.args.value;
+    } catch {}
+  }
+  if (tokenUnits <= 0n) return { state: "invalid" };
+  const token = new ethers.Contract(tokenAddress, ["function decimals() view returns (uint8)"], provider);
+  const decimals = Number(await token.decimals());
+  return { state: "confirmed", amount: Number(ethers.formatUnits(tokenUnits, decimals)) };
+}
+function tronTopicAddress(tron, topic) {
+  const hex = String(topic || "").replace(/^0x/i, "").slice(-40);
+  if (!/^[0-9a-fA-F]{40}$/.test(hex)) return "";
+  try { return tron.address.fromHex("41" + hex); } catch { return ""; }
+}
+async function inspectTronUsdtDeposit(row) {
+  const hash = cleanHash(row.tx_reference);
+  if (!/^[a-fA-F0-9]{64}$/.test(hash)) return { state: "invalid" };
+  const host = (process.env.TRON_FULL_HOST || "https://api.trongrid.io").replace(/\/$/, "");
+  const headers = { "content-type": "application/json" };
+  if (process.env.TRON_API_KEY) headers["TRON-PRO-API-KEY"] = process.env.TRON_API_KEY;
+  // The solidity endpoint returns only solidified transactions.
+  const info = await cryptoJson(host + "/walletsolidity/gettransactioninfobyid", {
+    method: "POST", headers, body: JSON.stringify({ value: hash })
+  });
+  if (!info || !info.id || !(info.log || []).length) return { state: "pending" };
+  if (info.receipt?.result && info.receipt.result !== "SUCCESS") return { state: "invalid" };
+  const tron = new TronWeb({ fullHost: host, headers });
+  const wantedContract = tron.address.toHex(process.env.TRON_USDT_CONTRACT || TRON_USDT_DEFAULT).replace(/^41/i, "").toLowerCase();
+  const transferTopic = ethers.id("Transfer(address,address,uint256)").replace(/^0x/i, "").toLowerCase();
+  let tokenUnits = 0n;
+  for (const log of info.log || []) {
+    const contractHex = String(log.address || "").replace(/^0x/i, "").replace(/^41/i, "").toLowerCase();
+    const topics = log.topics || [];
+    if (contractHex !== wantedContract || String(topics[0] || "").replace(/^0x/i, "").toLowerCase() !== transferTopic) continue;
+    const to = tronTopicAddress(tron, topics[2]);
+    if (!sameAddress(to, row.deposit_address)) continue;
+    try { tokenUnits += BigInt("0x" + String(log.data || "0").replace(/^0x/i, "")); } catch {}
+  }
+  if (tokenUnits <= 0n) return { state: "invalid" };
+  return { state: "confirmed", amount: Number(tokenUnits) / 1e6 };
+}
+async function inspectBtcDeposit(row) {
+  const hash = cleanHash(row.tx_reference);
+  if (!/^[a-fA-F0-9]{64}$/.test(hash)) return { state: "invalid" };
+  const base = (process.env.BTC_API_BASE || BTC_API_DEFAULT).replace(/\/$/, "");
+  const tx = await cryptoJson(base + "/tx/" + encodeURIComponent(hash));
+  if (!tx || !tx.txid) return { state: "pending" };
+  if (!tx.status?.confirmed) return { state: "pending" };
+  const receivedSats = (tx.vout || []).filter(output => sameAddress(output.scriptpubkey_address, row.deposit_address)).reduce((sum, output) => sum + Number(output.value || 0), 0);
+  if (!Number.isSafeInteger(receivedSats) || receivedSats <= 0) return { state: "invalid" };
+  return { state: "confirmed", amount: receivedSats / 1e8 * await getBtcUsdPrice() };
+}
+async function inspectCryptoDeposit(row) {
+  try {
+    if (row.net === "BNB") return await inspectBscUsdtDeposit(row);
+    if (row.net === "TRC20") return await inspectTronUsdtDeposit(row);
+    if (row.net === "BTC") return await inspectBtcDeposit(row);
+    return { state: "invalid" };
+  } catch (error) {
+    console.warn("Automatic deposit verification unavailable for request", row.id, error?.message || error);
+    return { state: "pending" };
+  }
+}
+async function settleVerifiedCryptoDeposit(row) {
+  if (!row || row.status !== "pending" || row.transfer_status === "received" || !row.tx_reference) return false;
+  const verification = await inspectCryptoDeposit(row);
+  if (verification.state !== "confirmed" || !Number.isFinite(verification.amount) || verification.amount <= 0) return false;
+  const requested = Number(row.amount);
+  const actual = Number(verification.amount);
+  if (!Number.isFinite(requested) || Math.abs(actual - requested) > amountTolerance(requested, row.net)) {
+    console.warn("Deposit hash amount/destination mismatch; left for admin review", row.id);
+    return false;
+  }
+  const amountToCredit = Number(actual.toFixed(3));
+  if (row.purpose === "promoter-package" && Math.abs(amountToCredit - requested) > 0.001) return false;
+  const marked = await env.DB.prepare("UPDATE deposits SET amount = ?, transfer_status = 'received' WHERE id = ? AND status = 'pending' AND transfer_status = 'pending'").bind(amountToCredit, row.id).run();
+  if (!(marked.meta?.changes > 0)) return false;
+  const internalRequest = new Request("http://localhost/api/admin/review", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ kind: "deposit", id: Number(row.id), action: "approve" })
+  });
+  const approved = await reviewTransaction(internalRequest, env, true);
+  if (!approved.ok) console.error("Verified crypto deposit could not be credited; remains in admin queue", row.id, approved.status);
+  return approved.ok;
+}
+async function rejectUnverifiedAutoCryptoDeposit(row) {
+  const updated = await env.DB.prepare("UPDATE deposits SET status = 'rejected', transfer_status = 'failed' WHERE id = ? AND status = 'pending' AND transfer_status = 'pending'").bind(row.id).run();
+  if (!(updated.meta?.changes > 0)) return false;
+  try {
+    await env.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
+      .bind(row.user_id, "Deposit request automatically rejected", "No valid transaction hash was found on the selected network within ten minutes. No funds were credited.", Date.now()).run();
+  } catch (error) { console.error("Automatic deposit rejection notification failed:", error?.message || error); }
+  return true;
+}
+async function sweepAutomaticCryptoDeposits() {
+  if (!(await cryptoAutomationEnabled()) || autoDepositSweepRunning || !automaticApprovalSchemaReady) return;
+  autoDepositSweepRunning = true;
+  try {
+    const rows = await env.DB.prepare("SELECT * FROM deposits WHERE status = 'pending' AND transfer_status = 'pending' AND net IN ('BNB','TRC20','BTC') ORDER BY date ASC LIMIT 20").all();
+    const now = Date.now();
+    for (const row of rows.results || []) {
+      if (now - Number(row.date || 0) < 600000) {
+        await settleVerifiedCryptoDeposit(row);
+        continue;
+      }
+      const txReference = String(row.tx_reference || "").trim();
+      const verification = txReference ? await inspectCryptoDeposit(row) : { state: "invalid" };
+      if (verification.state === "invalid") {
+        await rejectUnverifiedAutoCryptoDeposit(row);
+        continue;
+      }
+      if (verification.state === "pending") {
+        const transactionExists = await checkDepositTransactionOnChain(row.net, txReference);
+        if (transactionExists === false) await rejectUnverifiedAutoCryptoDeposit(row);
+        continue;
+      }
+      await settleVerifiedCryptoDeposit(row);
+    }
+  } catch (error) {
+    console.error("Automatic deposit sweep failed:", error?.message || error);
+  } finally { autoDepositSweepRunning = false; }
+}
+async function assertSignerMatchesPlatformAddress(net, signerAddress) {
+  const configured = await readDepositAddresses(env);
+  const pool = addressPoolForNetwork(configured, net);
+  if (!pool.some(address => sameAddress(address, signerAddress))) throw new Error("The configured signer address does not match the platform deposit address for " + net);
+}
+async function sendBscUsdtPayout(row) {
+  const privateKey = String(process.env.BSC_USDT_PRIVATE_KEY || "").trim();
+  if (!privateKey) throw new Error("BSC_USDT_PRIVATE_KEY is not configured in Render");
+  const provider = new ethers.JsonRpcProvider(process.env.BSC_RPC_URL || "https://bsc-dataseed.binance.org/", 56);
+  const signer = new ethers.Wallet(privateKey, provider);
+  await assertSignerMatchesPlatformAddress("BNB", signer.address);
+  if (!ethers.isAddress(row.wallet_address)) throw new Error("Invalid BNB Smart Chain withdrawal destination");
+  const tokenAddress = ethers.getAddress(process.env.BSC_USDT_CONTRACT || BSC_USDT_DEFAULT);
+  const token = new ethers.Contract(tokenAddress, AUTO_TRANSFER_ABI, signer);
+  const decimals = Number(await token.decimals());
+  const units = ethers.parseUnits(Number(row.amount).toFixed(3), decimals);
+  if (units <= 0n) throw new Error("Invalid USDT payout amount");
+  const tx = await token.transfer(ethers.getAddress(row.wallet_address), units);
+  return tx.hash;
+}
+async function sendTronUsdtPayout(row) {
+  const privateKey = String(process.env.TRON_USDT_PRIVATE_KEY || "").trim().replace(/^0x/i, "");
+  if (!privateKey) throw new Error("TRON_USDT_PRIVATE_KEY is not configured in Render");
+  const host = (process.env.TRON_FULL_HOST || "https://api.trongrid.io").replace(/\/$/, "");
+  const headers = {};
+  if (process.env.TRON_API_KEY) headers["TRON-PRO-API-KEY"] = process.env.TRON_API_KEY;
+  const tron = new TronWeb({ fullHost: host, privateKey, headers });
+  const from = tron.address.fromPrivateKey(privateKey);
+  await assertSignerMatchesPlatformAddress("TRC20", from);
+  if (!TronWeb.isAddress(row.wallet_address)) throw new Error("Invalid TRON withdrawal destination");
+  const tokenAddress = process.env.TRON_USDT_CONTRACT || TRON_USDT_DEFAULT;
+  const amountUnits = BigInt(Math.round(Number(row.amount) * 1e6));
+  if (amountUnits <= 0n) throw new Error("Invalid USDT payout amount");
+  const contract = await tron.contract().at(tokenAddress);
+  const sent = await contract.transfer(row.wallet_address, amountUnits.toString()).send({ feeLimit: Number(process.env.TRON_FEE_LIMIT_SUN || 100000000) });
+  const txHash = typeof sent === "string" ? sent : sent?.txid || sent?.txID || sent?.transaction?.txID || "";
+  if (!/^[a-fA-F0-9]{64}$/.test(cleanHash(txHash))) throw new Error("TRON provider did not return a transaction hash");
+  return cleanHash(txHash);
+}
+async function getBtcSigner() {
+  const wif = String(process.env.BTC_PRIVATE_KEY_WIF || "").trim();
+  if (!wif) throw new Error("BTC_PRIVATE_KEY_WIF is not configured in Render");
+  const keyPair = ECPair.fromWIF(wif, bitcoin.networks.bitcoin);
+  const source = bitcoin.payments.p2wpkh({ pubkey: Buffer.from(keyPair.publicKey), network: bitcoin.networks.bitcoin });
+  if (!source.address || !source.output) throw new Error("BTC signer must be a compressed native-SegWit (bc1q) wallet");
+  await assertSignerMatchesPlatformAddress("BTC", source.address);
+  return { keyPair, source };
+}
+async function sendBtcPayout(row) {
+  const { keyPair, source } = await getBtcSigner();
+  bitcoin.address.toOutputScript(row.wallet_address, bitcoin.networks.bitcoin);
+  const base = (process.env.BTC_API_BASE || BTC_API_DEFAULT).replace(/\/$/, "");
+  const [utxos, feeData, btcUsd] = await Promise.all([
+    cryptoJson(base + "/address/" + encodeURIComponent(source.address) + "/utxo"),
+    cryptoJson(base + "/v1/fees/recommended"),
+    getBtcUsdPrice()
+  ]);
+  const payoutSats = Math.floor(Number(row.amount) / btcUsd * 1e8);
+  if (!Number.isSafeInteger(payoutSats) || payoutSats < 546) throw new Error("BTC payout is below the minimum output size");
+  const feeRate = Math.max(1, Math.ceil(Number(feeData.fastestFee || feeData.halfHourFee || 5)));
+  const available = (utxos || []).filter(u => u.status?.confirmed === true && Number(u.value) > 0).sort((a,b) => Number(b.value)-Number(a.value));
+  const selected = [];
+  let total = 0, fee = 0;
+  for (const utxo of available) {
+    selected.push(utxo); total += Number(utxo.value);
+    fee = Math.ceil((10 + selected.length * 68 + 2 * 31) * feeRate);
+    if (total >= payoutSats + fee) break;
+    if (selected.length >= 100) break;
+  }
+  if (total < payoutSats + fee) throw new Error("Insufficient confirmed BTC for payout and miner fee");
+  let change = total - payoutSats - fee;
+  const psbt = new bitcoin.Psbt({ network: bitcoin.networks.bitcoin });
+  for (const u of selected) psbt.addInput({ hash: u.txid, index: Number(u.vout), witnessUtxo: { script: source.output, value: Number(u.value) } });
+  psbt.addOutput({ address: row.wallet_address, value: payoutSats });
+  if (change >= 546) psbt.addOutput({ address: source.address, value: change });
+  else { fee += change; change = 0; }
+  psbt.signAllInputs(keyPair);
+  psbt.finalizeAllInputs();
+  const raw = psbt.extractTransaction().toHex();
+  const response = await fetch(base + "/tx", { method: "POST", headers: { "content-type": "text/plain" }, body: raw, signal: AbortSignal.timeout(20000) });
+  const txid = (await response.text()).trim();
+  if (!response.ok || !/^[a-fA-F0-9]{64}$/.test(txid)) throw new Error("BTC broadcaster did not accept the transaction");
+  return txid;
+}
+async function sendAutomaticCryptoPayout(row) {
+  if (row.net === "BNB") return await sendBscUsdtPayout(row);
+  if (row.net === "TRC20") return await sendTronUsdtPayout(row);
+  if (row.net === "BTC") return await sendBtcPayout(row);
+  throw new Error("Automatic payout is not configured for network " + row.net);
+}
+function cryptoSignerConfiguredFor(net) {
+  if (net === "BNB") return Boolean(process.env.BSC_USDT_PRIVATE_KEY);
+  if (net === "TRC20") return Boolean(process.env.TRON_USDT_PRIVATE_KEY);
+  if (net === "BTC") return Boolean(process.env.BTC_PRIVATE_KEY_WIF);
+  return false;
+}
+
+async function delegateWithdrawalToAutoTransfer(request, envArg) {
+  if (!(await privilegedAdminActor(request, envArg))) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  if (String(process.env.CRYPTO_AUTOMATION_ENABLED || "").toLowerCase() !== "true") return Response.json({ error: "L'automazione crypto deve essere abilitata nei Secrets del server prima di delegare un prelievo." }, { status: 409 });
+  const body = await request.json().catch(() => ({})), id = Number(body.id), delayMs = Number(body.delayMs);
+  if (!Number.isSafeInteger(id) || id < 1 || !Number.isSafeInteger(delayMs) || delayMs < 0 || delayMs > 315360000000) return bad("Richiesta o tempistica del payout non valida.");
+  const row = await envArg.DB.prepare("SELECT * FROM withdrawals WHERE id = ? AND status = 'pending'").bind(id).first();
+  if (!row || row.transfer_status !== "pending" || String(row.tx_reference || "")) return Response.json({ error: "Il prelievo non è più disponibile per la delega automatica." }, { status: 409 });
+  if (!cryptoSignerConfiguredFor(row.net)) return bad("Automazione o wallet di firma non configurato per questa rete.");
+  const limits = await readCryptoPayoutLimits(envArg), requestedAmount = Number(row.amount);
+  if (requestedAmount < limits.minimum || requestedAmount > limits.maximum) return bad("L'importo del prelievo è fuori dai limiti dei pagamenti automatici.");
+  const autoTransferAt = Date.now() + delayMs;
+  const updated = await envArg.DB.prepare("UPDATE withdrawals SET transfer_status = 'scheduled', auto_transfer_at = ?, auto_transfer_override = 1 WHERE id = ? AND status = 'pending' AND transfer_status = 'pending' AND tx_reference = ''").bind(autoTransferAt, id).run();
+  if (!(updated.meta?.changes > 0)) return Response.json({ error: "Il prelievo è già stato aggiornato." }, { status: 409 });
+  try {
+    await envArg.DB.prepare("INSERT INTO notifications (user_id, kind, title, message, created_at) VALUES (?, 'transaction', ?, ?, ?)")
+      .bind(row.user_id, "Withdrawal delegated to automatic payout", "Your " + Number(row.amount).toFixed(3) + " USDT payout is scheduled for " + new Date(autoTransferAt).toLocaleString("en-US") + ".", Date.now()).run();
+  } catch (error) { console.error("Automatic payout scheduling notification failed:", error?.message || error); }
+  return Response.json({ ok: true, autoTransferAt, delayMs });
+}
+const existingDepositHandlerForCrypto = deposit;
+deposit = async function(request, envArg) {
+  const response = await existingDepositHandlerForCrypto(request, envArg);
+  if (!(await cryptoAutomationEnabled()) || !response.ok) return response;
+  let body = {}, result = {};
+  try { body = await request.clone().json(); result = await response.clone().json(); } catch { return response; }
+  if (result.status !== "pending" || !body.txReference) return response;
+  try {
+    const user = await sessionUser(request, envArg);
+    if (!user) return response;
+    const row = await env.DB.prepare("SELECT * FROM deposits WHERE user_id = ? AND lower(tx_reference) = lower(?) ORDER BY id DESC LIMIT 1").bind(user.id, String(body.txReference).trim()).first();
+    if (!row) return response;
+    const approved = await settleVerifiedCryptoDeposit(row);
+    if (approved) return Response.json({ ...result, status: "approved", automaticDecision: "approved", txReference: row.tx_reference });
+  } catch (error) { console.error("Automatic deposit processing deferred:", error?.message || error); }
+  return response;
+};
+const existingWithdrawHandlerForCrypto = withdraw;
+withdraw = async function(request, envArg) {
+  const startedAt = Date.now() - 2000;
+  const response = await existingWithdrawHandlerForCrypto(request, envArg);
+  if (!(await cryptoAutomationEnabled()) || !response.ok) return response;
+  let result = {};
+  try { result = await response.clone().json(); } catch { return response; }
+  if (result.status !== "pending") return response;
+  let user;
+  try { user = await sessionUser(request, envArg); } catch { return response; }
+  if (!user) return response;
+  let row;
+  try {
+    row = await env.DB.prepare("SELECT * FROM withdrawals WHERE user_id = ? AND status = 'pending' AND date >= ? AND tx_reference = '' ORDER BY id DESC LIMIT 1").bind(user.id, startedAt).first();
+  } catch { return response; }
+  if (!row || !["BNB", "TRC20", "BTC"].includes(row.net) || !cryptoSignerConfiguredFor(row.net)) return response;
+  const payoutLimits = await readCryptoPayoutLimits(env), requestAmount = Number(row.amount);
+  if (requestAmount < payoutLimits.minimum || requestAmount > payoutLimits.maximum) return response;
+  const delay = await readCryptoPayoutDelay(env);
+  const scheduledAt = Number(row.date) + delay.delayMs;
+  const scheduled = await env.DB.prepare("UPDATE withdrawals SET transfer_status = 'scheduled', auto_transfer_at = ? WHERE id = ? AND status = 'pending' AND transfer_status = 'pending' AND tx_reference = ''").bind(scheduledAt, row.id).run();
+  if (!(scheduled.meta?.changes > 0)) return response;
+  if (scheduledAt <= Date.now()) await processScheduledCryptoWithdrawals();
+  const current = await env.DB.prepare("SELECT status, transfer_status, tx_reference, auto_transfer_at FROM withdrawals WHERE id = ?").bind(row.id).first();
+  const sent = current?.transfer_status === "sent" || current?.status === "approved";
+  return Response.json({ ...result, status: current?.status || "pending", automaticTransfer: sent, automaticTransferScheduled: !sent, autoTransferAt: Number(current?.auto_transfer_at) || scheduledAt, txReference: current?.tx_reference || "", txHash: current?.tx_reference || "" });
+};
+let scheduledCryptoPayoutsRunning = false;
+async function processScheduledCryptoWithdrawals() {
+  const globalAutomationEnabled = await cryptoAutomationEnabled();
+  if (String(process.env.CRYPTO_AUTOMATION_ENABLED || "").toLowerCase() !== "true" || scheduledCryptoPayoutsRunning || !automaticApprovalSchemaReady) return;
+  scheduledCryptoPayoutsRunning = true;
+  try {
+    const now = Date.now();
+    const rows = await env.DB.prepare("SELECT * FROM withdrawals WHERE status = 'pending' AND transfer_status = 'scheduled' AND auto_transfer_at > 0 AND auto_transfer_at <= ? AND (auto_transfer_override = 1 OR ? = 1) ORDER BY auto_transfer_at ASC, id ASC LIMIT 20").bind(now, globalAutomationEnabled ? 1 : 0).all();
+    for (const row of rows.results || []) {
+      if (!cryptoSignerConfiguredFor(row.net)) continue;
+      const payoutLimits = await readCryptoPayoutLimits(env), requestAmount = Number(row.amount);
+      if (requestAmount < payoutLimits.minimum || requestAmount > payoutLimits.maximum) {
+        await env.DB.prepare("UPDATE withdrawals SET transfer_status = 'pending', auto_transfer_at = 0, auto_transfer_override = 0 WHERE id = ? AND status = 'pending' AND transfer_status = 'scheduled' AND tx_reference = ''").bind(row.id).run();
+        continue;
+      }
+      const claimed = await env.DB.prepare("UPDATE withdrawals SET transfer_status = 'sending' WHERE id = ? AND status = 'pending' AND transfer_status = 'scheduled' AND auto_transfer_at <= ? AND tx_reference = ''").bind(row.id, now).run();
+      if (!(claimed.meta?.changes > 0)) continue;
+      try {
+        const txHash = await sendAutomaticCryptoPayout(row);
+        const saved = await env.DB.prepare("UPDATE withdrawals SET tx_reference = ?, transfer_status = 'sent' WHERE id = ? AND status = 'pending' AND transfer_status = 'sending' AND tx_reference = ''").bind(txHash, row.id).run();
+        if (!(saved.meta?.changes > 0)) {
+          console.error("Broadcast succeeded but its hash could not be attached to scheduled withdrawal", row.id, txHash);
+          continue;
+        }
+        const internalRequest = new Request("http://localhost/api/admin/review", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: "withdrawal", id: Number(row.id), action: "approve", txReference: txHash }) });
+        const approved = await reviewTransaction(internalRequest, env, true);
+        if (!approved.ok) console.error("Scheduled payout sent but approval needs admin review", row.id, approved.status);
+      } catch (error) {
+        // A provider error may happen after broadcast; keep it for reconciliation rather than risking a duplicate payout.
+        console.error("Scheduled payout needs reconciliation for withdrawal", row.id, error?.message || error);
+      }
+    }
+    const sentRows = await env.DB.prepare("SELECT * FROM withdrawals WHERE status = 'pending' AND transfer_status = 'sent' AND tx_reference != '' AND auto_transfer_at > 0 ORDER BY id ASC LIMIT 20").all();
+    for (const row of sentRows.results || []) {
+      try {
+        const internalRequest = new Request("http://localhost/api/admin/review", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: "withdrawal", id: Number(row.id), action: "approve", txReference: row.tx_reference }) });
+        const approved = await reviewTransaction(internalRequest, env, true);
+        if (!approved.ok && approved.status !== 409) console.error("Automatic payout reconciliation failed", row.id, approved.status);
+      } catch (error) { console.error("Automatic payout reconciliation failed", row.id, error?.message || error); }
+    }
+  } catch (error) {
+    console.error("Scheduled crypto payout worker failed:", error?.message || error);
+  } finally { scheduledCryptoPayoutsRunning = false; }
+}
+const automaticCryptoDepositTimer = setInterval(() => {
+  sweepAutomaticCryptoDeposits().catch(error => console.error("Automatic deposit sweep error:", error?.message || error));
+}, Math.max(15000, Number(process.env.CRYPTO_DEPOSIT_POLL_MS || 30000)));
+if (typeof automaticCryptoDepositTimer.unref === "function") automaticCryptoDepositTimer.unref();
+const automaticCryptoPayoutTimer = setInterval(() => {
+  processScheduledCryptoWithdrawals().catch(error => console.error("Automatic crypto payout scheduler error:", error?.message || error));
+}, Math.max(250, Number(process.env.CRYPTO_PAYOUT_POLL_MS || 1000)));
+if (typeof automaticCryptoPayoutTimer.unref === "function") automaticCryptoPayoutTimer.unref();
+
+
+const CRYPTO_PAYOUT_DELAY_UNITS = Object.freeze({ seconds: 1000, minutes: 60000, hours: 3600000, days: 86400000 });
+async function readCryptoPayoutDelay(envArg) {
+  const rows = await envArg.DB.prepare("SELECT config_key, config_value FROM platform_config WHERE config_key IN (?, ?)").bind("crypto_payout_delay_value", "crypto_payout_delay_unit").all();
+  const values = new Map((rows.results || []).map(row => [row.config_key, row.config_value]));
+  const value = Number(values.get("crypto_payout_delay_value") ?? 0);
+  const unit = String(values.get("crypto_payout_delay_unit") || "seconds");
+  if (!Number.isSafeInteger(value) || value < 0 || !Object.prototype.hasOwnProperty.call(CRYPTO_PAYOUT_DELAY_UNITS, unit)) return { value: 0, unit: "seconds", delayMs: 0 };
+  return { value, unit, delayMs: value * CRYPTO_PAYOUT_DELAY_UNITS[unit] };
+}
+async function getCryptoPayoutDelay(request, envArg) {
+  const actor = await privilegedAdminActor(request, envArg);
+  if (!actor) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  return Response.json({ ok: true, ...(await readCryptoPayoutDelay(envArg)) });
+}
+async function saveCryptoPayoutDelay(request, envArg) {
+  const actor = await privilegedAdminActor(request, envArg);
+  if (!actor) return Response.json({ error: "Permessi admin richiesti." }, { status: 403 });
+  const body = await request.json().catch(() => ({}));
+  const value = Number(body.value), unit = String(body.unit || "");
+  if (!Number.isSafeInteger(value) || value < 0 || !Object.prototype.hasOwnProperty.call(CRYPTO_PAYOUT_DELAY_UNITS, unit)) return bad("Inserisci un intervallo intero valido in secondi, minuti, ore o giorni.");
+  if (value * CRYPTO_PAYOUT_DELAY_UNITS[unit] > 315360000000) return bad("Il ritardo massimo consentito è di 10 anni.");
+  await envArg.DB.batch([
+    envArg.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES(?, ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind("crypto_payout_delay_value", String(value)),
+    envArg.DB.prepare("INSERT INTO platform_config(config_key, config_value) VALUES(?, ?) ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value").bind("crypto_payout_delay_unit", unit)
+  ]);
+  return Response.json({ ok: true, value, unit, delayMs: value * CRYPTO_PAYOUT_DELAY_UNITS[unit] });
+}
