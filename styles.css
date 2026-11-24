@@ -2963,6 +2963,8 @@ body:has(#view-admin.active) .admin-brand-tag { display:inline-flex; align-items
 .admin-ledger-amount.is-positive { color:var(--accent); }
 .admin-ledger-status { display:inline-block; border:1px solid var(--line); border-radius:999px; background:var(--surface-2); padding:3px 7px; font-size:9px; white-space:nowrap; }
 .admin-ledger-reference { max-width:260px; overflow-wrap:anywhere; color:var(--muted); }
+.payment-history-delete { display:block; margin-top:6px; padding:4px 8px; border:1px solid var(--danger, #c94b4b); border-radius:6px; background:transparent; color:var(--danger, #c94b4b); font:inherit; font-size:10px; cursor:pointer; }
+.payment-history-delete:disabled { opacity:.55; cursor:wait; }
 .admin-ledger-empty { padding:20px; color:var(--muted); text-align:center; }
 .admin-ledger-footer { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 12px; color:var(--muted); font-size:10px; }
 @media(max-width:600px) { .admin-brand-tag { margin-left:5px; padding:3px 6px; font-size:8px; } }

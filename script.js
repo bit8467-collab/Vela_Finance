@@ -2889,7 +2889,7 @@ async function loadPaymentHistory(category,reset=false){
  if(more)more.disabled=true;
  try{
   const data=await fetchAdminLedgerPage(category,'',state.offset),rows=(data.entries||[]).filter(row=>String(row.status||'').toLowerCase()!=='pending');
-  renderAdminLedgerRows('payment-history-'+category+'-rows',rows,!reset);
+  renderAdminLedgerRows('payment-history-'+category+'-rows',rows,!reset,true);
   state.offset=Number(data.nextOffset)||0;state.visible+=rows.length;state.loaded=true;
   if(more){more.hidden=!data.hasMore;more.disabled=false}
   if(empty)empty.hidden=state.visible>0||!!data.hasMore;
@@ -2897,6 +2897,18 @@ async function loadPaymentHistory(category,reset=false){
  }catch(error){notice(error.message||'Unable to load payment history.',true);if(more)more.hidden=true}
  finally{state.loading=false;if(more)more.disabled=false}
 }
+document.addEventListener('click',async event=>{
+ const button=event.target.closest('[data-ledger-delete]');if(!button)return;
+ const category=button.dataset.ledgerCategory,eventId=button.dataset.ledgerDelete;
+ if(!['deposits','withdrawals'].includes(category)||!eventId)return;
+ if(!confirm('Delete this transfer from the history? This cannot be undone.'))return;
+ button.disabled=true;
+ try{
+  await post('/api/admin/ledger/delete',{category,eventId});
+  notice('Transfer deleted from history.');
+  await loadPaymentHistory(category,true);
+ }catch(error){notice(error.message||'Unable to delete this transfer.',true);button.disabled=false}
+});
 async function refreshCryptoPayoutLimitsControl(){const status=$('crypto-auto-limits-status');try{const data=await api('/api/admin/payments/auto-limits');$('crypto-auto-min-amount').value=String(data.minimum);$('crypto-auto-max-amount').value=String(data.maximum);if(status)status.textContent='Out-of-range withdrawals remain for manual review.'}catch(error){if(status)status.textContent=error.message||'Unable to load payout limits.'}}
 $('crypto-auto-limits-form').addEventListener('submit',async event=>{event.preventDefault();const button=$('save-crypto-auto-limits'),status=$('crypto-auto-limits-status');button.disabled=true;status.textContent='Saving…';try{const data=await post('/api/admin/payments/auto-limits',{minimum:Number($('crypto-auto-min-amount').value),maximum:Number($('crypto-auto-max-amount').value)});$('crypto-auto-min-amount').value=String(data.minimum);$('crypto-auto-max-amount').value=String(data.maximum);status.textContent='Automatic payout limits saved.';notice('Automatic payout limits saved.')}catch(error){status.textContent=error.message||'Unable to save payout limits.';notice(status.textContent,true)}finally{button.disabled=false}});
 function renderPaymentFinancialControl(response){
@@ -3074,13 +3086,14 @@ async function refreshAdminOperatorAudit(){
 const adminLedgerCategories=['deposits','withdrawals','investments','redemptions','referrals'];
 const adminLedgerState=Object.fromEntries(adminLedgerCategories.map(category=>[category,{offset:0,loaded:false,loading:false}]));
 let adminLedgerSearchOffset=0,adminLedgerSearchLoading=false,adminLedgerSearchQuery='';
-function renderAdminLedgerRows(bodyId,entries,append){
+function renderAdminLedgerRows(bodyId,entries,append,allowDelete=false){
   const body=$(bodyId);if(!body)return;
   if(!append)body.innerHTML='';
   body.insertAdjacentHTML('beforeend',entries.map(row=>{
     const value=Number(row.amount)||0,amountText=(value<0?'−':'+')+amount(Math.abs(value));
     const date=row.occurred_at?new Date(Number(row.occurred_at)).toLocaleString(getLocale()):'—';
-    return '<tr><td>'+esc(date)+'</td><td><b>@'+esc(row.username||'user')+'</b><small>'+esc(row.user_id||'')+'</small></td><td>'+esc(row.activity||'Movement')+'</td><td class="admin-ledger-amount '+(value<0?'is-negative':'is-positive')+'">'+esc(amountText)+'</td><td><span class="admin-ledger-status">'+esc(row.status||'—')+'</span></td><td class="admin-ledger-reference">'+esc(row.reference||'—')+'</td></tr>';
+    const deleteButton=allowDelete&&['deposits','withdrawals'].includes(row.category)?'<button type="button" class="payment-history-delete" data-ledger-delete="'+esc(row.event_id||'')+'" data-ledger-category="'+esc(row.category)+'">Delete</button>':'';
+    return '<tr><td>'+esc(date)+'</td><td><b>@'+esc(row.username||'user')+'</b><small>'+esc(row.user_id||'')+'</small></td><td>'+esc(row.activity||'Movement')+'</td><td class="admin-ledger-amount '+(value<0?'is-negative':'is-positive')+'">'+esc(amountText)+'</td><td><span class="admin-ledger-status">'+esc(row.status||'—')+'</span></td><td class="admin-ledger-reference">'+esc(row.reference||'—')+deleteButton+'</td></tr>';
   }).join(''));
 }
 async function fetchAdminLedgerPage(category,user,offset){

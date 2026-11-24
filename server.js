@@ -1585,6 +1585,7 @@ const workerHandler = {
       if (method === "GET" && pathName === "/api/admin/backup/export") return await adminDatabaseBackup(request, env);
       if (method === "GET" && pathName === "/api/admin/transactions") return await adminTransactions(request, env);
       if (method === "GET" && pathName === "/api/admin/ledger") return await adminGlobalLedger(request, env);
+      if (method === "POST" && pathName === "/api/admin/ledger/delete") return await adminDeleteLedgerEntry(request, env);
        if (method === "GET" && pathName === "/api/admin/password-reset-requests") return await listPasswordResetRequests(request, env);
       if (method === "GET" && pathName === "/api/admin/otp-history") return await listOtpRequestHistory(request, env);
       if (method === "GET" && pathName === "/api/admin/otp-mail-copies") return await listOtpMailCopies(request, env);
@@ -3631,6 +3632,20 @@ async function adminGlobalLedger(request, env) {
   const hasMore = rows.length > limit;
   const entries = rows.slice(0, limit);
   return Response.json({ entries, hasMore, nextOffset: offset + entries.length });
+}
+
+async function adminDeleteLedgerEntry(request, env) {
+  const actor = await adminAccess(request, env, "fullPanel");
+  if (!actor) return Response.json({ error: "Accesso non autorizzato." }, { status: 403 });
+  const body = await request.json().catch(() => ({}));
+  const eventId = String(body.eventId || "");
+  const match = eventId.match(/^(deposit|withdrawal):([1-9]\d*)$/);
+  const category = match?.[1] === "deposit" ? "deposits" : match?.[1] === "withdrawal" ? "withdrawals" : "";
+  if (!match || body.category !== category) return bad("Movimento non valido.");
+  const table = category === "deposits" ? "deposits" : "withdrawals";
+  const result = await env.DB.prepare("DELETE FROM " + table + " WHERE id = ?").bind(match[2]).run();
+  if (!(result.meta?.changes > 0)) return Response.json({ error: "Movimento non trovato." }, { status: 404 });
+  return Response.json({ ok: true });
 }
 
 async function adminUpdateUserProfile(request, env, userId) {
