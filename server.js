@@ -3931,9 +3931,23 @@ async function adminManageMarketPlan(request, env, positionId) {
   if (!Number.isSafeInteger(id) || id < 1) return bad("Piano non valido.");
   const body = await request.json().catch(() => ({}));
   const action = String(body.action || "");
-  if (!["suspend", "resume", "delete"].includes(action)) return bad("Azione non valida.");
-  const position = await env.DB.prepare("SELECT id, user_id, status FROM market_positions WHERE id = ?").bind(id).first();
+  if (!["suspend", "resume", "delete", "amount"].includes(action)) return bad("Azione non valida.");
+  const position = await env.DB.prepare("SELECT id, user_id, status, amount FROM market_positions WHERE id = ?").bind(id).first();
   if (!position) return Response.json({ error: "Piano non trovato." }, { status: 404 });
+  if (action === "amount") {
+    const requestedAmount = Number(body.amount);
+    if (!Number.isFinite(requestedAmount) || requestedAmount <= 0 || requestedAmount > 1e12) return bad("Importo non valido.");
+    if (!["active", "paused", "admin_suspended"].includes(position.status)) return Response.json({ error: "È possibile modificare solo un piano attivo." }, { status: 409 });
+    const oldAmount = Number(position.amount);
+    const newAmount = Math.round(requestedAmount * 1000) / 1000;
+    if (!Number.isFinite(oldAmount) || oldAmount <= 0 || newAmount <= 0) return bad("Importo non valido.");
+    if (newAmount === oldAmount) return Response.json({ ok: true, action, amount: newAmount });
+    const ratio = newAmount / oldAmount;
+    const result = await env.DB.prepare("UPDATE market_positions SET amount = ?, last_value = ROUND(last_value * ?, 3), auto_add_anchor_value = ROUND(auto_add_anchor_value * ?, 3), stop_loss_anchor_value = ROUND(stop_loss_anchor_value * ?, 3), stop_loss_resume_value = ROUND(stop_loss_resume_value * ?, 3) WHERE id = ? AND user_id = ? AND status IN ('active','paused','admin_suspended') AND amount = ?")
+      .bind(newAmount, ratio, ratio, ratio, ratio, id, position.user_id, oldAmount).run();
+    if (!(result.meta?.changes > 0)) return Response.json({ error: "Il piano è cambiato. Aggiorna e riprova." }, { status: 409 });
+    return Response.json({ ok: true, action, amount: newAmount });
+  }
   if (action === "delete") {
     if (!["active", "paused", "admin_suspended"].includes(position.status)) return Response.json({ error: "È possibile eliminare solo un piano attivo." }, { status: 409 });
     const results = await env.DB.batch([
